@@ -123,6 +123,47 @@ floating-point operation is one multiply, and it has no summation at all, so the
 does not even apply to it. It is the Metal kernel least able to argue with the contract, which makes
 it the right one to prove the toolchain, the test harness and the fast-math discipline on.
 
+## D11 — The denormal rate, measured, and the two options it leaves
+
+`DC-087` established that Metal flushes denormal operands while the CPU does not. The question was
+how often that matters — so `tools/measure_denormals.py` reads the **scale sections** of an install,
+uncached, and counts.
+
+**On the real 35 B install** (`.build/m1-install`, 210 quantized tensors, 523,304,960 scales read in
+2.13 s with free disk steady at 17 GB, which is the uncached path doing its job):
+
+| | |
+| --- | --- |
+| scales | 523,304,960 |
+| **denormal** | **3,781,952 — 0.722705 %** |
+| zero | 0 |
+| non-finite | 0 |
+
+And they are **not spread evenly**: layer 0's `gate_up_proj` has 3,472,448 of its 8,388,608 scales
+denormal — 41 % of that one tensor — while layer 10 has 64 and most layers are near zero. The first
+layers of a quantized model are where groups of near-zero weights live.
+
+**0.72 % is not a rounding detail when the gate compares every value.** It is roughly four million
+differing weights per pass, and it is enough to decide the Metal question rather than defer it.
+There are two options and no third:
+
+1. **Flush denormals in the contract.** Round denormal scales to zero in `tools/quantize.py` and in
+   the engine's unpack, so both sides agree because the flush is *defined* rather than discovered.
+   The values lost are ~1e-38 against weights of order 1e-1, invisible at any tolerance; `I3` is
+   untouched because routers and gating are bf16 and never quantized. The cost is that the install
+   and every comparison against the oracle must be re-measured, and the M1 bit-identity claim is
+   against a *redefined* contract.
+2. **Keep Metal off anything downstream of a quantized weight.** A flushed scale makes the unpacked
+   weight zero where the CPU makes it denormal, and that propagates into every matmul, so this is
+   not "the unpack stays on the CPU" — it is the **entire expert path** staying on the CPU, which is
+   the hot path. Metal's role would be reduced to the dense, unquantized ops.
+
+**My recommendation is (1)**, because the flush is a *definition* rather than an error, it is one
+line in each of the two implementations, and it is testable exactly the way everything else in this
+project is — assert the flushed behaviour on both sides and re-run the oracle comparison with the
+new error budget recorded. But it changes what "bit-identical" means, so it is a renegotiation
+rather than a fix, and it is recorded here for a human decision rather than taken unilaterally.
+
 ## The GPU flushes denormals, which is a decision and not a bug
 
 `DC-087` began as "the Metal unpack disagrees with the CPU" and ends as a constraint on every kernel
