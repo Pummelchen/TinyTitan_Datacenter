@@ -25,3 +25,8 @@ models/
 .env
 .env.*
 *.local
+
+# Python bytecode and tool caches (tools/ is stdlib-only Python)
+__pycache__/
+*.py[cod]
+.pytest_cache/
