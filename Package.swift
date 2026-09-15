@@ -16,7 +16,8 @@ let package = Package(
         .macOS(.v26)
     ],
     products: [
-        .library(name: "DatacenterIR", targets: ["DatacenterIR"])
+        .library(name: "DatacenterIR", targets: ["DatacenterIR"]),
+        .library(name: "DatacenterEngine", targets: ["DatacenterEngine"])
     ],
     targets: [
         // Paths are declared rather than inferred. The conventional SwiftPM names are
@@ -29,6 +30,13 @@ let package = Package(
             name: "DatacenterIRTests",
             dependencies: ["DatacenterIR"],
             path: "tests/DatacenterIRTests",
+            resources: [.copy("Fixtures")]
+        ),
+        .target(name: "DatacenterEngine", path: "sources/DatacenterEngine"),
+        .testTarget(
+            name: "DatacenterEngineTests",
+            dependencies: ["DatacenterEngine"],
+            path: "tests/DatacenterEngineTests",
             resources: [.copy("Fixtures")]
         )
     ]

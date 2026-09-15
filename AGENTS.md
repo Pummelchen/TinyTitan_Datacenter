@@ -90,6 +90,11 @@ python3 tools/trace_diff.py .build/ref-trace .build/ref-trace
 # The controlled-order numeric contract (the bit-exactness target) needs numpy.
 .venv/bin/python -c "import sys; sys.path.insert(0,'tools'); import ordered_reference"
 
+# Regenerate the golden bit patterns the Swift contract tests assert
+# (tests/DatacenterEngineTests/Fixtures/contract-vectors.json). Run this whenever an op
+# in tools/ordered_reference.py changes, then run `swift test`.
+.venv/bin/python tools/make_contract_vectors.py
+
 # The reference implementation that produces golden traces. Pinned exactly: a
 # trace is only comparable to another captured from the same transformers build.
 uv pip install --python .venv/bin/python -r tools/requirements-reference.txt

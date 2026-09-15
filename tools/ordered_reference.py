@@ -77,18 +77,40 @@ def rms_norm(x: np.ndarray, weight: np.ndarray, eps: float) -> np.ndarray:
     return f32(f32(weight) * f32(x32 * inverse[..., None]))
 
 
-def sigmoid(x: np.ndarray) -> np.ndarray:
-    """Stable sigmoid: the branch keeps ``exp`` from overflowing on either side.
+def exp32(x: np.ndarray) -> np.ndarray:
+    """``exp`` evaluated in double precision and rounded to fp32.
 
-    Which formulation is used is part of the contract, not an implementation detail —
-    ``1/(1+exp(-x))`` and ``exp(x)/(1+exp(x))`` agree mathematically and can differ in
-    the last bit, so the engine has to be told which one to reproduce.
+    Every transcendental here is defined that way, because that is the only formulation
+    measured to agree bit-for-bit between this file and Swift. Measured on 6000 inputs
+    across the ranges the model uses: numpy's own float32 ``sin``/``cos`` differ from
+    Swift's in 12–18% of cases, Swift's differ from libm's ``sinf``/``cosf`` in ~1%, and
+    computing in double and rounding agrees in **0 of 6000**. ``exp`` happens to agree
+    either way; it is stated the same way as the others so the contract is one sentence
+    rather than a table of exceptions.
+    """
+    return f32(np.exp(np.float64(x)))
+
+
+def sin32(x: np.ndarray) -> np.ndarray:
+    return f32(np.sin(np.float64(x)))
+
+
+def cos32(x: np.ndarray) -> np.ndarray:
+    return f32(np.cos(np.float64(x)))
+
+
+def sigmoid(x: np.ndarray) -> np.ndarray:
+    """Stable sigmoid, with ``exp`` in the contract's precision.
+
+    The branch keeps the exponential from overflowing on either side, and which branch
+    is used is part of the contract: ``1/(1+exp(-x))`` and ``exp(x)/(1+exp(x))`` agree
+    mathematically and can differ in the last bit.
     """
     x32 = f32(x)
     out = np.empty_like(x32)
     positive = x32 >= 0
-    out[positive] = f32(np.float32(1.0) / (np.float32(1.0) + np.exp(f32(-x32[positive]))))
-    exponential = np.exp(x32[~positive])
+    out[positive] = f32(np.float32(1.0) / (np.float32(1.0) + exp32(f32(-x32[positive]))))
+    exponential = exp32(x32[~positive])
     out[~positive] = f32(exponential / (np.float32(1.0) + exponential))
     return out
 
@@ -100,10 +122,10 @@ def silu(x: np.ndarray) -> np.ndarray:
 
 
 def softmax(x: np.ndarray) -> np.ndarray:
-    """Max-subtracted, ascending-index sum, fp32 throughout."""
+    """Max-subtracted, ascending-index sum, fp32 throughout, ``exp`` per the contract."""
     x32 = f32(x)
     shifted = f32(x32 - x32.max(axis=-1, keepdims=True))
-    exponentials = f32(np.exp(shifted))
+    exponentials = exp32(shifted)
     total = ordered_sum(exponentials, axis=-1)
     return f32(exponentials / total[..., None])
 
@@ -115,10 +137,12 @@ def rope_tables(head_dim: int, positions: np.ndarray, theta: float):
     ``emb = cat((freqs, freqs))`` — because rotate-half pairs element ``i`` with
     element ``i + head_dim/2``, and both halves carry the same angle.
     """
-    frequencies = np.float32(1.0) / f32(
-        np.power(np.float32(theta), f32(np.arange(0, head_dim, 2, dtype=np.float32) / np.float32(head_dim)))
-    )
-    angles = f32(np.outer(f32(positions), f32(frequencies)))
+    # angles, cos and sin are all computed in double and rounded, per the contract's
+    # one-sentence rule for transcendentals. This matters most here: RoPE's angles are
+    # the only place the model's arithmetic depends on sin/cos at all.
+    exponents = f32(np.arange(0, head_dim, 2, dtype=np.float32) / np.float32(head_dim))
+    frequencies = f32(np.float32(1.0) / f32(np.power(np.float32(theta), exponents)))
+    angles = np.outer(np.float64(positions), np.float64(frequencies))
     doubled = np.concatenate([angles, angles], axis=-1)
     return f32(np.cos(doubled)), f32(np.sin(doubled))
 

@@ -134,6 +134,41 @@ Consequences, recorded before any kernel is written:
   to torch could never be bit-exact, and pretending otherwise would have produced a gate
   that fails for a reason that has nothing to do with the engine.
 
+**Measured 2026-09-15 — transcendentals, the second half of the same question.** A contract
+is only useful if another language can reproduce it, so the float functions were compared
+before any op was written:
+
+| Function | numpy fp32 vs Swift | libm `sinf`/`cosf` via ctypes vs Swift |
+| --- | --- | --- |
+| `exp`, `sigmoid` | **0 / 3510** | — |
+| `pow` (RoPE exponents) | **0 / 64** | 0 / 64 |
+| `sin` | 404 / 3000 | 36 / 3000 |
+| `cos` | 436 / 3000 | 34 / 3000 |
+
+numpy's float32 trigonometry is its own polynomial implementation, and Swift's is not
+libm's either — so bit-exactness across languages is **not** available from the standard
+functions. The contract therefore states one rule, chosen because it was measured to hold:
+
+> **Transcendentals are evaluated in double precision and rounded to `Float`.**
+
+That formulation agreed in **0 of 6000** samples for `sin`, `cos` and `exp`. `exp` agrees
+under either formulation, so the rule is stated uniformly rather than as a list of
+exceptions — a rule with exceptions is a rule nobody can implement from memory.
+
+Two consequences for the kernels:
+
+- **The RoPE tables are computed on the CPU and passed to the GPU as a buffer.** Apple
+  GPUs have no fp64, so a Metal kernel could not evaluate this rule at all; the tables
+  depend only on position and head width, so they are computed once per forward.
+- Anything else that needs a transcendental on the GPU needs its own exact implementation,
+  and the deviation has to be recorded in the contract rather than discovered later.
+
+The ops in `sources/DatacenterEngine` are checked against the contract as **bit patterns**,
+not values: nine Swift tests assert the golden vectors emitted by
+`tools/make_contract_vectors.py`. The gate was audited by mutation — reversing the
+accumulation order fails the matmul test and swapping in native `cosf`/`sinf` fails the
+RoPE test — because a gate that cannot fail is not a gate.
+
 ---
 
 ## D4 — Reduction canon (delegated: best technical decision)
