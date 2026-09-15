@@ -13,7 +13,7 @@ reading release notes.
 | Language mode | **6**, which is the tools-version default — strict concurrency and the graduated 6.0–6.3 features are already errors, not warnings |
 | Diagnostics on a clean tree | **0** warnings, **0** errors, measured with `swift test` |
 
-## Enforced: the three that are still upcoming, declared once
+## Enforced: the four that are still upcoming, declared once
 
 `Package.swift` declares `shardLanguageStandard` and applies it to **all six targets**, so a target
 added later cannot quietly opt out:
@@ -21,26 +21,25 @@ added later cannot quietly opt out:
 ```swift
 .enableUpcomingFeature("InferIsolatedConformances")
 .enableUpcomingFeature("ImmutableWeakCaptures")
+.enableUpcomingFeature("MemberImportVisibility")
 .enableUpcomingFeature("NonisolatedNonsendingByDefault")
 ```
 
-Each was measured by building with the flag and counting diagnostics. All three cost **zero**, which
-is why they are on: an "upcoming feature" that costs nothing today is a migration paid for now
-instead of at a compiler upgrade.
+Each was measured by building with the flag and counting diagnostics. All four cost what is
+recorded here, and the two that were not free were paid rather than waved through:
 
-**`MemberImportVisibility` was in this list for part of one commit, on a measurement that was
-wrong.** It was probed with `swift build`, which does not compile the test targets — and that is
-where it bites, because a test file that uses `DatacenterIR`'s properties has to say so. `swift
-test` fails to build until those imports are added, and one pass did not converge. It is off, its
-cost is *not yet counted*, and the correction is recorded here rather than the claim being quietly
-narrowed. The method below now says `swift test` for exactly this reason.
+| feature | measured cost |
+| --- | --- |
+| `InferIsolatedConformances` | 0 diagnostics |
+| `ImmutableWeakCaptures` | 0 diagnostics |
+| `NonisolatedNonsendingByDefault` | 0 diagnostics |
+| `MemberImportVisibility` | **one import, in one test file** — `Qwen3_5ForwardTests.swift` needed `import DatacenterIR` |
 
-## Deliberately not enabled: `MemberImportVisibility`
-
-Cost so far: `swift test` fails to build in the test targets until their `DatacenterIR`-defined
-uses are imported explicitly, and the count of those sites is **not yet measured** — the feature was
-dropped mid-pass rather than left in a state where the suite does not build. It is a mechanical pass,
-like the one below, and it belongs to its own commit.
+`MemberImportVisibility` is worth its own paragraph because it was briefly declared free on a
+measurement that was wrong, then declared expensive on a pass that was interrupted. Neither was a
+number. The count above came from iterating `swift test` under the flag and adding exactly the
+imports the compiler named — one round, one file, then exit 0. **A feature that is not free is not
+the same as a feature that is expensive**, and both claims need the loop run to the end.
 
 ## Deliberately not enabled: `ExistentialAny`
 
@@ -69,6 +68,9 @@ for f in ExistentialAny InferIsolatedConformances ImmutableWeakCaptures \
   echo "$f exit=$?"
 done
 ```
+
+Parse the diagnostic paths carefully: this repository's path contains a space, so a regex that
+stops at whitespace truncates it and the loop then edits a file that does not exist.
 
 A feature is enabled with a **measured** count, never a confident one — and the trap is that CI
 cannot do this for you: the `macos-26` runner's Xcode is below the manifest's floor, so the Swift job

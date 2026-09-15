@@ -12,13 +12,14 @@ import PackageDescription
 ///
 /// Declared once and applied to **every** target, so a target added later cannot quietly opt out.
 /// Measured on this toolchain with `swift test`, which is the only command that compiles the test
-/// targets too: the tree is clean of diagnostics, and each of these three costs **zero** further
-/// diagnostics. Two are deliberately absent. `MemberImportVisibility` requires explicit imports in
-/// the test targets as well and does not converge in one pass; `ExistentialAny` costs fourteen
-/// warnings. Both belong to their own commits.
+/// targets too: the tree is clean of diagnostics, and each of these four costs what is recorded
+/// beside it in `docs/swift-language-standard.md`. `MemberImportVisibility` cost **one import in
+/// one test file**, counted by iterating the build rather than estimated. `ExistentialAny` costs
+/// fourteen warnings and belongs to its own commit.
 let shardLanguageStandard: [SwiftSetting] = [
     .enableUpcomingFeature("InferIsolatedConformances"),
     .enableUpcomingFeature("ImmutableWeakCaptures"),
+    .enableUpcomingFeature("MemberImportVisibility"),
     .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
 ]
 
