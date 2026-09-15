@@ -186,13 +186,17 @@ Leave previous releases' notes and performance tables alone.
 
 # Part 2 — This repository
 
-## TinyTitan_Datacenter — Python, no release yet
+## TinyTitan_Datacenter — Swift and Python, no release yet
 
-- **Identity** semantic version, not yet established.
-- **No compiled artifact.** If a release is warranted it ships the harness as a
-  wheel or source archive with a documented entry point, and §1.2.1–1.2.4 do not
-  apply because nothing is compiled for the host.
+- **Identity** semantic version, not yet established. There is no `VERSION`, no
+  `BUILD_NUMBER`, no tag and no release; the only versioned contracts are the IR
+  schema (`currentVersion` in `sources/DatacenterIR/IRSpec.swift`) and the trace
+  schema (`SCHEMA_VERSION` in `tools/trace_format.py`).
+- **Compiled artifacts do exist.** `Package.swift` declares the executable targets
+  `datacenter-trace` and `datacenter-generate`, so the native `arm64` and `lipo`
+  rules of §1.2.1–§1.2.4 **do** apply here. The Python side under `tools/` is
+  stdlib-only. There is no release script and no packaging step yet.
 - **Purpose** the multi-node Apple-silicon cluster: harness, measurements and
   findings. Measurements are reported as measurements, never as performance
   ceilings, and every recorded number names the commit, hardware, RAM, macOS and
-  Swift/toolchain versions it was taken on.
+  toolchain versions it was taken on.
