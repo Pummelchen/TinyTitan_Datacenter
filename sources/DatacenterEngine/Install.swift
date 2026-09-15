@@ -65,28 +65,57 @@ public struct InstallFile: WeightSource {
     }
 
     public let manifest: Manifest
-    private let blob: Data
+    private let blob: UncachedFile
     private let entries: [String: Entry]
 
-    public init(url: URL) throws {
+    /// The names whose digest this instance has already checked.
+    ///
+    /// A reference box rather than a `var`, because `WeightSource` conformance is non-mutating and
+    /// an expert tensor is fetched again and again: re-hashing a five-hundred-megabyte payload on
+    /// every read of it would be its own disaster, and a struct cannot hold that memo itself.
+    private final class Verified {
+        var names: Set<String> = []
+    }
+
+    private let verified = Verified()
+
+    /// Open an install.
+    ///
+    /// `verify` is **false** by default, and that is a deliberate change from the first version,
+    /// which hashed the entire payload on open. That made opening a 20 GB install a 20 GB read:
+    /// slow everywhere, and on the 8 GB development node the read filled the page cache, memory
+    /// pressure grew swap, and free disk fell from 17 GB to 2.96 GB in half a minute. Integrity
+    /// is not weakened by moving it — each payload is checked the first time it is read, so a
+    /// tampered tensor still cannot produce plausible numbers (I6) — and `verifyAll()` restores
+    /// the eager check for a gate that wants to make it explicit.
+    public init(url: URL, verify: Bool = false) throws {
         let manifestData = try Data(contentsOf: url.appendingPathComponent("install.json"))
         let manifest = try JSONDecoder().decode(Manifest.self, from: manifestData)
         self.manifest = manifest
-        // Memory-mapped: an install is around two gigabytes and the engine uses one layer of
-        // it at a time.
-        self.blob = try Data(contentsOf: url.appendingPathComponent("data.bin"), options: [.mappedIfSafe])
+        // Read through `UncachedFile`, not `mmap`: the payload is larger than the machine, and
+        // pages cached from it evict everything useful and turn a read into swap pressure.
+        self.blob = try UncachedFile(url: url.appendingPathComponent("data.bin"))
         var entries: [String: Entry] = [:]
         for entry in manifest.tensors { entries[entry.name] = entry }
         self.entries = entries
-        for entry in manifest.tensors where !Self.digestMatches(entry, blob: blob) {
+        if verify { try verifyAll() }
+    }
+
+    /// Check every payload digest, in bounded windows. For a gate rather than for normal use.
+    public func verifyAll() throws {
+        for entry in manifest.tensors where !(try digestMatches(entry)) {
             throw Error.digestMismatch(entry.name)
         }
     }
 
-    private static func digestMatches(_ entry: Entry, blob: Data) -> Bool {
-        guard entry.offset + entry.nbytes <= blob.count else { return false }
-        let payload = blob.subdata(in: entry.offset..<(entry.offset + entry.nbytes))
-        return SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined() == entry.sha256
+    private func digestMatches(_ entry: Entry) throws -> Bool {
+        if verified.names.contains(entry.name) { return true }
+        guard entry.offset + entry.nbytes <= blob.byteCount else { return false }
+        let payload = try blob.readData(offset: entry.offset, byteCount: entry.nbytes)
+        let digest = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        guard digest == entry.sha256 else { return false }
+        verified.names.insert(entry.name)
+        return true
     }
 
     public func entry(_ name: String) throws -> Entry {
@@ -94,13 +123,14 @@ public struct InstallFile: WeightSource {
         return entry
     }
 
-    private func payload(_ entry: Entry) -> Data {
-        blob.subdata(in: entry.offset..<(entry.offset + entry.nbytes))
+    private func payload(_ entry: Entry) throws -> Data {
+        guard try digestMatches(entry) else { throw Error.digestMismatch(entry.name) }
+        return try blob.readData(offset: entry.offset, byteCount: entry.nbytes)
     }
 
     public func tensor(named name: String) throws -> [Float] {
         let entry = try entry(name)
-        let data = payload(entry)
+        let data = try payload(entry)
         guard entry.dtype == "int4" else {
             return try Self.decodeRaw(data, dtype: entry.dtype, elementCount: entry.shape.reduce(1, *))
         }
@@ -120,9 +150,10 @@ public struct InstallFile: WeightSource {
         if entry.dtype != "int4" {
             // Sliced from the stored bytes: one row of the embedding should not cost a
             // gigabyte of decoding.
+            guard try digestMatches(entry) else { throw Error.digestMismatch(entry.name) }
             let stride = Self.elementSize(entry.dtype) * width
             let start = entry.offset + range.lowerBound * stride
-            let slice = blob.subdata(in: start..<(start + range.count * stride))
+            let slice = try blob.readData(offset: start, byteCount: range.count * stride)
             return try Self.decodeRaw(slice, dtype: entry.dtype, elementCount: range.count * width)
         }
         // Packed codes cannot be sliced as bytes without re-deriving the group layout, so

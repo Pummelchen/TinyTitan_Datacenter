@@ -148,3 +148,35 @@ Two consequences:
   not sufficient. `sources/DatacenterEngine/` contains no `F_NOCACHE` and no `fcntl` at all, so
   every one of those reads is page-cached today. The fix belongs in the file handle the provider
   opens, which is `DC-033`'s neighbourhood.
+
+## The fix: uncached reads for the install, and verification moved to the read
+
+`InstallFile` did two things that were each, on this node, a hazard. It **memory-mapped the whole
+payload** (`Data(contentsOf:, options: [.mappedIfSafe])`), so every read populated the page cache;
+and it **hashed all twenty gigabytes on every open**, so simply starting the engine was a
+full-payload read. Neither is visible in the arithmetic, and together they are the loop that
+took free disk from 17 GB to 2.96 GB in half a minute.
+
+Both are gone. `UncachedFile` opens the payload with `O_RDONLY` and asks for `F_NOCACHE`, reads
+byte ranges with `pread` — not a seek plus a read, so two readers cannot move each other's offset
+— and loops on short reads. `InstallFile` keeps that one descriptor instead of a mapping.
+
+**Verification moved from the open to the read, and `I6` is not weakened by it.** Each payload's
+digest is checked the first time that payload is read, and remembered; a tampered tensor
+therefore still cannot produce plausible numbers, which is the property `I6` asks for. What
+changed is *when* the check costs something: a tensor nobody reads costs nothing, and opening a
+20 GB install is no longer a 20 GB read. `InstallFile(url:verify: true)` and `verifyAll()`
+restore the eager whole-payload check for a gate that wants it stated explicitly.
+
+Six tests cover the reader: uncached and mapped reads return the same bytes, a windowed read
+matches the same window of the whole file, reading past the end is an error rather than zeros,
+the streaming digest matches the one-shot digest, the cached mode is available for files whose
+pages are worth keeping, and a missing file reports an open failure. Four more cover the moved
+verification: a tampered tensor opens fine and throws **when read**, an untouched one still
+reads, `verify: true` catches it at open, and an intact install passes `verifyAll()`.
+
+**What is not done, stated plainly:** the *checkpoint* reader (`SafetensorsFile`) still
+memory-maps its shard, so the streaming path over a safetensors snapshot is page-cached exactly
+as the install was. That is the remaining work on `DC-086`, and the byte-level verification of a
+20 GB install on this node is still outstanding — it needs a machine with headroom, or the
+checkpoint reader fixed first.
