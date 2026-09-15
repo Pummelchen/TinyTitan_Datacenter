@@ -16,6 +16,26 @@ cache hit rate**. One command runs all three on one checkpoint and writes a repo
 | Cache | the engine's expert-traffic counters, written beside each trace in `metrics.json` |
 | Memory | each engine run's **peak resident set size**, from the platform's `/usr/bin/time -l`, because `DC-032`'s gate is a budget and a budget needs a number. It counts clean file-backed pages, so it is an upper bound on the process rather than a claim about private dirty memory |
 
+### The cache hit rate: the cause, and the fix
+
+The gate's third component measured **0 hits over 2240 requests**, and the reason was structural rather
+than statistical: `Qwen3_5Forward.loadLayer` built a fresh `ExpertSlotCache` on **every forward**, and a
+forward runs once per token — so each token began with an empty bank and no expert could ever hit what
+an earlier token had read. A bank that is dropped with the layer is not a bank, and the brief asks for
+*per-layer* LRU slot banks, not per-call ones.
+
+The banks now live in a small reference type held by the forward (`ExpertBanks`), created per layer on
+first use and reused afterwards, so they survive every subsequent token while the rest of a layer's
+weights keep their load-and-release lifetime.
+
+**What is proven:** at fixture scale, the same token run twice gives **0 hits on the first pass** — a
+cold bank cannot hit, which is what keeps the test from passing vacuously — and **hits greater than
+zero on the second**, because the same token routes to the same experts. That is `98` Swift tests.
+
+**What is not yet proven:** the real model's hit rate. The recorded `0.0000` is now **historical**, for
+the same reason `capital`'s digest is — it was measured against banks that did not survive — and
+re-measuring it needs an authorised real-model run, not a fixture.
+
 ## THE GATE, on the real model: one prompt, all three parts
 
 `.venv/bin/python tools/run_m1_gate.py --snapshot <35B> --only capital --max-new-tokens 4`
