@@ -165,6 +165,15 @@ This also means the reference and the engine share a memory strategy — mmap, o
 resident at a time, bf16 storage cast to fp32 at use — which makes them comparable
 without either side needing the whole model in RAM.
 
+**Validated on the real checkpoints (2026-09-15).** `tools/trace_capture.py` has two
+paths: resident, and `--from-disk`, which builds the model on the `meta` device and loads
+one decoder layer at a time. On `Qwen3-0.6B` the two paths produce **bit-identical** traces
+(same digest, 87 tensors), so the streaming loader is the reference rather than an
+approximation of it. On the M0 model `Qwen3.5-2B` — 18 Gated DeltaNet layers, ~9.2 GB of
+fp32 weights — two independent layer-by-layer runs are **bit-identical** (75 tensors,
+digest `72793ffc…`) at a peak RSS of **2.78–3.17 GiB**. The resident path could not have
+produced that trace on this hardware at all, which is the whole argument for D6.
+
 For M4/M5 the same arithmetic applies at a scale (284 B, 3.25 GB of expert reads per
 token) where it does not fit; that stays parked as `B5`/`B7` rather than being solved now.
 

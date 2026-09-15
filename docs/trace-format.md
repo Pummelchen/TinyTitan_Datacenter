@@ -59,6 +59,14 @@ not say which one it came from cannot be used to gate the other.
 4. every discrete decision, compared as an exact sequence — including order, because
    the routed order is part of what a kernel must reproduce.
 
+Before any of that, the two traces must be **comparable**: if both were captured by the
+reference tool and their recorded stacks differ (`transformers`, `torch`, compute and
+weight dtype, attention implementation), the comparison is refused rather than performed.
+Two builds are not two measurements of the same thing, and this is not theoretical — the
+development machine carries an unpinned `transformers 5.16.1` in its system interpreter
+beside the pinned `5.17.0` in the project venv. The check runs *before* the digest
+shortcut, because identical bytes from different builds can still be incomparable.
+
 Exit status is `0` identical, `1` different, `2` unreadable. A discrete mismatch is
 reported even when every float tensor matches, because that is precisely the failure
 mode (I3) where all the numbers look right and the model is wrong.
@@ -71,31 +79,36 @@ tensor is a shape finding rather than a byte diff, a flipped top-k with identica
 is caught by the discrete comparator, missing and extra tensors are both caught, a
 reordered decision set is caught, and a trace edited after capture is refused.
 
-`tools/trace_capture.py` fills a trace from the reference: one forward pass with hooks at
-every layer boundary, fp32 compute, `attn_implementation="eager"`, deterministic
-algorithms, a pinned thread count and seed — all recorded in the trace. It has a `--tiny`
-mode that builds a small random `qwen3` from a config, so the plumbing and the
-reproducibility question were settled without a 4.5 GB download.
+The reference is captured two ways, and they agree:
 
-Measured on that tiny model (4 layers, 64 wide):
-
-| Comparison | Result |
+| Path | What it does |
 | --- | --- |
-| fp32, same configuration, run against run | **bit-identical** — the reference obeys I1 |
-| fp32, 1 thread versus 4 threads | **bit-identical** — measured, not assumed; the real checkpoint re-measures it |
-| fp32 versus bf16 | every element differs, and the absolute divergence grows with depth (1.2e-4 at the embedding → 2.8e-2 at the final norm, on values of scale 2.7) |
+| `capture` (resident) | builds the model and runs it in memory — the straightforward reference |
+| `capture_from_disk` | builds the model on the **meta** device and loads one decoder layer at a time, releasing it after use — the only way an fp32 2 B model fits an 8 GB node (D6) |
 
-The last row is why the gate is bit-exactness rather than a tolerance: relative error on
-these activations reaches 13285% because the values themselves sit near zero, so a
-relative bound is either meaningless or impossible, and no tolerance can see a top-k
-index flip at all.
+**Results on the real checkpoints**, not on a fixture:
 
-Two traces whose recorded reference stacks differ are **refused** rather than compared.
-This is not theoretical: the machine this was developed on carries an unpinned
-`transformers 5.16.1` in its system interpreter and a pinned `5.17.0` in the project venv,
-and a gate that mixed them would report a difference that belongs to the reference, not
-to the engine.
+| Model | Result |
+| --- | --- |
+| `Qwen3-0.6B` (conventional, `qwen3`) | resident and layer-by-layer captures are **bit-identical** — same digest, 87 tensors |
+| `Qwen3.5-2B` (the M0 model, 18 Gated DeltaNet layers) | **two independent runs are bit-identical**, 75 tensors, peak RSS **2.78–3.17 GiB** — for weights that are ~9.2 GB in fp32 and cannot be resident at all |
 
-What is **not** yet done: running the capture against the real checkpoint (it needs the
-memory-mapped per-layer path of `DC-021`), and recording which delta-rule path produced a
-Gated DeltaNet trace (`DC-024`).
+The layer-by-layer capture of the M0 model additionally records what produced it:
+`delta_rule_path: chunked (prefill: one full-sequence forward)`, `linear_attention_layers:
+18`, and `optional_kernels: {causal_conv1d: false, fla: false}` — meaning the reference
+used its own PyTorch fallback rather than a fused kernel. A trace that did not say so
+could not be used to gate the fused path, because the two are not guaranteed to agree.
+
+Two checkpoint facts the tool now refuses to gloss over:
+
+- `Qwen3-0.6B`'s config says `tie_word_embeddings: true` while the file **ships a separate
+  `lm_head.weight`**. The file wins, and when the config claims tying the two tensors must
+  be equal — if they ever disagree, the capture stops rather than guessing which is meant.
+- A checkpoint tensor that no module claims is a hard error, not a warning: an unread
+  tensor is a silent omission.
+
+The capture also demonstrated the reason that guard exists, at its own expense: a forward
+**pre-hook that returns non-None replaces the module's arguments**, and the loader hook was
+returning `load_into`'s tensor count. The first real run failed with an `int` where the
+hidden state should have been — which is exactly the class of bug the harness exists to
+catch, found by running it rather than by reading it.

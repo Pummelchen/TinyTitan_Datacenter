@@ -127,6 +127,56 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual([f.kind for f in report.findings], ["provenance"])
         self.assertIn("not comparable", report.findings[0].detail)
 
+    def test_disk_capture_matches_the_resident_capture(self):
+        """The layer-by-layer path must be numerically identical to the reference's own
+        resident path — that is the whole claim (DC-021). Proven here on a tiny model
+        saved to safetensors, so it runs wherever torch does without a 4.5 GB download;
+        the real checkpoints were compared the same way by hand (Qwen3-0.6B, 87 tensors,
+        identical digest)."""
+        import torch
+
+        model, _config = tc.build_tiny_model(seed=77)
+        saved = self.root / "tiny-saved"
+        model.to(torch.float32).save_pretrained(saved, safe_serialization=True)
+
+        resident_path = self.root / "resident"
+        tc.capture(resident_path, tiny=True, seed=77)
+        disk_path = self.root / "disk"
+        tc.capture_from_disk(disk_path, snapshot_dir=saved)
+
+        resident, disk = tf.read_trace(resident_path), tf.read_trace(disk_path)
+        self.assertEqual(resident.tensor_names, disk.tensor_names)
+        self.assertEqual(
+            resident.digest,
+            disk.digest,
+            "the layer-by-layer loader produced different numbers from the resident model",
+        )
+
+    def test_disk_capture_refuses_a_tensor_no_module_claims(self):
+        """An unread tensor is a silent omission, not a success."""
+        import torch
+        from safetensors.torch import load_file, save_file
+
+        model, _config = tc.build_tiny_model(seed=5)
+        saved = self.root / "tiny-extra"
+        model.to(torch.float32).save_pretrained(saved, safe_serialization=True)
+        tensors = load_file(saved / "model.safetensors")
+        tensors["unclaimed.head.weight"] = torch.zeros(2, 2, dtype=torch.float32)
+        save_file(tensors, saved / "model.safetensors")
+
+        with self.assertRaises(SystemExit) as caught:
+            tc.capture_from_disk(self.root / "disk-extra", snapshot_dir=saved)
+        self.assertIn("no module claimed", str(caught.exception))
+
+    def test_disk_capture_records_the_delta_rule_path(self):
+        """A trace has to say whether fused kernels were in play, because the reference
+        fallback and the fused kernel are not guaranteed to agree (DC-024)."""
+        manifest, _trace = self.capture("c")
+        reference = manifest["reference"]
+        self.assertIn("optional_kernels", reference)
+        self.assertIn("causal_conv1d", reference["optional_kernels"])
+        self.assertIn("fla", reference["optional_kernels"])
+
     def test_mixed_reference_stacks_are_refused(self):
         """Two traces from different reference builds are not two measurements of the
         same thing. Editing the recorded stack is enough to make the comparison
