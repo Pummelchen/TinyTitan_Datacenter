@@ -90,6 +90,10 @@ python3 tools/trace_diff.py .build/ref-trace .build/ref-trace
 # The controlled-order numeric contract (the bit-exactness target) needs numpy.
 .venv/bin/python -c "import sys; sys.path.insert(0,'tools'); import ordered_reference"
 
+# The Gated DeltaNet's chunked delta rule, transcribed from the reference and checked
+# against the reference's own function (needs the venv).
+.venv/bin/python -m unittest discover -s tools -p 'test_ordered_gdn.py'
+
 # Regenerate the golden bit patterns the Swift contract tests assert
 # (tests/DatacenterEngineTests/Fixtures/contract-vectors.json). Run this whenever an op
 # in tools/ordered_reference.py changes, then run `swift test`.

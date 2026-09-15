@@ -132,7 +132,9 @@ tensors of the real checkpoint, of which only 320 are text.
 Two things it forced into the IR, both read from the checkpoint rather than assumed:
 
 - **`attnOutputGate`.** Qwen3.5's `q_proj` is `[4096, 2048]` for 8 heads of 256: twice the
-  query width, because the two halves are `[query | gate]`. The `attn.q` shape contract is
+  query width, because the per-head layout is `[query | gate]` — the projection is viewed as
+  `[tokens, heads, 2·head_dim]` and halved along the last axis, **not** split into all
+  queries then all gates. The `attn.q` shape contract is
   now gate-aware, and `Qwen3_5ImporterTests` asserts that turning the flag off makes the
   real checkpoint fail validation — which is what makes the flag load-bearing rather than
   decorative.

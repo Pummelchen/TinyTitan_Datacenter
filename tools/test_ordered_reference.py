@@ -16,11 +16,28 @@ import unittest
 try:
     import numpy as np
 
-    import ordered_reference as ref
-
     HAVE_NUMPY = True
 except ImportError:  # the repository gates run without packages installed
     HAVE_NUMPY = False
+    np = None
+
+MODULE_ERROR = ""
+
+# Imported separately from numpy so a path problem cannot masquerade as a missing
+# package: the first run of these tests reported "numpy is not installed" when the real
+# cause was `tools/` not being on sys.path.
+if HAVE_NUMPY:
+    try:
+        import ordered_reference as ref
+
+        HAVE_REFERENCE = True
+    except ImportError as error:
+        HAVE_REFERENCE = False
+        MODULE_ERROR = str(error)
+else:
+    HAVE_REFERENCE = False
+    MODULE_ERROR = "numpy is not installed"
+
 
 try:
     import torch  # noqa: F401
@@ -32,7 +49,7 @@ except Exception:
 NUMPY_REASON = "numpy is not installed in this interpreter; the contract needs it, so run with .venv/bin/python"
 SKIP_REASON = "torch is not installed in this interpreter; run with .venv/bin/python"
 
-numpy_required = unittest.skipUnless(HAVE_NUMPY, NUMPY_REASON)
+numpy_required = unittest.skipUnless(HAVE_REFERENCE, NUMPY_REASON + ": " + MODULE_ERROR)
 
 
 @numpy_required

@@ -49,9 +49,12 @@ def ordered_matmul(x: np.ndarray, w: np.ndarray) -> np.ndarray:
     """
     x = f32(x)
     w = f32(w)
-    out = np.zeros((*x.shape[:-1], w.shape[0]), dtype=np.float32)
+    # Leading axes broadcast, so the same contract serves a 2-D projection and the
+    # per-head, per-chunk contractions of the delta rule. The reduction is over the last
+    # axis of both operands and is always in ascending order.
+    out = np.zeros((*x.shape[:-1], w.shape[-2]), dtype=np.float32)
     for k in range(x.shape[-1]):
-        out = f32(out + f32(x[..., k, None] * w[None, :, k]))
+        out = f32(out + f32(x[..., k, None] * w[..., None, :, k]))
     return out
 
 

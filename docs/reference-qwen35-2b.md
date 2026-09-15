@@ -122,20 +122,103 @@ assumed a bare query would have rejected the checkpoint, and a guess about which
 the gate would have produced a plausible, wrong forward pass. The **layout** (`[query |
 gate]`) is established by the shape; the **application order** is still on the list below.
 
-## Still to extract before the GDN kernel is written — do not guess these
+## The attention output gate, exactly (`Qwen3_5Attention.forward:776`)
 
-- the intra-chunk algorithm in full: `chunk_size=64` is known, but the decay masking,
-  the `ut_system` construction (`:399`–`:403`), the `torch.eye` regularisation and the
-  chunk-level state update order are not yet transcribed;
-- the exact `l2norm` (`:294`, "aligns with the FLA implementation") epsilon and reduction;
-- how `causal_conv1d_fn` (`:270`) treats the `padding = kernel_size - 1` at sequence
-  boundaries, and the prefill/decode split between `causal_conv1d_fn` and
-  `causal_conv1d_update` (`:250`);
-- `Qwen3_5Attention:749` in full — QK-norm placement, and **where the output gate is
-  applied** (before or after `o_proj`, and whether it is `sigmoid`): the checkpoint proves
-  the gate exists and where it is stored, not how it is used. The `qwen3` contract's
-  equivalent is known and is *not* assumed to carry over;
-- `Qwen3_5TextRotaryEmbedding:143` and how the full-attention layers apply RoPE here;
-- the fp32 islands: `A_log` and the gated `norm` are stored fp32 while their neighbours are
-  bf16, and the reference's own dtype boundaries around them are not yet transcribed;
-- the MTP head wiring — present in the checkpoint, deliberately out of M0's scope.
+```python
+query_states, gate = torch.chunk(self.q_proj(hidden).view(*shape, -1, self.head_dim * 2), 2, dim=-1)
+...
+attn_output = attn_output.reshape(*shape, -1)
+attn_output = attn_output * torch.sigmoid(gate)      # :819
+attn_output = self.o_proj(attn_output)               # :821
+```
+
+Two facts, both easy to get wrong:
+
+- The split is **per head, along the last axis**. The projection's output is viewed as
+  `[tokens, heads, 2·head_dim]` and halved into `(query, gate)` of `[tokens, heads,
+  head_dim]` each. It is **not** a global `[all queries | all gates]` split: that reading
+  produces identical shapes and a wrong model.
+- The gate multiplies the attention output **after** attention and **before** `o_proj`,
+  through a `sigmoid`, on the already-reshaped `[tokens, heads·head_dim]` tensor.
+
+QK-norm is unchanged from `qwen3`: applied to the per-head `[tokens, heads, head_dim]`
+view, on the head dim only, and to query and key but not value (`:791`–`:792`).
+
+## The Gated DeltaNet layer, transcribed (`Qwen3_5GatedDeltaNet.forward:550`)
+
+| Step | What happens | Line |
+| --- | --- | --- |
+| 1 | `mixed_qkv = in_proj_qkv(x)` then `.transpose(1, 2)` → `[B, 6144, S]` | `:562` |
+| 2 | `z = in_proj_z(x).reshape(B, S, 16, 128)` — the output gate, per value head | `:566` |
+| 3 | `b = in_proj_b(x)`, `a = in_proj_a(x)` — both `[B, S, 16]` | `:570` |
+| 4 | depthwise causal conv: weight `[6144, 1, 4]`, **bias is None**, `padding = 3`, truncate to `S`, then **silu** | `:588`, `:270` |
+| 5 | split the 6144 channels into `q`, `k` (2048 each) and `v` (2048) → `[B, S, 16, 128]` | `:597` |
+| 6 | `beta = b.sigmoid()` — in the **model dtype** (bf16), not fp32 | `:610` |
+| 7 | `g = -exp(A_log.float()) * softplus(a.float() + dt_bias)` — **fp32**, and the negation is outside the exponential | `:612` |
+| 8 | the chunked delta rule, `chunk_size=64`, `use_qk_l2norm_in_kernel=True` | `:633` |
+| 9 | gated RMSNorm over the value head dim, gate `z` | `:648` |
+| 10 | `out_proj` | `:651` |
+
+`num_v_heads // num_k_heads` is 1 here, so the `repeat_interleave` at `:613`–`:615` does
+nothing in this model — it is written down because a family that needs it would otherwise
+be silently mis-ported.
+
+## The chunked delta rule, in order (`torch_chunk_gated_delta_rule:301`)
+
+1. transpose to `[B, H, S, D]` and cast **fp32** (`:330`);
+2. `l2norm` query and key over the last dim, then `query *= D^-0.5` (`:337`, `:342`);
+3. pad `S` up to a multiple of `chunk_size` with zeros (`:345`);
+4. `v_beta = v * beta`, `k_beta = k * beta` (`:354`);
+5. reshape into chunks of 64; `cum_decay = decay.cumsum(dim=3)` (`:364`);
+6. `pairwise_decay = exp(cum_decay_i − cum_decay_j)`, with the strictly-upper triangle set
+   to `-inf` **before** the `exp` (`:367`–`:369`);
+7. `ut_system = (k_beta @ kᵀ) * pairwise_decay`, `intra_chunk_attn = (q @ kᵀ) *
+   pairwise_decay`, `decayed_k_beta = k_beta * exp(cum_decay)` (`:372`–`:374`);
+8. `new_values = solve_triangular(ut_system, v_beta, upper=False, unitriangular=True)`,
+   `k_cumdecay = solve_triangular(ut_system, decayed_k_beta, …)` (`:381`–`:382`) — a forward
+   substitution, since the system is unit lower triangular. The exported-graph path at
+   `:384`–`:390` builds the same inverse by substitution and adds the identity; the two
+   agree, and the *order* of the substitution is the thing to fix in the contract;
+9. `query *= exp(cum_decay)`, `key *= exp(cum_decay[-1] − cum_decay)`, `chunk_decay =
+   exp(cum_decay[-1])` (`:396`–`:398`);
+10. per chunk, in sequence (`:402`–`:410`):
+    ```
+    v_new    = new_values[i] − k_cumdecay[i] @ S
+    out[i]   = query[i] @ S + intra_chunk_attn[i] @ v_new
+    S        = S * chunk_decay[i] + key[i]ᵀ @ v_new
+    ```
+
+The initial state is zeros unless one is supplied (`:392`), and the final state is returned
+only when asked for (`:412`).
+
+`l2norm:294` is `x * rsqrt((x·x).sum(-1, keepdim=True) + 1e-6)` — epsilon `1e-6`, and the
+reference's own comment notes FLA computes `x / sqrt(…)` instead, so the two differ in the
+last bits by construction.
+
+## The gated RMSNorm, in order (`Qwen3_5RMSNormGated:225`)
+
+```python
+hidden  = hidden.to(torch.float32)
+variance = hidden.pow(2).mean(-1, keepdim=True)
+hidden  = hidden * torch.rsqrt(variance + eps)     # eps = 1e-6
+hidden  = weight * hidden.to(input_dtype)          # ← cast back to bf16 BEFORE the weight
+hidden  = hidden * silu(gate.to(torch.float32))    # ← gate activated in fp32
+return hidden.to(input_dtype)
+```
+
+The two orderings are the whole point of the class: the normalised value is rounded to
+bf16 **before** the weight multiply, and the gate is activated in fp32 **after** it.
+
+## Still to extract — do not guess these
+
+- `Qwen3_5TextRotaryEmbedding:143` and how the full-attention layers apply RoPE here: the
+  `qwen3` contract's rotate-half is **not** assumed to carry over, and there is a
+  `recomposition_frequencies` at `:204` that `qwen3` has no equivalent for;
+- the prefill/decode split between `causal_conv1d_fn:270` and `causal_conv1d_update:250` —
+  M0 has no cache, so the prefill path is the one to port first, but the conv state's
+  `state_len` handling at `:265` needs transcribing before any cache exists;
+- `torch_recurrent_gated_delta_rule:438`, the single-token path: it is *not* the chunked
+  rule with `chunk_size=1`, and M1 needs it;
+- the MTP head wiring — present in the checkpoint, deliberately out of M0's scope;
+- `apply_mask_to_padding_states:237` only matters with a padded batch, which M0 does not
+  have.
