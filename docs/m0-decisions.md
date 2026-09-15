@@ -90,6 +90,19 @@ Reference harness configuration: `torch.float32` compute, `attn_implementation="
 `torch.use_deterministic_algorithms(True)`, thread count pinned, model revision pinned,
 prompt set frozen, every one of those recorded in the trace header.
 
+**Measured 2026-09-15**, on a tiny `qwen3` built from a config (4 layers, 64 wide, no
+download — the plumbing and the reproducibility question settled before the checkpoint is
+fetched): two captures of the same input with the same configuration are **bit-identical**,
+and one thread versus four threads produced the **same bytes**. The thread count is still
+pinned and recorded — the real checkpoint re-measures it, and a fact about a 164k-parameter
+model is not a licence to assume it at 2 B.
+
+The same experiment quantifies what a tolerance would have cost: bf16 and fp32 differ in
+**every element**, with the absolute divergence growing through the stack (1.2e-4 at the
+embedding, 2.8e-2 at the final norm on values of scale 2.7), while *relative* error reaches
+13285% because those activations sit near zero. A relative bound is therefore both
+unmeasurable and blind — it cannot see a top-k index flip at all.
+
 ---
 
 ## D4 — Reduction canon (delegated: best technical decision)

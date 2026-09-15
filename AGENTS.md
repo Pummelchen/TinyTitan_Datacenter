@@ -84,6 +84,9 @@ uv pip install --python .venv/bin/python -r tools/requirements-coreml.txt
 python3 tools/make_synthetic_trace.py .build/ref-trace
 python3 tools/trace_diff.py .build/ref-trace .build/ref-trace
 
+# The reference-side capture needs torch, which lives in the venv: run it there.
+.venv/bin/python tools/trace_capture.py .build/tiny-trace --tiny
+
 # The reference implementation that produces golden traces. Pinned exactly: a
 # trace is only comparable to another captured from the same transformers build.
 uv pip install --python .venv/bin/python -r tools/requirements-reference.txt

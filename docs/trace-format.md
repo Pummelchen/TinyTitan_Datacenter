@@ -71,5 +71,31 @@ tensor is a shape finding rather than a byte diff, a flipped top-k with identica
 is caught by the discrete comparator, missing and extra tensors are both caught, a
 reordered decision set is caught, and a trace edited after capture is refused.
 
-What is **not** yet done: the torch-side capture tool that fills a trace from the real
-model, and the end-to-end bit-match against a conventional model (`DC-024`, `DC-028`).
+`tools/trace_capture.py` fills a trace from the reference: one forward pass with hooks at
+every layer boundary, fp32 compute, `attn_implementation="eager"`, deterministic
+algorithms, a pinned thread count and seed — all recorded in the trace. It has a `--tiny`
+mode that builds a small random `qwen3` from a config, so the plumbing and the
+reproducibility question were settled without a 4.5 GB download.
+
+Measured on that tiny model (4 layers, 64 wide):
+
+| Comparison | Result |
+| --- | --- |
+| fp32, same configuration, run against run | **bit-identical** — the reference obeys I1 |
+| fp32, 1 thread versus 4 threads | **bit-identical** — measured, not assumed; the real checkpoint re-measures it |
+| fp32 versus bf16 | every element differs, and the absolute divergence grows with depth (1.2e-4 at the embedding → 2.8e-2 at the final norm, on values of scale 2.7) |
+
+The last row is why the gate is bit-exactness rather than a tolerance: relative error on
+these activations reaches 13285% because the values themselves sit near zero, so a
+relative bound is either meaningless or impossible, and no tolerance can see a top-k
+index flip at all.
+
+Two traces whose recorded reference stacks differ are **refused** rather than compared.
+This is not theoretical: the machine this was developed on carries an unpinned
+`transformers 5.16.1` in its system interpreter and a pinned `5.17.0` in the project venv,
+and a gate that mixed them would report a difference that belongs to the reference, not
+to the engine.
+
+What is **not** yet done: running the capture against the real checkpoint (it needs the
+memory-mapped per-layer path of `DC-021`), and recording which delta-rule path produced a
+Gated DeltaNet trace (`DC-024`).

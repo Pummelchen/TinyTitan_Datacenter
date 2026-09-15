@@ -105,8 +105,40 @@ def _element_count(shape) -> int:
     return count
 
 
+def _reference_signature(trace: Trace) -> tuple | None:
+    """What produced this trace, when that is a reference stack we can compare.
+
+    A trace captured by transformers 5.16.1 and one captured by 5.17.0 are not two
+    measurements of the same thing, and a gate that mixes them reports a difference
+    that has nothing to do with the engine. Engine traces carry no such stack, so
+    they are exempt.
+    """
+    reference = trace.manifest.get("reference") or {}
+    if reference.get("tool") != "trace_capture":
+        return None
+    return (
+        reference.get("transformers"),
+        reference.get("torch"),
+        reference.get("compute_dtype"),
+        reference.get("weight_dtype"),
+        reference.get("attn_implementation"),
+    )
+
+
 def compare(reference: Trace, candidate: Trace, stop_at_first_float: bool = True) -> Report:
     report = Report(reference=str(reference.root), candidate=str(candidate.root))
+
+    # Comparability first, and before the digest shortcut: two traces from different
+    # reference builds can have identical bytes and still not be two measurements of
+    # the same thing.
+    left, right = _reference_signature(reference), _reference_signature(candidate)
+    if left is not None and right is not None and left != right:
+        report.add(
+            "provenance",
+            "reference stack",
+            f"reference {left}, candidate {right} — these traces are not comparable",
+        )
+        return report
 
     if reference.digest == candidate.digest:
         report.digest_shortcut = True
