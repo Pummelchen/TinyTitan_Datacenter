@@ -152,6 +152,10 @@ python3 tools/make_qwen35_fixture.py \
 .venv/bin/python tools/measure_quantization.py \
     --snapshot .build/hf-cache/models--Qwen--Qwen3.5-2B/snapshots/<revision> --spec .build/spec-2b.json
 
+# M1's validation model: read the inventory from the shard headers and map it.
+# No weights are downloaded — the index lists the names and each shard's header the shapes.
+.venv/bin/python tools/make_qwen36_fixture.py Qwen/Qwen3.6-35B-A3B
+
 # The reference implementation that produces golden traces. Pinned exactly: a
 # trace is only comparable to another captured from the same transformers build.
 uv pip install --python .venv/bin/python -r tools/requirements-reference.txt

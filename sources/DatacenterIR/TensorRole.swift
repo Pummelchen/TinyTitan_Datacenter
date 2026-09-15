@@ -36,8 +36,20 @@ public enum TensorRole: String, Codable, Sendable, CaseIterable {
     case mlpUp = "mlp.up"
     case mlpDown = "mlp.down"
 
-    // Mixture of experts (M1+)
+    // Mixture of experts (M1+).
+    //
+    // Two layouts, and the difference matters: a *checkpoint* stores the experts stacked
+    // into one tensor per projection (`experts.gate_up_proj` is `[experts, 2·inter, hidden]`
+    // with the gate and up halves fused), while the *install* L3 produces stores them
+    // per role. Both are described here rather than one being reshaped into the other by an
+    // importer, because an importer is a name-to-role map and reshaping is a transform pass.
     case routerLogits = "router.logits"
+    /// `[experts, 2·moe_intermediate, hidden]`: gate and up fused, stacked.
+    case expertGateUpStack = "expert.stack_gate_up"
+    /// `[experts, hidden, moe_intermediate]`.
+    case expertDownStack = "expert.stack_down"
+    /// `[1, hidden]`: the scalar gate on the shared expert's output.
+    case sharedExpertGateScalar = "expert.shared.scalar"
     case expertGate = "expert.gate"
     case expertUp = "expert.up"
     case expertDown = "expert.down"
@@ -94,6 +106,15 @@ public extension TensorRole {
             return [config.intermediateSize, config.hiddenSize]
         case .mlpDown:
             return [config.hiddenSize, config.intermediateSize]
+
+        case .expertGateUpStack:
+            guard let experts = config.numExperts, let width = config.moeIntermediateSize else { return nil }
+            return [experts, 2 * width, config.hiddenSize]
+        case .expertDownStack:
+            guard let experts = config.numExperts, let width = config.moeIntermediateSize else { return nil }
+            return [experts, config.hiddenSize, width]
+        case .sharedExpertGateScalar:
+            return [1, config.hiddenSize]
 
         case .expertGate, .expertUp, .sharedExpertGate, .sharedExpertUp:
             guard let width = config.moeIntermediateSize else { return nil }
