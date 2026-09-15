@@ -123,6 +123,41 @@ floating-point operation is one multiply, and it has no summation at all, so the
 does not even apply to it. It is the Metal kernel least able to argue with the contract, which makes
 it the right one to prove the toolchain, the test harness and the fast-math discipline on.
 
+## The GPU flushes denormals, which is a decision and not a bug
+
+`DC-087` began as "the Metal unpack disagrees with the CPU" and ends as a constraint on every kernel
+this project will write.
+
+The hunt, in order, because two of my three guesses were wrong:
+
+| guess | verdict |
+| --- | --- |
+| a partly filled final group | **wrong** — a diagnostic grid of twenty-four shapes showed full groups failing too |
+| the group-index arithmetic | **wrong** — it agrees with the CPU on 127 of 128 values in the shape that fails |
+| denormal operands | **right** |
+
+In the one failing shape, `columns = 64, group = 1, rows = 2`, exactly **one value of 128** differs:
+index 117, where the GPU returns `0.0` and the CPU returns `2.6e-37`. That value's *scale* is a
+**denormal** — the CPU computes `(5 - 41) * scale` with `scale ≈ -7e-39`, below the fp32 normal
+floor — and **Metal flushes denormal operands to zero**. Every other value in the shape, and every
+value in the other twenty-three shapes, is normal and bit-identical.
+
+The consequence is not about the unpack. **Metal cannot reproduce the fp32 contract bit-for-bit
+wherever an operand is denormal**, and quantized scales are exactly the kind of quantity that lands
+there. `I1` and `I2` are defined on output bytes, so this is a decision to make rather than a defect
+to fix:
+
+- **Either** the contract flushes denormals on the CPU as well, which makes the two agree by
+  defining the flush into the contract — a renegotiation, needing the oracle re-validated against
+  it and its own measurement;
+- **or** the GPU is used only for ops where denormals cannot arise, which for a faithful port of
+  fp32 arithmetic is close to nowhere, and Metal's role becomes the element-wise ops whose
+  *operands* are known normal.
+
+Until that is decided the kernel is not called by anything. The task's Done-when has been rewritten
+to the achievable claim rather than quietly dropped, and the diagnostic that found this stays in the
+suite — "which shapes disagree" is the first question about the next kernel too.
+
 ## D8 — The chunked Gated DeltaNet rule is authoritative, and a cache is a second numeric path
 
 **Decided:** the cache's decode arithmetic is built so that it agrees with the **chunked** rule,
