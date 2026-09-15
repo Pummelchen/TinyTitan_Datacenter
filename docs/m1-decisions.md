@@ -542,5 +542,14 @@ one-slot-per-layer bank will still hit rarely, so the honest options are:
 3. **keep banks only for a window of layers** (the per-layer LRU evicts whole layers), which bounds
    memory but only hits when consecutive tokens reuse a layer's expert, which they do not.
 
+**The constraint is now a test, not a paragraph.** `tests/DatacenterEngineTests/SlotBudgetTests.swift`
+does this arithmetic on the checkpoint's geometry and asserts the total against the brief's own
+hardware limit, `~4.5 GB` usable per node. It fails today — `8053063680` against `4500000000`, which
+XCTest reports in full — and it is marked `XCTExpectFailure` with `D12`'s reasoning, so that the number
+is visible to anybody who runs the suite without reading this page, the suite stays honestly green
+(a known-unmet constraint recorded as met would be a lie), and **the day the bank is sized from a
+budget that test reports an unexpected pass**, which forces the marker to be removed deliberately
+instead of quietly left behind.
+
 This is open, and it is the operator's call because it trades RAM against hit rate on a node whose RAM
 limit has already caused two panics.
