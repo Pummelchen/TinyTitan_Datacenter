@@ -279,6 +279,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("out", type=Path, help="trace directory to write")
     parser.add_argument("--tokens", required=True, help="comma-separated token ids")
     parser.add_argument("--model", default="", help="model id recorded in the manifest")
+    parser.add_argument(
+        "--max-new-tokens", type=int, default=0,
+        help="generate this many tokens greedily and record them as a discrete decision",
+    )
     parser.add_argument("--revision", default="", help="source revision recorded in the manifest")
     args = parser.parse_args(argv)
 
@@ -286,14 +290,26 @@ def main(argv: list[str] | None = None) -> int:
     model = OrderedQwen3(args.snapshot)
     captured = model.forward(tokens)
 
+    # The same loop the engine uses, including the shape of the last pass: forward, sample,
+    # append, forward again. Both sides therefore trace the *same* computation rather than
+    # two computations that happen to end at the same token.
+    generated: list[int] = []
+    for _ in range(args.max_new_tokens):
+        generated.append(int(np.argmax(captured["logits"][-1])))
+        tokens = tokens + [generated[-1]]
+        captured = model.forward(tokens)
+
     tensors = [(name, "f32", values.shape, values.tobytes()) for name, values in captured.items()]
     manifest = trace_format.write_trace(
         args.out,
         tensors=tensors,
+        discrete=[("generated.tokens", [len(generated)], generated)],
         model={"id": args.model, "revision": args.revision, "compute": "fp32", "contract": "ordered_reference.py"},
         prompt={"tokens": [int(t) for t in tokens]},
         producer="ordered-reference-python",
     )
+    if generated:
+        print("generated: " + ",".join(str(t) for t in generated))
     print(f"wrote {args.out}: {len(tensors)} tensors, digest {manifest['digest'][:16]}…")
     return 0
 

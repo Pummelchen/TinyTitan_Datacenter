@@ -127,6 +127,36 @@ Two details worth keeping in mind when reading a trace:
   skipped the comparison without one of them would be a gate that reports success without
   looking.
 
+## Discrete decisions live beside the numbers
+
+The manifest's `discrete` section carries the decisions that a tolerance cannot express:
+generated token ids, and later router top-k sets and sparse-attention block selections.
+They are compared as **index sets** (I3) and they are part of the digest, so two traces
+that generated different tokens are different traces however identical their tensors are —
+which is asserted directly in `tests/DatacenterEngineTests/GenerationTests.swift`.
+
+`datacenter-generate` runs greedy decoding and records the tokens it produced. M0 has **no
+KV cache**: every step re-runs the whole sequence, because a cache is a second numeric path
+through attention and M0's job is to establish one correct path before there are two. Speed
+is M1's gate, and the current speed is recorded rather than excused.
+
+Measured on `Qwen/Qwen3-0.6B`, prompt `"The capital of France is"`, 8 new tokens,
+greedy, fp32, `-O`:
+
+```
+prompt:    'The capital of France is'
+generated: ' Paris. The capital of Italy is Rome'
+```
+
+| | |
+| --- | --- |
+| Generated token ids | engine == contract, **exact** — `[12095, 13, 576, 6722, 315, 15344, 374, 21718]` |
+| Trace | 87 tensors + 1 discrete decision, `IDENTICAL`, digest `5f19edf2…` |
+| Speed | 35.9 s over 8 steps, slowest 6.1 s (full-sequence re-forward, no cache) |
+
+`tools/check_engine_generation.py` reruns that claim and prints the decoded text, so the
+evidence for "it generates coherent text" is a command rather than a quotation.
+
 **Results on the real checkpoints**, not on a fixture:
 
 | Model | Result |

@@ -39,6 +39,14 @@ public struct TraceWriter {
         public var name: String
         public var shape: [Int]
         public var values: [Int]
+
+        // Explicit, because a synthesised memberwise initialiser is internal: the engine
+        // is a library and its callers live in other modules.
+        public init(name: String, shape: [Int], values: [Int]) {
+            self.name = name
+            self.shape = shape
+            self.values = values
+        }
     }
 
     public struct Manifest: Codable, Sendable {

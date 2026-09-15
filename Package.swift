@@ -43,6 +43,11 @@ let package = Package(
             name: "datacenter-trace",
             dependencies: ["DatacenterEngine", "DatacenterIR"],
             path: "sources/DatacenterTrace"
+        ),
+        .executableTarget(
+            name: "datacenter-generate",
+            dependencies: ["DatacenterEngine", "DatacenterIR"],
+            path: "sources/DatacenterGenerate"
         )
     ]
 )
