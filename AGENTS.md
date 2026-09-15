@@ -48,11 +48,11 @@ status live in the wiki.
 
 ## Conventions
 
-- **Swift**, once code lands: Swift 6 language mode with the **6.3.3 standard** as
-  the target, `swift-tools-version:6.3`, and no architectural changes to imported
-  models. `tests/` mirrors `sources/` path for path. The sister project's
-  `docs/swift-language-standard.md` is the reference for which upcoming features are
-  enabled and which are deliberately not.
+- **Swift 6.4 on Xcode 27**, once code lands: `swift-tools-version:6.4`, the Swift 6
+  language mode, and no architectural changes to imported models. `tests/` mirrors
+  `sources/` path for path. The language-feature register — which upcoming features
+  are enabled, which are deliberately not, and what each costs in diagnostics — is
+  `DC-015`, modelled on the sister project's `docs/swift-language-standard.md`.
 - **Models**: faithful ports only. A new family costs an importer (a pure
   name-to-role map) plus whatever kernel work its attention genuinely needs.
 - **Commits**: imperative subject; the body explains *why*, not *what*. Work lands on

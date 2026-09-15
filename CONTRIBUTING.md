@@ -46,11 +46,10 @@ and in the tracker, with the measurement that forced it. That record is the poin
 
 ## Style
 
-- **Swift** (when code lands): Swift 6 language mode with the **6.3.3 standard** as
-  the target and `swift-tools-version:6.3`. `sources/` holds one directory per
-  target, `tests/` mirrors it path for path, and no architectural change is made to
-  an imported model — all speed comes from sharding, expert repacking and
-  quantization.
+- **Swift 6.4 on Xcode 27** (when code lands): `swift-tools-version:6.4` and the
+  Swift 6 language mode. `sources/` holds one directory per target, `tests/` mirrors
+  it path for path, and no architectural change is made to an imported model — all
+  speed comes from sharding, expert repacking and quantization.
 - **Markdown**: wrapped, tables for structure, no trailing whitespace.
 - **Commits**: an imperative subject line, and a body that explains *why*.
 
