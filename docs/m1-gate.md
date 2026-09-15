@@ -331,3 +331,31 @@ The curve for one skewed routing sequence (24 steps, 8 experts, top-k shaped) is
 which is the number my first version of the test got wrong, not the engine. A fixture this small says
 nothing about the real model's routing, and it is not meant to: it says the mechanism honours its own
 contract, so that when the real sweep prints a curve, the curve means something.
+
+## Running the sweep
+
+The sweep is a script, not a sequence typed from memory, because it is a heavy run on a node that has
+panicked twice while doing heavy things:
+
+```bash
+python3 tools/run_m1_sweep.py \
+    --snapshot .build/m1-install --tokens 1,2,3,4,5 \
+    --binary .build/release/datacenter-trace \
+    --slots 2,8,16 --out .build/m1-sweep
+
+python3 tools/run_m1_sweep.py ... --dry-run     # the plan and the preconditions, nothing executed
+```
+
+**It refuses before it starts**, on the two conditions that preceded both panics:
+
+- `tools/check_disk_headroom.py`'s 5 GB floor, consulted through `require_headroom`, which also refuses
+  when the watchdog has left a stop marker — a run that tripped the limit must not resume by itself;
+- **swap already in use** above `--swap-used-limit-gb` (default 1.0), because a machine well into swap
+  is not the machine to start a 35 B run on. Reported always, so the number is in the log either way.
+
+Each bank size is a separate process (`SHARD_EXPERT_SLOTS=<n>`), which is what a sweep needs, and the
+per-run `metrics.json` is collected into `.build/m1-sweep/sweep.json` with a printed table. The metrics
+file's schema is **read, not assumed**: the expert figures are extracted wherever they appear, in
+document order — a LIFO walk reversed "the last layer's figure wins" and its own test caught that. Seven
+tests cover the refusals, the disk-floor consultation, the command shape against the CLI's own usage
+line, the dry run executing nothing, and the metrics reading.
