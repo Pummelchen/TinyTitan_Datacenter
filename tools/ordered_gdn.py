@@ -84,6 +84,87 @@ def gated_rms_norm(hidden: np.ndarray, gate: np.ndarray, weight: np.ndarray, eps
     return f32(normalised * silu(gate))
 
 
+def recurrent_gated_delta_rule(
+    query: np.ndarray,
+    key: np.ndarray,
+    value: np.ndarray,
+    decay: np.ndarray,
+    beta: np.ndarray,
+    initial_state: np.ndarray | None = None,
+    use_l2norm: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
+    """`torch_recurrent_gated_delta_rule:440` — the **decode** path, one step at a time.
+
+    This is the other half of the reference's Gated DeltaNet, and the reason a cache is a second
+    numeric path rather than a free speedup: `Qwen3_5MoeGatedDeltaNet.forward:625` calls *this*
+    when `use_precomputed_states and seq_len == 1`, and `chunk_gated_delta_rule` otherwise. The
+    two are algebraically equivalent and not bit-identical, because the chunked rule groups its
+    sums over a chunk of 64 positions while this accumulates one step at a time.
+
+    Transcribed per line, because the order *is* the arithmetic:
+
+        decay_t = decay[..., i].exp()
+        state   = state * decay_t
+        kv_mem  = (state * k_t).sum(dim=-2)
+        delta   = (v_t - kv_mem) * beta_t
+        state   = state + k_t ⊗ delta
+        out     = (state * q_t).sum(dim=-2)
+
+    Shapes follow the chunked rule's convention, which is the reference's: `query`/`key` are
+    `[batch, length, heads, k_head_dim]`, `value` is `[batch, length, heads, v_head_dim]`,
+    `decay`/`beta` are `[batch, length, heads]`, and the state is `[batch, heads, k_head_dim,
+    v_head_dim]`. (The reference transposes to `[batch, heads, length, …]` internally and hands
+    the state back in the `[batch, heads, k, v]` layout, which is what a cache stores.)
+
+    The reference casts to fp32 before the loop and normalises query and key there too, so the
+    whole of this runs in fp32. Getting the axis order wrong is not a shape error in numpy — a
+    transposed rule runs happily and returns different numbers — so the test pins it against the
+    reference's own function rather than against a shape.
+    """
+    query = f32(query)
+    key = f32(key)
+    value = f32(value)
+    beta = f32(beta)
+    decay = f32(decay)
+    batch, length, heads, key_dim = query.shape
+    value_dim = value.shape[-1]
+
+    if use_l2norm:
+        query = l2norm(query)
+        key = l2norm(key)
+
+    # "And always normalize queries by the head dimension" — unconditional, after the l2norm:
+    #
+    #     query = query / (query.shape[-1] ** 0.5)
+    #
+    # Missing this line left the output out by a constant factor, which is exactly the shape of
+    # bug that looks like a numerical difference rather than a mistake.
+    query = f32(query / np.float32(query.shape[-1] ** 0.5))
+
+    if initial_state is None:
+        state = np.zeros((batch, heads, key_dim, value_dim), dtype=np.float32)
+    else:
+        state = f32(initial_state)
+    output = np.zeros((batch, length, heads, value_dim), dtype=np.float32)
+
+    for position in range(length):
+        q_t = query[:, position]
+        k_t = key[:, position]
+        v_t = value[:, position]
+        # The decay multiplies the whole state before anything else touches it.
+        decay_t = exp32(decay[:, position])[..., None, None]
+        state = f32(state * decay_t)
+        beta_t = beta[:, position][..., None]
+        # `(state * k_t).sum(dim=-2)`: the reduction is over the key dimension, in ascending
+        # order, which is what `ordered_sum` does and what numpy's own `sum` does not promise.
+        kv_memory = ordered_sum(f32(state * k_t[..., None]), axis=-2)
+        delta = f32((v_t - kv_memory) * beta_t)
+        state = f32(state + f32(k_t[..., None] * delta[..., None, :]))
+        output[:, position] = ordered_sum(f32(state * q_t[..., None]), axis=-2)
+
+    return output, state
+
+
 def chunk_gated_delta_rule(
     query: np.ndarray,
     key: np.ndarray,

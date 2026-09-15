@@ -294,10 +294,23 @@ else:
     core_attn_out, last_recurrent_state = torch_chunk_gated_delta_rule(...)       # prefill
 ```
 
-The two functions are algebraically equivalent and **not bit-identical**: the chunked rule groups
-its sums over a chunk of 64 positions and the recurrent one accumulates a step at a time, so the
-associations differ. The reference therefore does **not** produce the same bytes with and without
-a cache — the path depends on `seq_len == 1` and on a precomputed state.
+**Measured, and it is worse than "not bit-identical": the reference's two paths disagree by 3.4
+relative on identical inputs** — the same inputs through `torch_chunk_gated_delta_rule` and
+`torch_recurrent_gated_delta_rule`, in this pinned version, differ completely. Our own
+transcription of the recurrent rule agrees with our chunked rule to **3.2e-07** relative, and our
+chunked rule is the one M0 validated against the reference's chunked function, so the
+discrepancy is between the reference's two functions rather than between ours.
+
+That is a question for the reference, not something to guess past (the working agreement is
+explicit: *"When a reference implementation is ambiguous, say so and ask"*). Until it is settled,
+the decode arithmetic has two candidate meanings and a cache cannot be called faithful to either
+by assumption. `tools/test_ordered_gdn_recurrent.py` records both facts: the transcription's
+agreement with our chunked path passes, and the comparison against the reference's recurrent
+function is an **expected failure** carrying this reason — it removes itself if the discrepancy
+turns out to be ours.
+
+What remains true either way: the two paths are algebraically equivalent, so a cache is a
+different numeric path rather than a different model.
 
 Three consequences for M1, and they are decisions rather than accidents:
 
