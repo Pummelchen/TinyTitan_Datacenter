@@ -33,6 +33,9 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
+from check_disk_headroom import require_headroom  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).parent))
 
 GROUP = 64
 # How much of a tensor to hold at once, in fp32 bytes. Sixty-four megabytes is an order of
@@ -378,6 +381,9 @@ def build_install(snapshot: Path, install: Path, spec: dict, policy: dict, polic
     The source is shard-aware. Taking the first shard — which this did — builds an install that
     is missing five sixth of a sharded model's layers and reports success.
     """
+    # A 67 GB checkpoint and a 20 GB install will not fit under the floor, and exhausting the
+    # disk here means exhausting swap, which panicked this machine twice.
+    require_headroom(purpose="the install build")
     from safetensors_source import SafetensorsSource
 
     handle = SafetensorsSource(snapshot)

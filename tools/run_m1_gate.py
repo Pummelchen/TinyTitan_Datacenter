@@ -33,6 +33,8 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tools"))
+from check_disk_headroom import require_headroom  # noqa: E402
 PROMPTS = ROOT / "tools" / "m1_prompts.json"
 
 
@@ -83,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         help="run a subset of the frozen prompts; the contract side costs about ten times the engine's wall time",
     )
     args = parser.parse_args(argv)
+    require_headroom(purpose="the contract run")
 
     prompt_bytes = args.prompts.read_bytes()
     prompt_set = json.loads(prompt_bytes)

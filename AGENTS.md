@@ -42,6 +42,23 @@ The rules that follow from it:
   a reboot does not start re-indexing it — that re-indexing is itself sustained I/O on a machine
   that has just panicked.
 
+**A 5 GB disk floor is enforced, not promised.** Two tools, both standard-library only:
+
+```bash
+# The monitor. Polls free space; below the floor it writes .build/DISK_STOP and terminates the
+# heavy jobs that are running (the engine, the contract, the install builder) — SIGTERM, then
+# SIGKILL. It never terminates itself or the agent harness.
+python3 tools/disk_watchdog.py --threshold-gb 5 --interval 5
+
+# The preflight guard. quantize.py, the contract CLIs and run_m1_gate.py call require_headroom()
+# before they touch a model, so nothing heavy starts below the floor either — and a stop marker
+# from the watchdog refuses a new run until an operator clears it, because a run that tripped the
+# limit must not resume by itself.
+python3 tools/check_disk_headroom.py
+```
+
+Clearing `.build/DISK_STOP` is a deliberate act: read it, free space, then `rm` it.
+
 ## Working rules
 
 1. **Follow the loop: code, test, audit, document, update the tracker.** A change is

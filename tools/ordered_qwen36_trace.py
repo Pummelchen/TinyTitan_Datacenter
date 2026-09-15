@@ -32,6 +32,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 import ordered_qwen36 as q36  # noqa: E402
 import trace_format  # noqa: E402
+from check_disk_headroom import require_headroom  # noqa: E402
 
 
 from safetensors_source import SafetensorsSource  # noqa: E402,F401
@@ -46,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default="")
     parser.add_argument("--revision", default="")
     args = parser.parse_args(argv)
+    require_headroom(purpose="the contract run")
 
     spec = json.loads(args.spec.read_text())
     tokens = [int(part) for part in args.tokens.replace(" ", "").split(",") if part]
