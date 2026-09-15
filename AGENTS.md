@@ -79,15 +79,21 @@ python3 -m unittest discover -s tools
 uv venv --python 3.14 .venv
 uv pip install --python .venv/bin/python -r tools/requirements-coreml.txt
 
+# The golden-trace harness (M0): a model-free fixture, then a comparison.
+# A diff is only meaningful against a trace captured by the same reference build.
+python3 tools/make_synthetic_trace.py .build/ref-trace
+python3 tools/trace_diff.py .build/ref-trace .build/ref-trace
+
 # The reference implementation that produces golden traces. Pinned exactly: a
 # trace is only comparable to another captured from the same transformers build.
 uv pip install --python .venv/bin/python -r tools/requirements-reference.txt
 ```
 
 Reference material for the current milestone lives in `docs/`: `m0-decisions.md` records
-the resolved `D1`–`D7` decisions and the reasoning behind them, and the two
-`reference-*.md` contracts record each model family's exact dtype boundaries and op order,
-by file and line. Kernel comments cite those contracts rather than restating them.
+the resolved `D1`–`D7` decisions and the reasoning behind them, `trace-format.md` is the
+gate's data contract, and the two `reference-*.md` contracts record each model family's
+exact dtype boundaries and op order, by file and line. Kernel comments cite those
+contracts rather than restating them.
 
 Once code exists, the release gate is the sister project's model: a warning-free
 release build, the lint gates, the full test suite, and byte-identical golden

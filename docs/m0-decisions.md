@@ -127,9 +127,12 @@ runs in fp32. Router *weights* may be stored bf16 or quantized, because the accu
 is fp32 either way. Ties are broken by ascending expert id, and the reference applies the
 identical rule so both sides agree by construction rather than by luck.**
 
-Evidence: bf16 logits flipped a top-8 index set within 22 random draws (R11) — one flipped
-index diverges the output while every per-tensor check stays green. bf16 has 8 mantissa
-bits and is not "bf16 or higher" in any useful sense; fp32 is.
+Evidence: bf16 logits flip the top-k. Measured over 20,000 random 256-way routers with
+round-to-nearest-even bf16, 922 (4.61%) changed the top-8 index set — for example fp32
+logits 5.363673687 and 5.385571480 both become bf16 5.375, and the ordering that
+separated them is gone (R11). One flipped index diverges the output while every
+per-tensor check stays green. bf16 has 8 mantissa bits and is not "bf16 or higher" in any
+useful sense; fp32 is.
 
 ---
 
