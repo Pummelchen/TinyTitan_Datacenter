@@ -202,7 +202,6 @@ public struct InstallFile: WeightSource {
         guard entry.padded_columns % entry.group == 0, entry.padded_columns % 2 == 0 else {
             throw Error.badHeader("\(name): group \(entry.group) does not divide \(entry.padded_columns)")
         }
-        guard try digestMatches(entry) else { throw Error.digestMismatch(entry.name) }
         // The range is in **leading-axis entries** — one expert of a stack, not one payload row —
         // so it has to be translated, and getting that wrong returns the first expert's first
         // *row* while still looking like a tensor. One entry spans `inner` payload rows.
@@ -222,7 +221,32 @@ public struct InstallFile: WeightSource {
         let zeros = try readCounted(
             offset: entry.offset + codesBytes + scalesBytes + first * groupsPerRow, byteCount: payloadRows * groupsPerRow
         )
-        guard try digestMatches(entry) else { throw Error.digestMismatch(entry.name) }
+        // Verify what was read rather than the whole tensor: these bytes are already in hand, where
+        // the entry digest reads 537 MB of expert stack to hand back one expert.
+        //
+        // Three things had to be right, and each was wrong in turn:
+        //
+        // 1. The slab index **is** the leading-axis index, so a request for one expert is one slab —
+        //    not `range.count` payload rows. Guarding on `range.count % inner == 0` is `1 % 32` for a
+        //    stacked tensor, which skipped the branch and left every read paying the entry digest.
+        // 2. This function had **two** whole-entry checks on the path — one before the reads and one
+        //    after — so removing either alone left the other rejecting any tamper in the entry.
+        // 3. The slice offsets are **local to the buffers just read** (`index * inner`), while the
+        //    digest to compare against is indexed **globally** (`range.lowerBound + index`). Using
+        //    the global index for both sliced past the end of a one-expert buffer and trapped.
+        if let slabs = entry.slab_sha256, inner > 0, range.lowerBound + range.count <= slabs.count {
+            for index in 0..<range.count {
+                let low = index * inner, high = low + inner
+                var hasher = SHA256()
+                hasher.update(data: codes[(low * codesPerRow)..<(high * codesPerRow)])
+                hasher.update(data: scales[(low * groupsPerRow * 4)..<(high * groupsPerRow * 4)])
+                hasher.update(data: zeros[(low * groupsPerRow)..<(high * groupsPerRow)])
+                let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+                guard digest == slabs[range.lowerBound + index] else { throw Error.digestMismatch(entry.name) }
+            }
+        } else {
+            guard try digestMatches(entry) else { throw Error.digestMismatch(entry.name) }
+        }
         return try Self.dequantizeInt4(codes + scales + zeros, entry: entry, rowCount: payloadRows)
     }
 

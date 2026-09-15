@@ -64,15 +64,16 @@ final class InstallRowReadTests: XCTestCase {
 
     /// The measurement. One expert of an eight-expert stack must not cost the stack.
     ///
-    /// The first read of an entry also hashes its payload — that is `I6`, and it is a deliberate
-    /// one-time cost — so the entry is warmed before the measured read.
+    /// This test used to warm the entry first, because a cold read hashed the whole payload for
+    /// `I6` — 537 MB of expert stack for the real model. With a digest per leading-axis slab the
+    /// check covers only the bytes being read, so the warm-up is gone and the assertion is
+    /// stronger: **this is the test that catches a guard which stops matching**, because a skipped
+    /// slab branch still returns the right values, only dearer.
     func testOneExpertCostsOneExpertNotTheStack() throws {
         let install = try install()
         let name = try XCTUnwrap(stackedExperts(install).first)
         let entry = try install.entry(name)
         let experts = entry.shape[0]
-
-        _ = try install.rows(named: name, range: 0..<1)  // warms the digest for this entry
 
         let before = install.bytesRead
         _ = try install.rows(named: name, range: 1..<2)
@@ -94,6 +95,45 @@ final class InstallRowReadTests: XCTestCase {
         let entry = try install.entry(name)
         let whole = try install.tensor(named: name)
         XCTAssertEqual(whole.count, entry.shape.reduce(1, *))
+    }
+
+    /// A slab digest catches a tampered expert **and** leaves its neighbours readable.
+    ///
+    /// The byte flipped is the payload's own **last** byte, which lies in the last section of the
+    /// last slab — so the offset comes from the entry rather than from `inner * codesPerRow`
+    /// computed by hand. Every hand-computed offset in this task was eventually wrong, and the last
+    /// byte of the entry is the one offset that cannot be.
+    func testASlabDigestCatchesTheExpertItBelongsToAndNotTheOthers() throws {
+        let fixture = try XCTUnwrap(
+            Bundle.module.url(forResource: "tiny-qwen36", withExtension: nil, subdirectory: "Fixtures")
+        ).appendingPathComponent("install")
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("slab-tamper-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for file in ["install.json", "data.bin"] {
+            try FileManager.default.copyItem(
+                at: fixture.appendingPathComponent(file), to: directory.appendingPathComponent(file)
+            )
+        }
+        let clean = try InstallFile(url: fixture)
+        let name = try XCTUnwrap(stackedExperts(clean).first)
+        let entry = try clean.entry(name)
+        let slabs = try XCTUnwrap(entry.slab_sha256, "the fixture must carry per-slab digests")
+        XCTAssertGreaterThan(slabs.count, 1)
+
+        var bytes = try Data(contentsOf: directory.appendingPathComponent("data.bin"))
+        let at = entry.offset + entry.nbytes - 1
+        bytes[at] = bytes[at] ^ 0xFF
+        try bytes.write(to: directory.appendingPathComponent("data.bin"))
+
+        let tampered = try InstallFile(url: directory)
+        _ = try tampered.rows(named: name, range: 0..<1)  // the first expert is untouched
+        XCTAssertThrowsError(try tampered.rows(named: name, range: (slabs.count - 1)..<slabs.count)) { error in
+            guard case InstallFile.Error.digestMismatch = error else {
+                return XCTFail("expected a digest mismatch, got \(error)")
+            }
+        }
     }
 
     func testARowRangeOutsideTheTensorIsRefused() throws {

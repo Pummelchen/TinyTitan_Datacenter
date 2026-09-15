@@ -450,3 +450,20 @@ review of the arithmetic and two rounds of reading. The lesson is narrower than 
 > the guard stops matching** — not merely one that passes when the answer is right.
 
 The `bytesRead` counter on `InstallFile` is that test, and it is the reason this was found at all.
+
+### And the sixth time came with a second face
+
+Finishing `DC-088` produced one more form of the same confusion, worth separating from the others:
+
+> **A global index and a range-local offset are different numbers, and both are called "the row".**
+
+The slab loop needed the slab's **global** index to choose which digest to compare (one expert of a
+stack is slab `range.lowerBound + index`) and the **range-local** payload rows to slice the buffers
+it had just read (`index * inner`, because `codes` holds only the requested range). Using the global
+number for both sliced a 1024-byte buffer at `1024..<2048` and trapped — and because the trap
+happened before the diagnostic print, four rounds of instruments reported nothing at all.
+
+The same file also carried **two** whole-entry digest checks on that path, one before the reads and
+one after. Every attempt changed exactly one, so a whole-entry check always survived and rejected
+any tamper anywhere in the entry — which made a tamper test report the *untouched* expert as bad and
+sent me chasing offsets that were correct all along.
