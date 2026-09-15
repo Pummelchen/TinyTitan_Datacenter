@@ -8,6 +8,19 @@
 
 import PackageDescription
 
+/// The Swift language standard for this tree (`DC-015`).
+///
+/// Declared once and applied to **every** target, so a target added later cannot quietly opt out.
+/// Measured on this toolchain: the tree is clean of diagnostics, and each of these four costs
+/// **zero** further diagnostics. `ExistentialAny` is deliberately absent — it costs fourteen
+/// warnings and belongs to its own pass.
+let shardLanguageStandard: [SwiftSetting] = [
+    .enableUpcomingFeature("InferIsolatedConformances"),
+    .enableUpcomingFeature("ImmutableWeakCaptures"),
+    .enableUpcomingFeature("MemberImportVisibility"),
+    .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+]
+
 let package = Package(
     name: "TinyTitanDatacenter",
     platforms: [
@@ -25,29 +38,37 @@ let package = Package(
         // to mirror the sister project — which resolves silently on a case-insensitive
         // filesystem and fails on a case-sensitive one. Being explicit removes the
         // question instead of relying on the developer's disk format.
-        .target(name: "DatacenterIR", path: "sources/DatacenterIR"),
+        .target(name: "DatacenterIR", path: "sources/DatacenterIR",
+            swiftSettings: shardLanguageStandard
+        ),
         .testTarget(
             name: "DatacenterIRTests",
             dependencies: ["DatacenterIR"],
             path: "tests/DatacenterIRTests",
-            resources: [.copy("Fixtures")]
+            resources: [.copy("Fixtures")],
+            swiftSettings: shardLanguageStandard
         ),
-        .target(name: "DatacenterEngine", dependencies: ["DatacenterIR"], path: "sources/DatacenterEngine"),
+        .target(name: "DatacenterEngine", dependencies: ["DatacenterIR"], path: "sources/DatacenterEngine",
+            swiftSettings: shardLanguageStandard
+        ),
         .testTarget(
             name: "DatacenterEngineTests",
             dependencies: ["DatacenterEngine"],
             path: "tests/DatacenterEngineTests",
-            resources: [.copy("Fixtures")]
+            resources: [.copy("Fixtures")],
+            swiftSettings: shardLanguageStandard
         ),
         .executableTarget(
             name: "datacenter-trace",
             dependencies: ["DatacenterEngine", "DatacenterIR"],
-            path: "sources/DatacenterTrace"
+            path: "sources/DatacenterTrace",
+            swiftSettings: shardLanguageStandard
         ),
         .executableTarget(
             name: "datacenter-generate",
             dependencies: ["DatacenterEngine", "DatacenterIR"],
-            path: "sources/DatacenterGenerate"
+            path: "sources/DatacenterGenerate",
+            swiftSettings: shardLanguageStandard
         )
     ]
 )
