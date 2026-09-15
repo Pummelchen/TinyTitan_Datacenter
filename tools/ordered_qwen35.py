@@ -377,11 +377,13 @@ _LAYER_ROLES = {
 }
 
 
-def layer_weights(names: dict, source, materialise) -> dict:
-    """Assemble one layer's role-keyed weights through the source.
+def layer_weights(names: dict, materialise) -> dict:
+    """Assemble one layer's role-keyed weights.
 
     `materialise` maps a role to the key the contract's functions use, so the layer
-    dictionaries are built once here instead of in every caller.
+    dictionaries are built once here instead of in every caller. (This took a `source`
+    argument that nothing used, and the MoE streaming path grew an arity bug against it that
+    only appeared the first time that path was run — see `ordered_qwen36.mixer_weights`.)
     """
     weights = {
         "input_layernorm": materialise(names["norm.attn"]),
@@ -451,7 +453,7 @@ def streamed_text_forward(spec: dict, source, tokens, capture: dict | None = Non
         block = f"layer.{index:02d}"
         if capture is not None:
             capture[f"{block}.hidden_in"] = hidden
-        weights = layer_weights(names[block], source, materialise)
+        weights = layer_weights(names[block], materialise)
         hidden = decoder_layer(hidden, weights, config, index, cos, sin, mask)
         if capture is not None:
             capture[f"{block}.hidden_out"] = hidden

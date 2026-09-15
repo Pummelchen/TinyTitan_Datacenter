@@ -271,6 +271,32 @@ not been fetched, so the throughput baseline and the hit rate M1's gate asks for
 
 The `gdn_asymmetric` and `moe` vector groups exist for the same reason at the kernel level.
 
+## What 4-bit costs this model, so far
+
+Measured on the tiny checkpoint (`tools/test_ordered_qwen36_quant.py`, which builds a real
+install through `tools/quantize.py`):
+
+| | |
+| --- | --- |
+| Router top-k rows preserved | **18 of 18** — identical, not close |
+| Logits, relative divergence | ~2.0e-01 |
+
+The router survives because the policy keeps `router.logits` at **bf16**: I3 says the discrete
+decisions must match exactly, and a 4-bit router is the failure mode where every per-tensor
+check stays green while the continuations become unrelated. The numeric figure is only
+indicative — this is a tiny random model whose logits are close to noise — and the number that
+matters comes from the 35 B checkpoint, which is being fetched.
+
+The **shared expert stays at bf16**. It is active on every token, where a routed expert serves
+eight tokens in 256, so its error is not amortised over the population of experts; it is about
+3 % of the parameters, and quantizing it would spend accuracy on the dense path to save nothing
+measurable.
+
+A quantisation group must never span two experts, which is why the payload flattens the
+**leading** axis: a stacked `[experts, rows, columns]` tensor is quantized as `experts × rows`
+rows of `columns`, so every group lies inside one expert's row. Flattening the last two
+dimensions instead would straddle experts and still reconstruct into plausible weights.
+
 ## Still to extract — do not guess these
 
 - the `attention_mask` path: what the reference does at padded positions in a batch, which

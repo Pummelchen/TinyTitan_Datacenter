@@ -157,7 +157,7 @@ class TextTowerTests(unittest.TestCase):
                 "attnOutputGate": config.attn_output_gate,
                 "fullAttentionInterval": interval,
                 "numExperts": config.num_experts,
-                "numExpertsPerTok": config.num_experts_per_tok,
+                "numExpertsPerToken": config.num_experts_per_tok,
                 "moeIntermediateSize": config.moe_intermediate_size,
                 "sharedExpertIntermediateSize": config.shared_expert_intermediate_size,
                 "linearKeyHeads": config.linear_num_key_heads,

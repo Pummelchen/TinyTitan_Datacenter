@@ -109,9 +109,12 @@ public struct InstallFile: WeightSource {
 
     public func rows(named name: String, range: Range<Int>) throws -> [Float] {
         let entry = try entry(name)
-        guard entry.shape.count == 2 else { return try tensor(named: name) }
-        let width = entry.shape[1]
-        guard range.lowerBound >= 0, range.upperBound <= entry.shape[0] else {
+        guard entry.shape.count >= 2 else { return try tensor(named: name) }
+        // One row is the **leading axis**, whatever the rank: a token of the embedding, or one
+        // expert of a stacked expert tensor. The row's width is the product of the rest.
+        let width = entry.shape.dropFirst().reduce(1, *)
+        let rowCount = entry.shape[0]
+        guard range.lowerBound >= 0, range.upperBound <= rowCount else {
             throw Error.badHeader("row range \(range) is outside '\(name)'")
         }
         if entry.dtype != "int4" {
@@ -171,8 +174,11 @@ public struct InstallFile: WeightSource {
     /// produces plausible weights. Each group of `group` codes shares one fp32 scale and one
     /// int4 zero point, and the reconstruction is `(code - zero) * scale`.
     static func dequantizeInt4(_ data: Data, entry: Entry) throws -> [Float] {
-        let rows = entry.shape[0]
-        let columns = entry.shape[1]
+        // A stacked expert tensor is `[experts, rows, columns]` and its payload was quantized
+        // with the leading axis flattened, so the codes describe `experts x rows` rows. Getting
+        // this wrong would read the wrong number of groups and still produce plausible weights.
+        let rows = entry.shape.dropLast().reduce(1, *)
+        let columns = entry.shape.last ?? 0
         let padded = entry.padded_columns
         let group = entry.group
         guard group > 0, padded % group == 0, padded % 2 == 0 else {

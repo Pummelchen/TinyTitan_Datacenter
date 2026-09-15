@@ -72,8 +72,15 @@ def quantize_tensor(weight: np.ndarray, group: int = GROUP) -> dict:
     code would spend half its range on values that do not occur.
     """
     weight = np.asarray(weight, dtype=np.float32)
-    if weight.ndim != 2:
-        raise ValueError(f"expected a 2-D weight, got shape {weight.shape}")
+    if weight.ndim < 2:
+        raise ValueError(f"expected a weight with at least two dimensions, got shape {weight.shape}")
+    # A **stacked** expert tensor is `[experts, rows, columns]`, and quantizing it is quantizing
+    # its rows: the leading dimension is flattened away and every group along the input
+    # dimension still lies inside one expert's row, because a row belongs to exactly one expert.
+    # (Flattening the *last* two dimensions instead would let a group straddle two experts, and
+    # the reconstruction would still look like weights.)
+    original_shape = list(weight.shape)
+    weight = weight.reshape(-1, weight.shape[-1]) if weight.ndim > 2 else weight
     rows, columns = weight.shape
     padded = (-columns) % group
     if padded:
@@ -108,7 +115,12 @@ def quantize_tensor(weight: np.ndarray, group: int = GROUP) -> dict:
     packed = (low | high).tobytes()
 
     return {
-        "shape": [rows, columns],
+        # The *original* rank travels with the payload: the install describes the tensor the
+        # spec describes, and a reader slices its leading axis whether that is `experts` or
+        # `vocabulary`.
+        "shape": original_shape,
+        "rows": rows,
+        "columns": columns,
         "padded_columns": int(weight.shape[1]),
         "group": group,
         "packed": packed,
@@ -117,8 +129,28 @@ def quantize_tensor(weight: np.ndarray, group: int = GROUP) -> dict:
     }
 
 
+def flat_rows(entry: dict) -> int:
+    """The number of rows a payload's codes describe.
+
+    One row is the tensor's **leading axis**, whatever the rank: a token of the embedding, or
+    one expert of a stacked expert tensor. The codes flatten that axis away, so a reader that
+    used `shape[0]` would size the code block for `experts` rows where there are
+    `experts x rows` — and the reconstruction would still look like weights.
+    """
+    shape = entry["shape"]
+    if len(shape) <= 1:
+        return shape[0] if shape else 0
+    return int(np.prod(shape[:-1]))
+
+
 def dequantize_tensor(entry: dict) -> np.ndarray:
-    rows, columns = entry["shape"]
+    shape = entry["shape"]
+    # `rows` is the flattened leading axis -- `experts x rows` for a stacked expert tensor --
+    # and the result is returned with the tensor's own shape.
+    # The fallback is the product of the leading dimensions, not `shape[0]`: for a stacked
+    # expert tensor the codes describe `experts x rows` rows.
+    rows = flat_rows(entry)
+    columns = shape[-1] if shape else 0
     padded = entry["padded_columns"]
     group = entry["group"]
     groups = padded // group
@@ -134,7 +166,8 @@ def dequantize_tensor(entry: dict) -> np.ndarray:
     scale = np.frombuffer(entry["scales"], dtype=np.float32).reshape(rows, groups)
     zero = np.frombuffer(entry["zeros"], dtype=np.int8).reshape(rows, groups).astype(np.float32)
     blocks = (codes.reshape(rows, groups, group).astype(np.float32) - zero[..., None]) * scale[..., None]
-    return blocks.reshape(rows, padded)[:, :columns].astype(np.float32)
+    flat = blocks.reshape(rows, padded)[:, :columns].astype(np.float32)
+    return flat.reshape(shape) if len(shape) > 2 else flat
 
 
 def decode_raw(payload: bytes, dtype: str, shape) -> np.ndarray:
@@ -235,9 +268,10 @@ class InstallSource:
     def _payload(self, name: str) -> dict:
         entry = self._entries[name]
         payload = self._blob[entry["offset"] : entry["offset"] + entry["nbytes"]]
-        codes_bytes = entry["shape"][0] * (entry["padded_columns"] // 2)
+        rows = flat_rows(entry)
+        codes_bytes = rows * (entry["padded_columns"] // 2)
         group = entry["group"]
-        groups = entry["shape"][0] * (entry["padded_columns"] // group)
+        groups = rows * (entry["padded_columns"] // group)
         return {
             "shape": entry["shape"],
             "padded_columns": entry["padded_columns"],
@@ -259,10 +293,14 @@ class InstallSource:
 
     def rows(self, name: str, start: int, end: int) -> np.ndarray:
         entry = self._entries[name]
-        if entry["dtype"] != "int4" and len(entry["shape"]) == 2:
+        if entry["dtype"] != "int4" and len(entry["shape"]) >= 2:
             # Sliced from the stored bytes rather than decoded whole: the embedding is
             # `[248320, 2048]`, and reading one row of it should not cost a gigabyte.
-            width = entry["shape"][1]
+            # One row is the leading axis whatever the rank: for the embedding that is a
+            # token, for a stacked expert tensor it is an expert.
+            width = 1
+            for dimension in entry["shape"][1:]:
+                width *= dimension
             stride = {"bf16": 2, "fp16": 2, "fp32": 4}[entry["dtype"]] * width
             payload = self._raw(name)[start * stride : end * stride]
             return decode_raw(payload, entry["dtype"], [end - start, width])

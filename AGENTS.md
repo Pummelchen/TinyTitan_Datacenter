@@ -160,6 +160,11 @@ python3 tools/make_qwen35_fixture.py \
 # never took are the paths it exercises.
 .venv/bin/python tools/make_tiny_qwen36_checkpoint.py
 
+# M1c: what 4-bit experts cost the mixture, measured rather than asserted. Builds a real
+# install from the tiny checkpoint and checks that the router's decisions survive exactly
+# (I3) and that the numbers stay bounded. Needs the venv.
+.venv/bin/python -m unittest discover -s tools -p 'test_ordered_qwen36_quant.py'
+
 # M1's text tower, checked against the reference's own Qwen3_5MoeTextModel: the numbers
 # layer by layer, and the router's decisions at every layer as a separate assertion (I3).
 .venv/bin/python -m unittest discover -s tools -p 'test_ordered_qwen36.py'

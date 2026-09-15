@@ -23,6 +23,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import ordered_qwen35 as q35  # noqa: E402
+import ordered_qwen36 as q36  # noqa: E402
 import quantize  # noqa: E402
 import trace_format  # noqa: E402
 
@@ -84,8 +85,15 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         captured: dict[str, np.ndarray] = {}
+        decisions: dict[str, np.ndarray] = {}
         started = time.time()
-        q35.streamed_text_forward(spec, source, tokens, capture=captured)
+        # The contract follows the spec's own family, the same way the engine does: a family
+        # with a mixture records its router's decisions, and I3 makes those a separate
+        # measurement from any tolerance.
+        if spec.get("family", "qwen3_5") == "qwen3_5_moe":
+            q36.streamed_text_forward(spec, source, tokens, capture=captured, discrete=decisions)
+        else:
+            q35.streamed_text_forward(spec, source, tokens, capture=captured)
         seconds = time.time() - started
         quantized_trace = args.work / f"{prompt['id']}-quantized"
         trace_format.write_trace(
@@ -118,6 +126,10 @@ def main(argv: list[str] | None = None) -> int:
         entry = {
             "id": prompt["id"],
             "tokens": len(tokens),
+            # How many top-k rows this prompt's mixture produced, so a reader can see the
+            # decisions were recorded rather than skipped (the comparison itself lives in
+            # `test_ordered_qwen36_quant`, which has both sides).
+            "router_decision_rows": sum(len(values) for values in decisions.values()),
             "seconds": round(seconds, 1),
             "positions": len(tokens),
             "discrete_agree": agreement,

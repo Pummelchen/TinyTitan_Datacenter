@@ -1,13 +1,16 @@
 {
- "note": "The per-role quantization policy (I4). It is data: changing what is quantized is changing this file, not the code. A role that is absent from 'quant' stops the install rather than defaulting.",
+ "note": "The per-role quantization policy (I4). It is data: changing what is quantized is changing this file, not the code. A role that is absent from 'quant' stops the install rather than defaulting. `router.logits` is bf16 because I3 says the discrete decisions must survive; the shared expert is bf16 because it is active on every token, unlike a routed expert.",
  "schema": 1,
  "why": {
   "norms, embedding and head": "I3: gating and normalisation decide the discrete outcomes; they stay at bf16 or above. The head is tied to the embedding, so quantizing it would quantize the embedding twice over.",
   "attn.q_norm / attn.k_norm / linear.norm": "per-head normalisation vectors, one per head dimension: quantizing 256 numbers to 4 bits saves nothing measurable and costs accuracy",
   "linear.a_log / linear.dt_bias": "the Gated DeltaNet's decay is exponentiated; a 4-bit error there is not a small error",
-  "linear.in_a / linear.in_b / linear.conv": "the gates and the causal convolution: small, and on the path that decides how much state to keep"
+  "linear.in_a / linear.in_b / linear.conv": "the gates and the causal convolution: small, and on the path that decides how much state to keep",
+  "router.logits": "I3, and the brief says it in as many words: quantizing the router flips marginal argmax results, and the output then diverges completely while every per-tensor check still looks green. Sixteen thousand numbers per layer is not where the bytes are.",
+  "expert.stack_gate_up / expert.stack_down": "The routed experts: 92.9% of this model's parameters, and the only reason M1 exists. This is where 4-bit earns its error budget.",
+  "expert.shared.*": "The shared expert is on EVERY token, unlike a routed expert which serves eight tokens in 256. Its error is not amortised, and it is 3% of the parameters: quantizing it would spend accuracy on the dense path to save nothing measurable.",
+  "expert.shared.scalar": "One row of 2048 numbers that scales a whole branch of the mixture. It costs nothing to keep at fp32 and a 4-bit error there multiplies everything the shared expert produces."
  },
-
  "quant": {
   "attn.q": "int4-affine",
   "attn.k": "int4-affine",
@@ -19,13 +22,16 @@
   "mlp.down": "int4-affine",
   "mlp.gate": "int4-affine",
   "mlp.up": "int4-affine",
-
+  "expert.stack_gate_up": "int4-affine",
+  "expert.stack_down": "int4-affine",
+  "expert.shared.gate": "bf16",
+  "expert.shared.up": "bf16",
+  "expert.shared.down": "bf16",
   "norm.attn": "bf16",
   "norm.mlp": "bf16",
   "norm.final": "bf16",
   "head.lm": "bf16",
   "token.embedding": "bf16",
-
   "attn.q_norm": "fp32",
   "attn.k_norm": "fp32",
   "linear.norm": "fp32",
@@ -33,6 +39,8 @@
   "linear.dt_bias": "fp32",
   "linear.in_a": "bf16",
   "linear.in_b": "bf16",
-  "linear.conv": "bf16"
+  "linear.conv": "bf16",
+  "router.logits": "bf16",
+  "expert.shared.scalar": "fp32"
  }
 }

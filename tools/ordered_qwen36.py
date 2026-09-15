@@ -32,7 +32,11 @@ class SpecConfig(q35.SpecConfig):
     def __init__(self, config: dict):
         super().__init__(config)
         self.num_experts = config.get("numExperts")
-        self.num_experts_per_tok = config.get("numExpertsPerTok")
+        # The key is the IR's own spelling. Reading `numExpertsPerTok` here left `top_k` None
+        # and only failed when the contract was driven by a spec the *engine* had emitted —
+        # which is exactly what reading the spec instead of a private copy is supposed to
+        # catch, and did.
+        self.num_experts_per_tok = config["numExpertsPerToken"]
         self.moe_intermediate_size = config.get("moeIntermediateSize")
         # The shared expert's width is its own field; it happens to equal the routed experts'
         # width in this family, and a contract that assumed so would be right here and wrong
