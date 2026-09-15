@@ -586,3 +586,34 @@ if `F_NOCACHE` turns out not to bypass the cache on a future macOS, which is exa
 page-cache incident would look like — then the install must be rewritten with 16 KB alignment and every
 trace regenerated, because the offsets change. Writing that down is what keeps the requirement from
 being quietly forgotten.
+
+## D14 — I6 is half-implemented, and the missing half is cheap to close
+
+Auditing the brief's **I6** against the artifact, rather than against the intent, found two of its four
+requirements unmet — in the real install **and** in both committed fixtures, so it is the writer and not
+one build:
+
+| I6 requires | what the artifact has |
+| --- | --- |
+| source repo **+ commit** | `repo` holds either a commit hash (real install) or a *name* (`"tiny-qwen36"`), and `revision` is always **`"local"`** — so the source commit is not recorded, and one field is carrying two meanings |
+| sha256 of **each source weight file** | `source.files` is **`{}`** — empty, always. The 693 per-tensor digests are of the *converted payloads*, which is a different claim |
+| the ordered list of transform passes | `passes: ["quantize-group-affine-int4"]` — present |
+| the policy files used | `policy_files: ["tools/quant_policy.json"]` — present, and relative in the fixtures |
+
+**What is not the problem.** No absolute path is committed: `git grep "/Users/"` over tracked files
+returns nothing, the fixtures carry `["tools/quant_policy.json"]`, and the `/Users/...` path seen in
+`.build/m1-install/install.json` is in a gitignored build artifact only. And the per-tensor digests, the
+spec, the family and the pass list are all present, which is most of what makes an artifact
+self-describing.
+
+**Why this is worth closing rather than noting.** I6 exists so that a converted model can be traced to
+the weights it came from. An artifact that says `revision: "local"` and lists no source files cannot
+answer "which checkpoint is this", which is the one question a provenance header is for — and the
+failure is silent, because every other field looks complete.
+
+**The cost is measured, not estimated.** The remedy is to hash the source safetensors and record the
+commit. The source checkpoints are far larger than RAM, but this project already has the tool for that:
+`UncachedFile` / `open_uncached` with `pread`, which verified the 20 GB install in **~20 s at a 34 MB
+peak** with free disk steady. Hashing source files is the same shape of work. **`data.bin` does not
+change**, so no install must be rebuilt and no trace regenerated: only the manifest gains fields, which
+makes this a safe change to batch with the next real-model run rather than a reason for one.
