@@ -92,6 +92,36 @@ match **both**, and prefill and decode must agree with each other bit-for-bit, o
 at the prefill/decode boundary rather than between nodes. Which path a trace came from
 therefore belongs in the trace header.
 
+## What the checkpoint itself settles (verified 2026-09-15)
+
+The tensor names and shapes below are read from the safetensors header of
+`Qwen/Qwen3.5-2B` at revision `15852e8c…`, not from a description of it. They are what the
+importer maps, and `tests/DatacenterIRTests/Qwen3_5ImporterTests.swift` checks all 632 of
+them.
+
+| Fact | Value |
+| --- | --- |
+| Text tower prefix | `model.language_model.` (the model is a conditional-generation wrapper) |
+| Text tensors | 320 = 1 embedding + 18 × 14 GDN + 6 × 11 attention + 1 final norm |
+| Full-attention layers | exactly those with `index % 4 == 3` — 3, 7, 11, 15, 19, 23 |
+| The head | **absent**: `tie_word_embeddings: true` and no `lm_head.weight` in the file |
+| Vision tower | `model.visual.` — 297 tensors, excluded by a declared prefix |
+| MTP head | `mtp.` — 15 tensors (`fc`, `pre_fc_norm_embedding`, `pre_fc_norm_hidden`, `norm`, one attention layer), excluded: present in the file, not part of M0 |
+
+GDN layer shapes (`model.language_model.layers.0.*`): `in_proj_qkv` `[6144, 2048]` —
+Q and K are 16 heads of 128, V is 16 heads of 128, concatenated; `in_proj_z` `[2048, 2048]`;
+`in_proj_a` and `in_proj_b` `[16, 2048]`; `conv1d` `[6144, 1, 4]`; `norm` `[128]` **stored
+fp32**; `A_log` `[16]` **fp32**; `dt_bias` `[16]` bf16.
+
+Full-attention layer shapes (`layers.3.*`): `q_proj` `[4096, 2048]` — twice the query width,
+because `attn_output_gate: true` and the two halves are `[query | gate]`; `k_proj`,
+`v_proj` `[512, 2048]`; `o_proj` `[2048, 2048]`; `q_norm`, `k_norm` `[256]`.
+
+That last row is the reason the IR grew an `attnOutputGate` flag: a shape contract that
+assumed a bare query would have rejected the checkpoint, and a guess about which half is
+the gate would have produced a plausible, wrong forward pass. The **layout** (`[query |
+gate]`) is established by the shape; the **application order** is still on the list below.
+
 ## Still to extract before the GDN kernel is written — do not guess these
 
 - the intra-chunk algorithm in full: `chunk_size=64` is known, but the decay masking,
@@ -101,10 +131,11 @@ therefore belongs in the trace header.
 - how `causal_conv1d_fn` (`:270`) treats the `padding = kernel_size - 1` at sequence
   boundaries, and the prefill/decode split between `causal_conv1d_fn` and
   `causal_conv1d_update` (`:250`);
-- `Qwen3_5Attention:749` in full (QK-norm placement and the `attn_output_gate`
-  application order — the `qwen3` contract's equivalent is already known and is *not*
-  assumed to carry over);
+- `Qwen3_5Attention:749` in full — QK-norm placement, and **where the output gate is
+  applied** (before or after `o_proj`, and whether it is `sigmoid`): the checkpoint proves
+  the gate exists and where it is stored, not how it is used. The `qwen3` contract's
+  equivalent is known and is *not* assumed to carry over;
 - `Qwen3_5TextRotaryEmbedding:143` and how the full-attention layers apply RoPE here;
-- the MTP head wiring (`mtp_num_hidden_layers: 1`) and whether M0 includes it (M0 should
-  not — it is an M5 concern for the other family);
-- the vision-tensor name list, to filter the checkpoint without loading it.
+- the fp32 islands: `A_log` and the gated `norm` are stored fp32 while their neighbours are
+  bf16, and the reference's own dtype boundaries around them are not yet transcribed;
+- the MTP head wiring — present in the checkpoint, deliberately out of M0's scope.

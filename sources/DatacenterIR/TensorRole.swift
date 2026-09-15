@@ -76,7 +76,11 @@ public extension TensorRole {
             return [config.hiddenSize]
 
         case .attnQ:
-            return [config.numAttentionHeads * config.headDim, config.hiddenSize]
+            // Qwen3.5's query projection carries the output gate as well, so the contract
+            // is twice as wide and the layout is `[query | gate]`. A role whose shape
+            // depended on nothing would have rejected every qwen3_5 checkpoint.
+            let width = config.numAttentionHeads * config.headDim * (config.attnOutputGate ? 2 : 1)
+            return [width, config.hiddenSize]
         case .attnK, .attnV:
             return [config.numKeyValueHeads * config.headDim, config.hiddenSize]
         case .attnO:

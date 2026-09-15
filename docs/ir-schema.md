@@ -122,6 +122,30 @@ implementation's module structure (`transformers` v5.17.0,
 `models/qwen3/modeling_qwen3.py`), recorded in
 [`reference-qwen3-dense.md`](reference-qwen3-dense.md).
 
+## The second family, and what it changed
+
+`Qwen3_5Importer` maps the `qwen3_5` family (Qwen3.5-2B): a text tower that alternates
+three Gated DeltaNet layers with one full-attention layer. It is the same kind of file as
+`Qwen3Importer` — a `switch` on the tensor's name — and it is checked against all **632**
+tensors of the real checkpoint, of which only 320 are text.
+
+Two things it forced into the IR, both read from the checkpoint rather than assumed:
+
+- **`attnOutputGate`.** Qwen3.5's `q_proj` is `[4096, 2048]` for 8 heads of 256: twice the
+  query width, because the two halves are `[query | gate]`. The `attn.q` shape contract is
+  now gate-aware, and `Qwen3_5ImporterTests` asserts that turning the flag off makes the
+  real checkpoint fail validation — which is what makes the flag load-bearing rather than
+  decorative.
+- **A declared exclusion is not an omission.** 312 of the checkpoint's 632 tensors are not
+  text at all: 297 in the vision tower (`model.visual.`) and 15 in the MTP head (`mtp.`).
+  They are excluded by a *named prefix with a reason*, in one place, and the tests assert
+  that every tensor is either mapped or excluded — there is no third category. "It was a
+  tensor we did not recognise" stays a hard failure.
+
+The family also carries a fact worth stating early: **the head does not exist.**
+`tie_word_embeddings` is true and the checkpoint ships no `lm_head`, so a spec for this
+family has no `head.lm` tensor and is valid because the config says the weights are tied.
+
 ## Not yet here
 
 - The `qwen3_5` importer for the M0 model (Gated DeltaNet roles are declared, the mapping

@@ -108,6 +108,12 @@ python3 tools/trace_diff.py .build/ref-trace .build/ref-trace
     --prompt "The capital of France is" --max-new-tokens 8 \
     --model Qwen/Qwen3-0.6B --revision <sha>
 
+# Regenerate the Qwen3.5-2B inventory fixture the qwen3_5 importer is tested against
+# (names and shapes only; no weights).
+python3 tools/make_qwen35_fixture.py \
+    .build/hf-cache/models--Qwen--Qwen3.5-2B/snapshots/<revision> \
+    tests/DatacenterIRTests/Fixtures/qwen35-2b-tensors.json
+
 # The reference implementation that produces golden traces. Pinned exactly: a
 # trace is only comparable to another captured from the same transformers build.
 uv pip install --python .venv/bin/python -r tools/requirements-reference.txt

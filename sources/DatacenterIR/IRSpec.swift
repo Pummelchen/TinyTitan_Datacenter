@@ -16,6 +16,18 @@ public struct ModelConfig: Codable, Sendable, Equatable {
     public var rmsNormEps: Double
     public var ropeTheta: Double
     public var tieWordEmbeddings: Bool
+    /// True when the query projection also carries the attention output gate.
+    ///
+    /// Qwen3.5 does this: `q_proj` is `[2 * heads * headDim, hidden]` and the two halves
+    /// are `[query | gate]`. The checkpoint's own shapes are the evidence — `q_proj` is
+    /// 4096 wide for 8 heads of 256 — and the *application order* of the gate is
+    /// recorded in `docs/reference-qwen35-2b.md` before any kernel uses it.
+    public var attnOutputGate: Bool
+    /// Every N-th layer is full attention instead of linear attention (Qwen3.5: 4, so
+    /// indices 3, 7, 11 … are full attention). `nil` means the family has one layer kind.
+    public var fullAttentionInterval: Int?
+    /// Present only for families that ship a multi-token-prediction head.
+    public var mtpNumHiddenLayers: Int?
 
     // Present only in the families that have them; nil means "this model has none",
     // which is different from zero and is why these are optional.
@@ -31,7 +43,8 @@ public struct ModelConfig: Codable, Sendable, Equatable {
     public init(
         hiddenSize: Int, numLayers: Int, numAttentionHeads: Int, numKeyValueHeads: Int,
         headDim: Int, intermediateSize: Int, vocabSize: Int, rmsNormEps: Double,
-        ropeTheta: Double, tieWordEmbeddings: Bool, numExperts: Int? = nil,
+        ropeTheta: Double, tieWordEmbeddings: Bool, attnOutputGate: Bool = false,
+        fullAttentionInterval: Int? = nil, mtpNumHiddenLayers: Int? = nil, numExperts: Int? = nil,
         numExpertsPerToken: Int? = nil, moeIntermediateSize: Int? = nil,
         linearKeyDim: Int? = nil, linearValueDim: Int? = nil, linearValueHeads: Int? = nil,
         linearValueHeadDim: Int? = nil, linearConvKernelDim: Int? = nil
@@ -46,6 +59,9 @@ public struct ModelConfig: Codable, Sendable, Equatable {
         self.rmsNormEps = rmsNormEps
         self.ropeTheta = ropeTheta
         self.tieWordEmbeddings = tieWordEmbeddings
+        self.attnOutputGate = attnOutputGate
+        self.fullAttentionInterval = fullAttentionInterval
+        self.mtpNumHiddenLayers = mtpNumHiddenLayers
         self.numExperts = numExperts
         self.numExpertsPerToken = numExpertsPerToken
         self.moeIntermediateSize = moeIntermediateSize
