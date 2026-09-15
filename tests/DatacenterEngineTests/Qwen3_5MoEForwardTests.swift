@@ -29,10 +29,12 @@ final class Qwen3_5MoEForwardTests: XCTestCase {
 
     struct Golden: Decodable {
         var tokens: [Int]
-        var layer_types: [String]
+        // The checkpoint's golden carries these and the install's does not; neither is used
+        // here, so they are optional rather than duplicated into a second type.
+        var layer_types: [String]?
         var tensors: [String: Vector]
         var discrete: [String: Decisions]
-        var argmax: [Int]
+        var argmax: [Int]?
     }
 
     private func checkpoint() throws -> URL {
@@ -107,6 +109,59 @@ final class Qwen3_5MoEForwardTests: XCTestCase {
         )
     }
 
+    private func goldenInstall() throws -> Golden {
+        try JSONDecoder().decode(
+            Golden.self, from: Data(contentsOf: try checkpoint().appendingPathComponent("golden-install.json"))
+        )
+    }
+
+    /// The int4 path, from the Swift side: the install reader, the streaming provider over a
+    /// **stacked** expert payload, and the mixture.
+    ///
+    /// This is the only test that reads a rank-3 quantized tensor in Swift. The Python reader
+    /// sized that payload's code block from `shape[0]` — `experts` rows where there are
+    /// `experts × rows` — and a reader that does the same still reconstructs *plausible*
+    /// weights, so nothing but a bit-for-bit comparison against the other implementation
+    /// catches it.
+    func testTheInstallPathMatchesTheContractOnTheInstall() throws {
+        let golden = try goldenInstall()
+        let forward = try Qwen3_5Forward(install: try checkpoint().appendingPathComponent("install"))
+        let result = try forward.forwardWithDecisions(tokens: golden.tokens)
+
+        var byName: [String: [Float]] = [:]
+        for tensor in result.tensors { byName[tensor.name] = tensor.values }
+        for (name, expected) in golden.tensors.sorted(by: { $0.key < $1.key }) {
+            guard let actual = byName[name] else {
+                XCTFail("the engine did not capture \(name) from the install")
+                continue
+            }
+            assertSameBits(actual, expected, "install:\(name)")
+        }
+        XCTAssertEqual(result.tensors.count, golden.tensors.count, "same set of captured tensors")
+
+        // The decisions must survive 4-bit exactly: the policy keeps the router at bf16 for
+        // this reason, and a tolerance cannot express the claim.
+        XCTAssertEqual(result.discrete.count, golden.discrete.count)
+        for decision in result.discrete {
+            guard let expected = golden.discrete[decision.name] else {
+                XCTFail("the contract recorded no decision named \(decision.name)")
+                continue
+            }
+            XCTAssertEqual(decision.values, expected.values, "\(decision.name) from the install")
+        }
+    }
+
+    /// The engine's install path reads the family from the **spec inside the artifact**, so the
+    /// loader does not need the caller to know what it was handed.
+    func testTheInstallCarriesItsOwnFamily() throws {
+        let install = try checkpoint().appendingPathComponent("install")
+        let file = try InstallFile(url: install)
+        XCTAssertEqual(file.manifest.spec.family, "qwen3_5_moe")
+        let forward = try ModelLoader.open(snapshot: install)
+        XCTAssertEqual(forward.spec.family, "qwen3_5_moe")
+        XCTAssertFalse(try forward.forwardWithDecisions(tokens: [3, 1, 4]).discrete.isEmpty)
+    }
+
     func testTheGreedyContinuationMatchesTheContract() throws {
         let golden = try golden()
         let forward = try Qwen3_5Forward(snapshot: try checkpoint())
@@ -118,7 +173,7 @@ final class Qwen3_5MoEForwardTests: XCTestCase {
             let offset = position * forward.vocabularySize
             argmax.append(Greedy.argmax(logits, offset: offset, width: forward.vocabularySize))
         }
-        XCTAssertEqual(argmax, golden.argmax)
+        XCTAssertEqual(argmax, try XCTUnwrap(golden.argmax))
     }
 
     /// The mixture is a fact about the layer's roles, not about its family name: the same

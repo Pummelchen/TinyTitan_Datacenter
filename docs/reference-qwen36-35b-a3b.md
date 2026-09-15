@@ -274,7 +274,10 @@ The `gdn_asymmetric` and `moe` vector groups exist for the same reason at the ke
 ## What 4-bit costs this model, so far
 
 Measured on the tiny checkpoint (`tools/test_ordered_qwen36_quant.py`, which builds a real
-install through `tools/quantize.py`):
+install through `tools/quantize.py`), and from the Swift side too: the fixture ships an install
+and `Qwen3_5MoEForwardTests` asserts the engine against the contract's output **on the install**,
+bits and decisions alike. That comparison is the only one that reads a rank-3 quantized tensor
+in Swift, and it is what makes the two readers' agreement a fact rather than a hope:
 
 | | |
 | --- | --- |

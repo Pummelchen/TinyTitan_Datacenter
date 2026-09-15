@@ -160,6 +160,11 @@ python3 tools/make_qwen35_fixture.py \
 # never took are the paths it exercises.
 .venv/bin/python tools/make_tiny_qwen36_checkpoint.py
 
+# Fetch just the tokenizer files of a checkpoint whose weights are still downloading: they
+# are kilobytes against sixty-seven gigabytes, and freezing M1's prompts should not wait for
+# the shards. Do not invent token ids in the meantime.
+.venv/bin/python -c "from huggingface_hub import hf_hub_download; [hf_hub_download('Qwen/Qwen3.6-35B-A3B', n, cache_dir='.build/hf-cache') for n in ('tokenizer_config.json','vocab.json','merges.txt','tokenizer.json')]"
+
 # M1c: what 4-bit experts cost the mixture, measured rather than asserted. Builds a real
 # install from the tiny checkpoint and checks that the router's decisions survive exactly
 # (I3) and that the numbers stay bounded. Needs the venv.

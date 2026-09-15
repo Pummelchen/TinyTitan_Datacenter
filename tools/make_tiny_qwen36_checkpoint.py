@@ -175,8 +175,11 @@ def main() -> int:
             }
         contract_weights["layers"].append(layer)
 
-    spec_config = q36.SpecConfig(
-        {
+    # The contract's configuration, in the IR's own spelling. Written out here rather than
+    # read from the emitted spec only because the spec needs the release binary; the check
+    # below compares the two, because this dict and the contract disagreed about a key name
+    # once and the disagreement was invisible until the streaming path ran.
+    hand_written = {
             "hiddenSize": config.hidden_size,
             "numLayers": config.num_hidden_layers,
             "numAttentionHeads": config.num_attention_heads,
@@ -189,7 +192,7 @@ def main() -> int:
             "attnOutputGate": True,
             "fullAttentionInterval": TINY["full_attention_interval"],
             "numExperts": config.num_experts,
-            "numExpertsPerTok": config.num_experts_per_tok,
+            "numExpertsPerToken": config.num_experts_per_tok,
             "moeIntermediateSize": config.moe_intermediate_size,
             "sharedExpertIntermediateSize": config.shared_expert_intermediate_size,
             "linearKeyHeads": config.linear_num_key_heads,
@@ -197,10 +200,10 @@ def main() -> int:
             "linearKeyDim": config.linear_num_key_heads * config.linear_key_head_dim,
             "linearValueHeadDim": config.linear_value_head_dim,
             "linearConvKernelDim": config.linear_conv_kernel_dim,
-            "ropeTheta": 1e7,
-            "partialRotaryFactor": 0.5,
-        }
-    )
+        "ropeTheta": 1e7,
+        "partialRotaryFactor": 0.5,
+    }
+    spec_config = q36.SpecConfig(hand_written)
 
     captured: dict = {}
     discrete: dict = {}
@@ -243,6 +246,52 @@ def main() -> int:
     }
     (FIXTURE / "golden.json").write_text(json.dumps(expected, indent=1) + "\n")
 
+    # A tiny install beside it, and the contract's output on *that*: the engine's install
+    # reader is asserted against these bits, which is the only place the rank-3 reading of a
+    # stacked expert payload is checked from the Swift side. The Python reader had the same
+    # bug this guards against — sizing the code block from `shape[0]` — so it is worth having
+    # both sides say the same thing.
+    spec_path = FIXTURE / "spec.json"
+    if spec_path.exists():
+        import quantize
+
+        spec = json.loads(spec_path.read_text())
+        policy = quantize.load_policy(ROOT / "tools" / "quant_policy.json")
+        tiny_policy = {"quant": dict(policy["quant"])}
+        for tensor in spec["tensors"]:
+            tiny_policy["quant"].setdefault(tensor["role"], "bf16")
+        install = FIXTURE / "install"
+        manifest = quantize.build_install(FIXTURE, install, spec, tiny_policy, "tools/quant_policy.json")
+        install_captured: dict = {}
+        install_decisions: dict = {}
+        q36.streamed_text_forward(
+            spec, quantize.InstallSource(install), TOKENS,
+            capture=install_captured, discrete=install_decisions,
+        )
+        (FIXTURE / "golden-install.json").write_text(
+            json.dumps(
+                {
+                    "note": (
+                        "The contract's output on the tiny int4 install beside this file, "
+                        "including the router's decisions, which I3 requires to be identical "
+                        "rather than close. The engine's install reader must reproduce these "
+                        "bits; regenerate with tools/make_tiny_qwen36_checkpoint.py."
+                    ),
+                    "tokens": TOKENS,
+                    "quantized": len(manifest["tensors"]),
+                    "kept": len(manifest["skipped"]),
+                    "tensors": {name: vector(values) for name, values in install_captured.items()},
+                    "discrete": {
+                        name: {"shape": list(values.shape), "values": [int(v) for v in values.reshape(-1)]}
+                        for name, values in install_decisions.items()
+                    },
+                },
+                indent=1,
+            )
+            + "\n"
+        )
+        print(f"install: {len(manifest['tensors'])} quantized, {len(manifest['skipped'])} kept")
+
     binary = ROOT / ".build" / "release" / "datacenter-trace"
     if binary.exists():
         import subprocess
@@ -252,6 +301,22 @@ def main() -> int:
             capture_output=True, text=True,
         )
         print("spec:", (result.stdout or result.stderr).strip())
+
+        # The engine's spec and this file's hand-written configuration must agree. They did not,
+        # once: the IR spells the top-k `numExpertsPerToken`, the contract read
+        # `numExpertsPerTok`, and nothing noticed until a spec the engine had emitted drove the
+        # streaming path. Comparing them here makes that a failure at generation time.
+        emitted = json.loads((FIXTURE / "spec.json").read_text())["config"]
+        disagreements = {
+            key: (value, emitted.get(key))
+            for key, value in hand_written.items()
+            if key in emitted and emitted[key] != value
+        }
+        missing = [key for key in hand_written if key not in emitted]
+        if disagreements or missing:
+            print(f"FAIL: the spec disagrees with this file's configuration: {disagreements} missing={missing}")
+            return 1
+        print(f"spec agrees with the hand-written configuration on all {len(hand_written)} fields")
     else:
         print("spec: not emitted -- build the release binary first")
     print(f"wrote {FIXTURE}")
