@@ -47,23 +47,13 @@ public struct Qwen3_5Forward: ForwardPass {
     /// Open a checkpoint: the spec is built from its inventory by the importer, which is the
     /// only place that knows what a tensor name means.
     public init(snapshot: URL) throws {
-        let weights = snapshot.appendingPathComponent("model.safetensors")
-        let file: SafetensorsFile
-        if FileManager.default.fileExists(atPath: weights.path) {
-            file = try SafetensorsFile(url: weights)
-        } else {
-            // Sharded checkpoints name their files `model.safetensors-0000N-of-0000M`; the
-            // single-shard case still uses that pattern, which is why it is handled here
-            // rather than by assuming the plain name.
-            let entries = try FileManager.default.contentsOfDirectory(atPath: snapshot.path)
-            guard let shard = entries.sorted().first(where: { $0.hasPrefix("model.safetensors-") }) else {
-                throw SafetensorsFile.Error.truncatedFile(0)
-            }
-            file = try SafetensorsFile(url: snapshot.appendingPathComponent(shard))
-        }
+        // One factory for both layouts: a 26-shard checkpoint and a single file present the
+        // same inventory to the importer, which is what keeps the file format out of L2.
+        let opened = try SnapshotWeights.open(snapshot)
+        let file = opened.source
 
         let configData = try Data(contentsOf: snapshot.appendingPathComponent("config.json"))
-        let inventory = file.names.map { (name: $0, shape: file.tensors[$0]!.shape) }
+        let inventory = opened.inventory.inventory
         let source = Provenance(repo: snapshot.lastPathComponent, revision: "local")
 
         // The family's **importer** is chosen by the checkpoint's own `model_type`, which is

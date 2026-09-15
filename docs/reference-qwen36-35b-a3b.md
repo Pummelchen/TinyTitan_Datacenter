@@ -5,6 +5,18 @@ and `safetensors` headers at `Qwen/Qwen3.6-35B-A3B` (Apache-2.0), not from the m
 the card states no parameter counts, and the brief's numbers are checked against the shapes
 rather than assumed.
 
+## Reading it
+
+The checkpoint is **26 shards plus `model.safetensors.index.json`**, and the index is the only
+thing that knows which shard holds which tensor. `sources/DatacenterEngine/ShardedSafetensors.swift`
+reads it and presents the shards as one source, so the importer sees the same inventory as it
+would for a single-file checkpoint. A loader that opens the first shard instead produces a
+checkpoint that **looks complete and is missing five sixth of its layers** — a failure no shape
+check can see, because every tensor it does find is the right shape.
+
+A sharded checkpoint whose index is missing is refused rather than half-read, which is what
+`tools/test_sharded_checkpoint.py` asserts.
+
 ## Provenance
 
 | | |
