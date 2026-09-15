@@ -83,11 +83,18 @@ public struct InstallFile: WeightSource {
     /// A reference box rather than a `var`, because `WeightSource` conformance is non-mutating and
     /// an expert tensor is fetched again and again: re-hashing a five-hundred-megabyte payload on
     /// every read of it would be its own disaster, and a struct cannot hold that memo itself.
-    private final class Verified {
+    private final class ReadState {
         var names: Set<String> = []
+        /// Payload bytes this instance has read. Exposed so a test can assert that reading one
+        /// expert of a stacked tensor does not cost the whole stack, which is the difference
+        /// between streaming and not streaming.
+        var bytesRead = 0
     }
 
-    private let verified = Verified()
+    private let state = ReadState()
+
+    /// Payload bytes read through this instance.
+    public var bytesRead: Int { state.bytesRead }
 
     /// Open an install.
     ///
@@ -119,12 +126,12 @@ public struct InstallFile: WeightSource {
     }
 
     private func digestMatches(_ entry: Entry) throws -> Bool {
-        if verified.names.contains(entry.name) { return true }
+        if state.names.contains(entry.name) { return true }
         guard entry.offset + entry.nbytes <= blob.byteCount else { return false }
         let payload = try blob.readData(offset: entry.offset, byteCount: entry.nbytes)
         let digest = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
         guard digest == entry.sha256 else { return false }
-        verified.names.insert(entry.name)
+        state.names.insert(entry.name)
         return true
     }
 
@@ -133,9 +140,19 @@ public struct InstallFile: WeightSource {
         return entry
     }
 
+    /// A bounded read that is counted, so the cost of a row range is observable rather than
+    /// asserted.
+    private func readCounted(offset: Int, byteCount: Int) throws -> Data {
+        let data = try blob.readData(offset: offset, byteCount: byteCount)
+        state.bytesRead += data.count
+        return data
+    }
+
     private func payload(_ entry: Entry) throws -> Data {
         guard try digestMatches(entry) else { throw Error.digestMismatch(entry.name) }
-        return try blob.readData(offset: entry.offset, byteCount: entry.nbytes)
+        let data = try blob.readData(offset: entry.offset, byteCount: entry.nbytes)
+        state.bytesRead += data.count
+        return data
     }
 
     public func tensor(named name: String) throws -> [Float] {
@@ -166,11 +183,36 @@ public struct InstallFile: WeightSource {
             let slice = try blob.readData(offset: start, byteCount: range.count * stride)
             return try Self.decodeRaw(slice, dtype: entry.dtype, elementCount: range.count * width)
         }
-        // Packed codes cannot be sliced as bytes without re-deriving the group layout, so
-        // the whole tensor is decoded and the rows taken. The quantized roles are never the
-        // embedding or the head, which is what this shortcut exists for.
-        let all = try tensor(named: name)
-        return Array(all[(range.lowerBound * width)..<(range.upperBound * width)])
+        // Packed codes cannot be sliced as bytes without re-deriving the group layout, and the
+        // layout is section-major, so the rows come out of **three** ranges rather than out of a
+        // whole-tensor decode. That distinction is the difference between streaming and not: the
+        // real model's expert tensor is `[256, 1024, 2048]`, so decoding it to return one expert
+        // is 537 M parameters and two gigabytes of `Float` on a node with four and a half.
+        let totalRows = entry.shape.dropLast().reduce(1, *)
+        guard entry.padded_columns % entry.group == 0, entry.padded_columns % 2 == 0 else {
+            throw Error.badHeader("\(name): group \(entry.group) does not divide \(entry.padded_columns)")
+        }
+        guard try digestMatches(entry) else { throw Error.digestMismatch(entry.name) }
+        // The range is in **leading-axis entries** — one expert of a stack, not one payload row —
+        // so it has to be translated, and getting that wrong returns the first expert's first
+        // *row* while still looking like a tensor. One entry spans `inner` payload rows.
+        let inner = entry.shape.dropFirst().dropLast().reduce(1, *)
+        let payloadRows = range.count * inner
+        let first = range.lowerBound * inner
+        let groupsPerRow = entry.padded_columns / entry.group
+        let codesPerRow = entry.padded_columns / 2
+        let codesBytes = totalRows * codesPerRow
+        let scalesBytes = totalRows * groupsPerRow * 4
+        let codes = try readCounted(
+            offset: entry.offset + first * codesPerRow, byteCount: payloadRows * codesPerRow
+        )
+        let scales = try readCounted(
+            offset: entry.offset + codesBytes + first * groupsPerRow * 4, byteCount: payloadRows * groupsPerRow * 4
+        )
+        let zeros = try readCounted(
+            offset: entry.offset + codesBytes + scalesBytes + first * groupsPerRow, byteCount: payloadRows * groupsPerRow
+        )
+        return try Self.dequantizeInt4(codes + scales + zeros, entry: entry, rowCount: payloadRows)
     }
 
     static func elementSize(_ dtype: String) -> Int {
@@ -214,11 +256,16 @@ public struct InstallFile: WeightSource {
     /// is -8 and not 8 — reading it as 8 shifts a whole group by sixteen steps and still
     /// produces plausible weights. Each group of `group` codes shares one fp32 scale and one
     /// int4 zero point, and the reconstruction is `(code - zero) * scale`.
-    static func dequantizeInt4(_ data: Data, entry: Entry) throws -> [Float] {
+    /// Dequantize `rowCount` payload rows — the whole tensor, or a range of it.
+    ///
+    /// The layout is **section-major**: every row's codes, then every row's scales, then every
+    /// row's zeros. That is what makes a row range decodable without the rest of the tensor, since
+    /// each section is row-contiguous; it is also the thing to get wrong, because the wrong row
+    /// count still produces plausible weights.
+    static func dequantizeInt4(_ data: Data, entry: Entry, rowCount: Int? = nil) throws -> [Float] {
         // A stacked expert tensor is `[experts, rows, columns]` and its payload was quantized
-        // with the leading axis flattened, so the codes describe `experts x rows` rows. Getting
-        // this wrong would read the wrong number of groups and still produce plausible weights.
-        let rows = entry.shape.dropLast().reduce(1, *)
+        // with the leading axis flattened, so the codes describe `experts x rows` rows.
+        let rows = rowCount ?? entry.shape.dropLast().reduce(1, *)
         let columns = entry.shape.last ?? 0
         let padded = entry.padded_columns
         let group = entry.group

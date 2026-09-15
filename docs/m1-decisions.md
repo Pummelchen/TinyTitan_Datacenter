@@ -204,3 +204,31 @@ The measurement the task asked for:
 
 So: a 20 GB install verifies on an 8 GB node without free disk crossing the floor, which is what
 `DC-086` said would close it. It is closed.
+
+## The row rule, and the fourth time it bit
+
+`InstallFile.rows(named:range:)` took a range in **leading-axis entries** and, for an `int4`
+tensor, passed it straight to the payload arithmetic as though it were a row index. For a rank-3
+stack those are different numbers: one expert spans `shape[1]` payload rows, so `range 1..<2` read
+the first row of expert 1 rather than expert 1. The fixture reported *"expert 0 of
+gate_up_proj has 32 values, expected 1024"* — every shape plausible, every byte in range.
+
+The rule, which this project has now learned four times and should stop learning:
+
+> **A row is one leading-axis entry.** For a `[experts, rows, columns]` stack, one row is one
+> expert. Any arithmetic that touches the payload's flattened row axis must translate first, by
+> the rows-per-entry factor.
+
+It has bitten both contract readers (each decoded a stacked expert tensor as flat rows), the
+install builder's chunking (which asked the reader for payload rows where the reader offers
+leading-axis entries), and now the row read itself.
+
+The change that came with the fix is the one `DC-033` needed: the payload is section-major, so a
+row range is **three bounded reads and one decode** rather than a whole-stack decode. Measured on
+the fixture, one expert of an eight-expert stack costs **1184 of 9472 bytes** — exactly its share,
+against eight times that before.
+
+One cost is deliberate and worth stating: the first read of an entry also hashes its whole payload,
+which is `I6`'s price and is why the measurement warms the entry first. For the real model that is
+537 MB once per expert tensor per process. A per-slab digest in the format would remove it, and
+that is a format change, so it is not in M1.
