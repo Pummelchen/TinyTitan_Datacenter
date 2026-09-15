@@ -118,6 +118,20 @@ def gated_delta_net_layer(hidden: np.ndarray, weights: dict, config) -> np.ndarr
     key = key.reshape(batch, length, config.linear_num_key_heads, head_k)
     value = value.reshape(batch, length, heads, head_v)
 
+    # `Qwen3_5MoeGatedDeltaNet.forward:645` -- grouped-query style, and the step the 2 B model
+    # never exercised because it has sixteen key heads *and* sixteen value heads:
+    #
+    #     if self.num_v_heads // self.num_k_heads > 1:
+    #         query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
+    #         key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
+    #
+    # The MoE family has sixteen key heads to thirty-two value heads, so each key head serves
+    # two value heads and the delta rule sees them repeated consecutively.
+    if heads // config.linear_num_key_heads > 1:
+        factor = heads // config.linear_num_key_heads
+        query = np.repeat(query, factor, axis=2)
+        key = np.repeat(key, factor, axis=2)
+
     core, _ = chunk_gated_delta_rule(
         query, key, value, gate, beta, chunk_size=64, use_qk_l2norm=True
     )
@@ -333,9 +347,13 @@ class SpecConfig:
         value_heads = config.get("linearValueHeads")
         self.linear_num_value_heads = value_heads
         # The IR stores the totals; the per-head width follows from them, as in the engine.
-        self.linear_num_key_heads = value_heads
+        # The key and value counts are **separate** fields: `qwen3_5` has sixteen of each and
+        # `qwen3_5_moe` has sixteen keys to thirty-two values, so deriving one from the other
+        # silently halved the key head width for the second family.
+        key_heads = config.get("linearKeyHeads") or value_heads
+        self.linear_num_key_heads = key_heads
         key_dim = config.get("linearKeyDim")
-        self.linear_key_head_dim = key_dim // value_heads if key_dim and value_heads else None
+        self.linear_key_head_dim = key_dim // key_heads if key_dim and key_heads else None
         self.linear_value_head_dim = config.get("linearValueHeadDim")
         self.linear_conv_kernel_dim = config.get("linearConvKernelDim")
         self.rope_parameters = {
@@ -368,12 +386,15 @@ def layer_weights(names: dict, source, materialise) -> dict:
     weights = {
         "input_layernorm": materialise(names["norm.attn"]),
         "post_attention_layernorm": materialise(names["norm.mlp"]),
-        "mlp": {
+    }
+    # A family with a dense feed-forward has these roles and a mixture does not; the caller
+    # fills in `mlp` itself when it is a mixture, so the mixer is written once for both.
+    if "mlp.gate" in names:
+        weights["mlp"] = {
             "gate_proj": materialise(names["mlp.gate"]),
             "up_proj": materialise(names["mlp.up"]),
             "down_proj": materialise(names["mlp.down"]),
-        },
-    }
+        }
     if "attn.q" in names:
         weights["self_attn"] = {
             "q_proj": materialise(names["attn.q"]),

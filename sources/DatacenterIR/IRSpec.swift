@@ -38,8 +38,17 @@ public struct ModelConfig: Codable, Sendable, Equatable {
     public var numExperts: Int?
     public var numExpertsPerToken: Int?
     public var moeIntermediateSize: Int?
+    /// The shared expert's width, which is a separate field in the configuration and is not
+    /// the routed experts' width. `qwen3_5_moe` happens to use 512 for both; a contract that
+    /// assumed they were always equal would be right here and wrong elsewhere.
+    public var sharedExpertIntermediateSize: Int?
     public var linearKeyDim: Int?
     public var linearValueDim: Int?
+    /// The Gated DeltaNet's key and value head **counts** are separate: `qwen3_5` uses sixteen
+    /// of each, `qwen3_5_moe` uses sixteen keys to thirty-two values. A contract that derived
+    /// one count from the other was right for the first family and silently wrong for the
+    /// second — the per-head key width came out as half of what it is.
+    public var linearKeyHeads: Int?
     public var linearValueHeads: Int?
     public var linearValueHeadDim: Int?
     public var linearConvKernelDim: Int?
@@ -51,7 +60,9 @@ public struct ModelConfig: Codable, Sendable, Equatable {
         attnOutputGate: Bool = false,
         fullAttentionInterval: Int? = nil, mtpNumHiddenLayers: Int? = nil, numExperts: Int? = nil,
         numExpertsPerToken: Int? = nil, moeIntermediateSize: Int? = nil,
-        linearKeyDim: Int? = nil, linearValueDim: Int? = nil, linearValueHeads: Int? = nil,
+        sharedExpertIntermediateSize: Int? = nil,
+        linearKeyDim: Int? = nil, linearValueDim: Int? = nil,
+        linearKeyHeads: Int? = nil, linearValueHeads: Int? = nil,
         linearValueHeadDim: Int? = nil, linearConvKernelDim: Int? = nil
     ) {
         self.hiddenSize = hiddenSize
@@ -71,8 +82,10 @@ public struct ModelConfig: Codable, Sendable, Equatable {
         self.numExperts = numExperts
         self.numExpertsPerToken = numExpertsPerToken
         self.moeIntermediateSize = moeIntermediateSize
+        self.sharedExpertIntermediateSize = sharedExpertIntermediateSize
         self.linearKeyDim = linearKeyDim
         self.linearValueDim = linearValueDim
+        self.linearKeyHeads = linearKeyHeads
         self.linearValueHeads = linearValueHeads
         self.linearValueHeadDim = linearValueHeadDim
         self.linearConvKernelDim = linearConvKernelDim

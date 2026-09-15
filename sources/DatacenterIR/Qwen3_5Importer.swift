@@ -109,6 +109,7 @@ public struct Qwen3_5Importer: Sendable {
                 mtpNumHiddenLayers: mtpLayers,
                 linearKeyDim: keyDim,
                 linearValueDim: valueDim,
+                linearKeyHeads: text.linear_num_key_heads,
                 linearValueHeads: valueHeads,
                 linearValueHeadDim: valueHeadDim,
                 linearConvKernelDim: convKernel

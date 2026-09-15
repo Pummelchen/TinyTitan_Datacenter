@@ -116,11 +116,18 @@ public extension TensorRole {
         case .sharedExpertGateScalar:
             return [1, config.hiddenSize]
 
-        case .expertGate, .expertUp, .sharedExpertGate, .sharedExpertUp:
+        case .expertGate, .expertUp:
             guard let width = config.moeIntermediateSize else { return nil }
             return [width, config.hiddenSize]
-        case .expertDown, .sharedExpertDown:
+        case .expertDown:
             guard let width = config.moeIntermediateSize else { return nil }
+            return [config.hiddenSize, width]
+        // The shared expert has its own width in the configuration.
+        case .sharedExpertGate, .sharedExpertUp:
+            guard let width = config.sharedExpertIntermediateSize ?? config.moeIntermediateSize else { return nil }
+            return [width, config.hiddenSize]
+        case .sharedExpertDown:
+            guard let width = config.sharedExpertIntermediateSize ?? config.moeIntermediateSize else { return nil }
             return [config.hiddenSize, width]
         case .routerLogits:
             guard let experts = config.numExperts else { return nil }

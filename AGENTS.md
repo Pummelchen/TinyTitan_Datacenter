@@ -153,6 +153,10 @@ python3 tools/make_qwen35_fixture.py \
 .venv/bin/python tools/measure_quantization.py \
     --snapshot .build/hf-cache/models--Qwen--Qwen3.5-2B/snapshots/<revision> --spec .build/spec-2b.json
 
+# M1's text tower, checked against the reference's own Qwen3_5MoeTextModel: the numbers
+# layer by layer, and the router's decisions at every layer as a separate assertion (I3).
+.venv/bin/python -m unittest discover -s tools -p 'test_ordered_qwen36.py'
+
 # Does one reference family do the same arithmetic as another, or merely have the same
 # names and shapes? Parses both modules, renames one onto the other, and compares every
 # top-level entity. Exits non-zero on a difference not listed in --allow-differ, so a

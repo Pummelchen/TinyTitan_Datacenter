@@ -118,6 +118,45 @@ chunked rule are the same code in both families, so M1's kernel work is the mixt
 router, the expert stack and the shared expert — and the streaming around it, not a second
 implementation of the attention.
 
+## The Gated DeltaNet is not the same shape, and that was two silent bugs
+
+The AST diff above says the two families' `Qwen3_5GatedDeltaNet` is *identical code*. It does
+not say the code is *exercised identically*: the arithmetic depends on the configuration, and
+this family's configuration is lopsided.
+
+| | `qwen3_5` (2 B) | `qwen3_5_moe` (35 B) |
+| --- | --- | --- |
+| key heads | 16 | **16** |
+| value heads | 16 | **32** |
+| key head dim | 128 | 128 |
+
+Two bugs came out of that single asymmetry, both of which the 2 B model could not expose:
+
+1. **The key head count was derived from the value head count.** The IR carried
+   `linearValueHeads` and the total `linearKeyDim`, and both the Python contract and
+   `Qwen3_5Forward.swift:147` computed `keyHeads = valueHeads`. For this family that makes the
+   key head width `2048 / 32 = 64` instead of `128` — every Gated DeltaNet layer wrong, with no
+   shape error anywhere to catch it. The IR now carries `linearKeyHeads` as its own field,
+   because the two counts are independent facts about the model.
+
+2. **The grouped-query head expansion was missing.** `Qwen3_5MoeGatedDeltaNet.forward:645`:
+
+   ```python
+   if self.num_v_heads // self.num_k_heads > 1:
+       query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
+       key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
+   ```
+
+   Each key head serves `32 / 16 = 2` value heads, and without the repeat the delta rule pairs
+   the wrong heads. The contract now does it; **the Swift `GatedDeltaNet` still does not** and
+   is filed as `DC-038` rather than patched silently — its recurrence is flat over all heads,
+   which is valid because the heads are block-diagonal, but the flat vectors have to be
+   expanded first.
+
+Both were found by a tiny configuration with **sixteen key heads to thirty-two value heads**,
+copied from the real model, rather than the symmetric one the 2 B tests use. That is the
+argument for building fixtures from the model's own numbers instead of convenient ones.
+
 ## The mixture of experts, transcribed (`Qwen3_5MoeSparseMoeBlock:903`)
 
 Read from `transformers` v5.17.0 `models/qwen3_5_moe/modeling_qwen3_5_moe.py`.
@@ -202,4 +241,8 @@ mixer, residual, `post_attention_layernorm`, mixture.
 
 - the `attention_mask` path: what the reference does at padded positions in a batch, which
   M1's single-sequence runs do not exercise but M2's might;
+- `full_attention_interval` is consumed by the reference's configuration *constructor* and is
+  not an attribute afterwards — `layer_types` is the authoritative list — so the checkpoint's
+  `config.json` is the only place the interval can be read from, which is where the importer
+  reads it;
 - the MTP head, which is M5's feature.

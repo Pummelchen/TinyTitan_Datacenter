@@ -144,7 +144,9 @@ public struct Qwen3_5Forward: ForwardPass {
         else { throw Error.missingTensor(block: "config", role: .linearInQKV) }
         // The key head width is the key dimension over the value head count: this family has
         // one key head per value head, and the IR stores the totals.
-        let keyHeads = valueHeads
+        // Sixteen keys to thirty-two values in the MoE family: deriving one count from
+        // the other was a silent bug for it.
+        let keyHeads = config.linearKeyHeads ?? valueHeads
         let keyHeadDim = keyDim / max(keyHeads, 1)
         return GatedDeltaNetShape(
             hiddenSize: config.hiddenSize, keyHeads: keyHeads, valueHeads: valueHeads,

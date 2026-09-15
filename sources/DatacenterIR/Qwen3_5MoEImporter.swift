@@ -97,8 +97,10 @@ public struct Qwen3_5MoEImporter: Sendable {
                 numExperts: text.num_experts,
                 numExpertsPerToken: text.num_experts_per_tok,
                 moeIntermediateSize: text.moe_intermediate_size,
+                sharedExpertIntermediateSize: text.shared_expert_intermediate_size,
                 linearKeyDim: keyDim,
                 linearValueDim: valueDim,
+                linearKeyHeads: text.linear_num_key_heads,
                 linearValueHeads: valueHeads,
                 linearValueHeadDim: text.linear_value_head_dim,
                 linearConvKernelDim: text.linear_conv_kernel_dim
