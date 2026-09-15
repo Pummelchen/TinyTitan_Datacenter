@@ -14,6 +14,16 @@ public protocol WeightSource {
     /// A row range, in fp32. The embedding and the tied head are read this way so a
     /// `[248320, 2048]` matrix is never materialised to use one row of it.
     func rows(named name: String, range: Range<Int>) throws -> [Float]
+    /// A row range for a consumer that will not read it again soon, so its pages are not worth
+    /// keeping: the routed expert slabs. Defaults to the ordinary read, which is what an install
+    /// already does — its payload is read uncached by construction.
+    func rowsStreaming(named name: String, range: Range<Int>) throws -> [Float]
+}
+
+extension WeightSource {
+    public func rowsStreaming(named name: String, range: Range<Int>) throws -> [Float] {
+        try rows(named: name, range: range)
+    }
 }
 
 extension SafetensorsFile: WeightSource {

@@ -66,7 +66,7 @@ public struct StackedExpertProvider: ExpertWeightProvider {
     }
 
     public func gateUp(expert: Int, shape: MixtureShape) throws -> [Float] {
-        let values = try source.rows(named: gateUpName, range: expert..<(expert + 1))
+        let values = try source.rowsStreaming(named: gateUpName, range: expert..<(expert + 1))
         let expected = 2 * shape.intermediate * shape.hiddenSize
         guard values.count == expected else {
             throw ExpertProviderError.unexpectedWidth(
@@ -77,7 +77,7 @@ public struct StackedExpertProvider: ExpertWeightProvider {
     }
 
     public func down(expert: Int, shape: MixtureShape) throws -> [Float] {
-        let values = try source.rows(named: downName, range: expert..<(expert + 1))
+        let values = try source.rowsStreaming(named: downName, range: expert..<(expert + 1))
         let expected = shape.hiddenSize * shape.intermediate
         guard values.count == expected else {
             throw ExpertProviderError.unexpectedWidth(

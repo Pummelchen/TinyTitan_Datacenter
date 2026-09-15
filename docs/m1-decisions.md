@@ -180,3 +180,27 @@ memory-maps its shard, so the streaming path over a safetensors snapshot is page
 as the install was. That is the remaining work on `DC-086`, and the byte-level verification of a
 20 GB install on this node is still outstanding — it needs a machine with headroom, or the
 checkpoint reader fixed first.
+
+## `DC-086` closed: the measurement
+
+The checkpoint reader now has the same treatment as the install. `SafetensorsFile.rowsStreaming`
+reads a row range through `UncachedFile` while `float32(_:rows:)` keeps the mapping, and the split
+is by **consumer** rather than by tensor: the routed expert slabs stream (they are read once per
+token and would evict everything useful) and the embedding and head stay cached (they are read
+every token and are exactly what the cache is for). All three read paths now share one decoder, so
+they cannot drift apart.
+
+The Python tooling got the same fix, because the verification that caused the incident was a
+Python read: `open_uncached`, `pread_exact` and `digest_of` replace `read_bytes()`, which on a
+20 GB install is twenty gigabytes **resident**, not merely cached.
+
+The measurement the task asked for:
+
+| | before | after |
+| --- | --- | --- |
+| free disk during a full 20 GB verification | 17 GB → **2.96 GB** | steady at **16 GB** |
+| peak memory for the same verification | ~20 GB resident (`read_bytes`) | **33.7 MB** |
+| how long the check takes | a full read on every open | once per payload, on first read |
+
+So: a 20 GB install verifies on an 8 GB node without free disk crossing the floor, which is what
+`DC-086` said would close it. It is closed.

@@ -25,8 +25,10 @@ to stay close to what vendors use (I5) and close to what a Metal kernel can read
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -309,14 +311,68 @@ def write_install(
     return writer.finish(source=source, spec=spec, policy_files=policy_files)
 
 
-def verify_install(install: Path) -> dict:
+#: How much of a payload to hold at once. The install for the 35 B model is twenty gigabytes and
+#: this node has four and a half usable, so "read the file" is not an operation that exists here.
+WINDOW_BYTES = 4 * 1024 * 1024
+
+
+def open_uncached(path: Path, uncached: bool = True) -> int:
+    """Open a payload for reading with the buffer cache bypassed.
+
+    The rule the brief gives for expert slabs, applied to the tooling as well: reading a model
+    through the page cache is what turned "verify a 20 GB install" into free disk falling from
+    17 GB to 2.96 GB, because the cached pages became memory pressure and memory pressure became
+    swap. `F_NOCACHE` is advisory and best-effort; the reads are correct either way.
+    """
+    descriptor = os.open(path, os.O_RDONLY)
+    if uncached and hasattr(fcntl, "F_NOCACHE"):
+        fcntl.fcntl(descriptor, fcntl.F_NOCACHE, 1)
+    return descriptor
+
+
+def pread_exact(descriptor: int, offset: int, nbytes: int) -> bytes:
+    """Exactly `nbytes` from `offset`, in bounded windows, never the whole file."""
+    pieces: list[bytes] = []
+    read = 0
+    while read < nbytes:
+        chunk = os.pread(descriptor, min(WINDOW_BYTES, nbytes - read), offset + read)
+        if not chunk:
+            raise PolicyError(f"payload at {offset} is short: wanted {nbytes} bytes, got {read}")
+        pieces.append(chunk)
+        read += len(chunk)
+    return b"".join(pieces)
+
+
+def digest_of(descriptor: int, offset: int, nbytes: int) -> str:
+    """A streaming sha256 over a payload, holding one window at a time."""
+    hasher = hashlib.sha256()
+    read = 0
+    while read < nbytes:
+        chunk = os.pread(descriptor, min(WINDOW_BYTES, nbytes - read), offset + read)
+        if not chunk:
+            raise PolicyError(f"payload at {offset} is short: wanted {nbytes} bytes, got {read}")
+        hasher.update(chunk)
+        read += len(chunk)
+    return hasher.hexdigest()
+
+
+def verify_install(install: Path, uncached: bool = True) -> dict:
+    """Check every payload digest, streaming and uncached.
+
+    The whole-payload check, for a gate that wants it stated. The runtime path does not do this:
+    `InstallSource` checks each payload the first time it reads it, exactly as the Swift
+    `InstallFile` does, because hashing twenty gigabytes to open a file is not a thing this
+    hardware can do.
+    """
     manifest = json.loads((install / "install.json").read_text())
-    blob = (install / "data.bin").read_bytes()
-    for entry in manifest["tensors"]:
-        payload = blob[entry["offset"] : entry["offset"] + entry["nbytes"]]
-        digest = hashlib.sha256(payload).hexdigest()
-        if digest != entry["sha256"]:
-            raise PolicyError(f"{entry['name']}: payload digest {digest} does not match the manifest")
+    descriptor = open_uncached(install / "data.bin", uncached)
+    try:
+        for entry in manifest["tensors"]:
+            digest = digest_of(descriptor, entry["offset"], entry["nbytes"])
+            if digest != entry["sha256"]:
+                raise PolicyError(f"{entry['name']}: payload digest {digest} does not match the manifest")
+    finally:
+        os.close(descriptor)
     return manifest
 
 
@@ -328,14 +384,38 @@ class InstallSource:
     quantization.
     """
 
-    def __init__(self, install: Path):
-        self.manifest = verify_install(install)
-        self._blob = (install / "data.bin").read_bytes()
+    def __init__(self, install: Path, uncached: bool = True):
+        # Metadata only: the payload is read one tensor at a time, uncached, so that a
+        # twenty-gigabyte install is never resident and never fills the page cache.
+        self.manifest = json.loads((install / "install.json").read_text())
+        self._descriptor = open_uncached(install / "data.bin", uncached)
         self._entries = {entry["name"]: entry for entry in self.manifest["tensors"]}
+        self._verified: set[str] = set()
+
+    def close(self) -> None:
+        if self._descriptor >= 0:
+            os.close(self._descriptor)
+            self._descriptor = -1
+
+    def _checked(self, name: str) -> bytes:
+        """One payload, read uncached, with its digest checked the first time it is read.
+
+        The check is not weakened by moving it here — a tampered payload still cannot be decoded
+        into plausible weights (`I6`) — and it is skipped on later reads of the same tensor, which
+        for a streamed expert slab is the difference between one hash and one hash per token.
+        """
+        entry = self._entries[name]
+        payload = pread_exact(self._descriptor, entry["offset"], entry["nbytes"])
+        if name not in self._verified:
+            digest = hashlib.sha256(payload).hexdigest()
+            if digest != entry["sha256"]:
+                raise PolicyError(f"{name}: payload digest {digest} does not match the manifest")
+            self._verified.add(name)
+        return payload
 
     def _payload(self, name: str) -> dict:
         entry = self._entries[name]
-        payload = self._blob[entry["offset"] : entry["offset"] + entry["nbytes"]]
+        payload = self._checked(name)
         rows = flat_rows(entry)
         codes_bytes = rows * (entry["padded_columns"] // 2)
         group = entry["group"]
@@ -350,8 +430,7 @@ class InstallSource:
         }
 
     def _raw(self, name: str) -> bytes:
-        entry = self._entries[name]
-        return self._blob[entry["offset"] : entry["offset"] + entry["nbytes"]]
+        return self._checked(name)
 
     def tensor(self, name: str) -> np.ndarray:
         entry = self._entries[name]
