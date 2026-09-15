@@ -1,0 +1,59 @@
+{
+ "note": "The frozen prompt set for the M0 gate. Token ids are resolved once, here, and committed, so the gate does not depend on a tokenizer version to be reproducible. Changing this file changes the gate and must be recorded as such.",
+ "prompts": [
+  {
+   "decoded": "The capital of France is",
+   "id": "capital",
+   "text": "The capital of France is",
+   "tokens": [
+    760,
+    6511,
+    314,
+    9338,
+    369
+   ]
+  },
+  {
+   "decoded": "1, 2, 3, 5, 8, 13,",
+   "id": "fibonacci",
+   "text": "1, 2, 3, 5, 8, 13,",
+   "tokens": [
+    16,
+    11,
+    220,
+    17,
+    11,
+    220,
+    18,
+    11,
+    220,
+    20,
+    11,
+    220,
+    23,
+    11,
+    220,
+    16,
+    18,
+    11
+   ]
+  },
+  {
+   "decoded": "Water boils at a temperature of",
+   "id": "boiling",
+   "text": "Water boils at a temperature of",
+   "tokens": [
+    27336,
+    85895,
+    506,
+    264,
+    9039,
+    314
+   ]
+  }
+ ],
+ "tokenizer": {
+  "repo": "Qwen/Qwen3.5-2B",
+  "revision": "15852e8c16360a2fea060d615a32b45270f8a8fc"
+ }
+}

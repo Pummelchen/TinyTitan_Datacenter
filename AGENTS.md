@@ -136,6 +136,13 @@ python3 tools/make_qwen35_fixture.py \
     --snapshot .build/hf-cache/models--Qwen--Qwen3.5-2B/snapshots/<revision> --dtype f32
 .venv/bin/python tools/compare_engine_to_oracle.py .build/engine-2b .build/torch-2b
 
+# THE M0 GATE (DC-026): the frozen prompt set, both halves of the claim, one report.
+# Reads tools/m0_prompts.json, writes .build/m0-gate/report.json, exits non-zero on any
+# failure. Slower than the other commands because it runs the oracle too.
+.venv/bin/python tools/run_m0_gate.py \
+    --snapshot .build/hf-cache/models--Qwen--Qwen3.5-2B/snapshots/<revision> \
+    --model Qwen/Qwen3.5-2B --revision <sha>
+
 # The reference implementation that produces golden traces. Pinned exactly: a
 # trace is only comparable to another captured from the same transformers build.
 uv pip install --python .venv/bin/python -r tools/requirements-reference.txt

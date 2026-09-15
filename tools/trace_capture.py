@@ -523,7 +523,15 @@ def main(argv=None) -> int:
     parser.add_argument("--dtype", default="f32", choices=["f32", "bf16"])
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument(
+        "--tokens",
+        help="comma-separated token ids; the default is a fixed sequence so a trace is "
+        "comparable across runs, and the gate freezes its own set",
+    )
     args = parser.parse_args(argv)
+    token_ids = None
+    if args.tokens:
+        token_ids = [int(part) for part in args.tokens.replace(" ", "").split(",") if part]
 
     if not torch_available():
         print("error: torch is not installed in this interpreter", file=sys.stderr)
@@ -551,6 +559,7 @@ def main(argv=None) -> int:
             dtype_name=args.dtype,
             threads=args.threads,
             seed=args.seed,
+            token_ids=token_ids,
             model_id=args.model,
             revision=args.revision,
         )
