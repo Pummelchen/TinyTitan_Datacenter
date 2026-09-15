@@ -54,11 +54,21 @@ about **2e-06 relative**. Quantization raises that to **1.6e-01 – 2.7e-01** �
 orders of magnitude — and costs one decision in twenty-nine. That ratio is the thing to
 carry into M1, where the experts are quantized but the router, per I3, is not.
 
+## The engine reads the install, bit for bit
+
+Swift decodes the same packed codes, the same group scales and the same zero points, and the
+two implementations agree **byte for byte** on all three frozen prompts — 40,683,520 bytes of
+trace data, matching digests, the differ reporting `IDENTICAL`. There is no rounding in this
+path to disagree about: the codes, the zero points and the scales are integers and exact
+arithmetic, which is why this comparison can be byte equality rather than a tolerance, and why
+it is a stronger statement than the bf16 path's.
+
+The install carries its own **IR spec**, so the engine needs nothing beside it — and the
+configuration the forward pass uses is reconstructed from that spec, which is the check that
+the spec is sufficient to run the model rather than a description of one (L1).
+
 ## What this does not yet show
 
-- **The engine does not read the install.** The contract runs it bit-reproducibly, but the
-  reproducibility half of the claim — Swift reading the same packed codes and producing the
-  same bytes — is unverified, and it is the next step.
 - **One prompt set, all short.** Quantization's effect on the Gated DeltaNet's recurrence
   over long sequences is exactly the kind of thing the brief warns is invisible at short
   context; M0c does not claim otherwise.

@@ -67,6 +67,10 @@ public enum GenerationError: Error, CustomStringConvertible {
 /// importer and a case here — not a flag the operator has to remember.
 public enum ModelLoader {
     public static func open(snapshot: URL) throws -> any ForwardPass {
+        // An install is self-describing: if its header is there, it is what we were handed.
+        if FileManager.default.fileExists(atPath: snapshot.appendingPathComponent("install.json").path) {
+            return try Qwen3_5Forward(install: snapshot)
+        }
         let configData = try Data(contentsOf: snapshot.appendingPathComponent("config.json"))
         guard let object = try JSONSerialization.jsonObject(with: configData) as? [String: Any],
               let modelType = object["model_type"] as? String

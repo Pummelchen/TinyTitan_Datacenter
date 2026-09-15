@@ -21,7 +21,7 @@ public struct Qwen3_5Forward: ForwardPass {
 
     public let spec: IRSpec
     public let config: ModelConfig
-    private let file: SafetensorsFile
+    private let source: any WeightSource
     private let namesByBlock: [String: [TensorRole: String]]
     private let embeddingName: String
     private let finalNormName: String
@@ -42,6 +42,8 @@ public struct Qwen3_5Forward: ForwardPass {
         }
     }
 
+    /// Open a checkpoint: the spec is built from its inventory by the importer, which is the
+    /// only place that knows what a tensor name means.
     public init(snapshot: URL) throws {
         let weights = snapshot.appendingPathComponent("model.safetensors")
         let file: SafetensorsFile
@@ -57,19 +59,34 @@ public struct Qwen3_5Forward: ForwardPass {
             }
             file = try SafetensorsFile(url: snapshot.appendingPathComponent(shard))
         }
-        self.file = file
 
         let configData = try Data(contentsOf: snapshot.appendingPathComponent("config.json"))
         let hfConfig = try JSONDecoder().decode(Qwen3_5Importer.HuggingFaceConfig.self, from: configData)
         let config = hfConfig.modelConfig()
-        self.config = config
-
         let inventory = file.names.map { (name: $0, shape: file.tensors[$0]!.shape) }
         let spec = try Qwen3_5Importer.makeSpec(
             source: Provenance(repo: snapshot.lastPathComponent, revision: "local"),
             config: config,
             inventory: inventory
         )
+        try self.init(source: file, config: config, spec: spec)
+    }
+
+    /// Open a quantized install. The spec travels inside the artifact, so nothing else is
+    /// needed — and the config is reconstructed from it, which is the check that the spec is
+    /// genuinely sufficient to run the model (L1).
+    public init(install: URL) throws {
+        let file = try InstallFile(url: install)
+        let config = try Qwen3_5Forward.config(from: file.manifest.spec)
+        try self.init(source: file, config: config, spec: file.manifest.spec)
+    }
+
+    /// The IR's configuration, in the form the kernels take.
+    public static func config(from spec: IRSpec) throws -> ModelConfig { spec.config }
+
+    private init(source: any WeightSource, config: ModelConfig, spec: IRSpec) throws {
+        self.source = source
+        self.config = config
         self.spec = spec
 
         var namesByBlock: [String: [TensorRole: String]] = [:]
@@ -91,7 +108,7 @@ public struct Qwen3_5Forward: ForwardPass {
         guard let byRole = namesByBlock[block] else { throw Error.missingTensor(block: block, role: .attnNorm) }
         func load(_ role: TensorRole) throws -> [Float] {
             guard let name = byRole[role] else { throw Error.missingTensor(block: block, role: role) }
-            return try file.float32(name)
+            return try source.tensor(named: name)
         }
         var weights: [TensorRole: [Float]] = [
             .attnNorm: try load(.attnNorm), .mlpNorm: try load(.mlpNorm),
@@ -173,7 +190,7 @@ public struct Qwen3_5Forward: ForwardPass {
         var hidden = [Float](repeating: 0, count: length * hiddenSize)
         for (row, token) in tokens.enumerated() {
             precondition(token >= 0 && token < config.vocabSize, "token \(token) outside the vocabulary")
-            let values = try file.float32(embeddingName, rows: token..<(token + 1))
+            let values = try source.rows(named: embeddingName, range: token..<(token + 1))
             for index in 0..<hiddenSize { hidden[row * hiddenSize + index] = values[index] }
         }
         captured.append(TraceWriter.Tensor(name: "embed.out", shape: [length, hiddenSize], values: hidden))
@@ -230,7 +247,7 @@ public struct Qwen3_5Forward: ForwardPass {
             captured.append(TraceWriter.Tensor(name: "\(tag).hidden_out", shape: [length, hiddenSize], values: hidden))
         }
 
-        let finalWeight = try file.float32(finalNormName)
+        let finalWeight = try source.tensor(named: finalNormName)
         hidden = rmsNorm(hidden, weight: finalWeight, rows: length, width: hiddenSize, eps: Float(config.rmsNormEps))
         captured.append(TraceWriter.Tensor(name: "final_norm.out", shape: [length, hiddenSize], values: hidden))
 
@@ -240,7 +257,7 @@ public struct Qwen3_5Forward: ForwardPass {
         var row = 0
         while row < config.vocabSize {
             let upper = min(row + Self.headBlockRows, config.vocabSize)
-            let block = try file.float32(headName, rows: row..<upper)
+            let block = try source.rows(named: headName, range: row..<upper)
             let product = Ops.orderedMatmul(
                 x: hidden, w: block, rows: length, k: hiddenSize, out: upper - row
             )

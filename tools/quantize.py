@@ -198,6 +198,9 @@ def write_install(
         "passes": ["quantize-group-affine-int4"],
         "policy_files": policy_files,
         "family": spec["family"],
+        # Self-describing: roles, shapes and the policies are in the artifact, so a reader
+        # needs nothing beside it (L1's spec file, carried rather than referenced).
+        "spec": spec,
         "tensors": index,
     }
     (install / "data.bin").write_bytes(bytes(blob))

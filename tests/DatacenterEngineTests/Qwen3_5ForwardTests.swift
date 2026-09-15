@@ -119,6 +119,86 @@ final class Qwen3_5ForwardTests: XCTestCase {
         XCTAssertEqual(golden.layer_types, ["linear_attention", "linear_attention", "linear_attention", "full_attention"])
     }
 
+
+    /// The int4 install, decoded by the engine and compared bit for bit with the contract's
+    /// own dequantization. Integer codes, integer zero points and fp32 scales: there is no
+    /// rounding here to disagree about, so a tolerance would only hide a wrong layout.
+    func testTheInt4InstallMatchesTheContractBitForBit() throws {
+        let install = try checkpoint().appendingPathComponent("install")
+        let goldenURL = try checkpoint().appendingPathComponent("golden-install.json")
+        struct InstallGolden: Decodable {
+            var tokens: [Int]
+            var quantized: Int
+            var kept: Int
+            var tensors: [String: Vector]
+        }
+        let golden = try JSONDecoder().decode(InstallGolden.self, from: Data(contentsOf: goldenURL))
+        XCTAssertGreaterThan(golden.quantized, 0, "the fixture must actually quantize something")
+
+        let forward = try Qwen3_5Forward(install: install)
+        let captured = try forward.forward(tokens: golden.tokens)
+        var byName: [String: [Float]] = [:]
+        for tensor in captured { byName[tensor.name] = tensor.values }
+        for (name, expected) in golden.tensors.sorted(by: { $0.key < $1.key }) {
+            guard let actual = byName[name] else {
+                XCTFail("the engine did not capture \(name)")
+                continue
+            }
+            assertSameBits(actual, expected, name)
+        }
+    }
+
+    /// The install carries its own spec, so the engine needs nothing beside it — and the
+    /// configuration comes back out of that spec, which is the check that the spec is
+    /// sufficient to run the model rather than a description of one.
+    func testTheInstallIsSelfDescribing() throws {
+        let install = try checkpoint().appendingPathComponent("install")
+        let file = try InstallFile(url: install)
+        XCTAssertEqual(file.manifest.family, "qwen3_5")
+        XCTAssertEqual(file.manifest.passes, ["quantize-group-affine-int4"])
+        XCTAssertEqual(file.manifest.policy_files, ["tools/quant_policy.json"])
+        XCTAssertEqual(file.manifest.spec.tensors.count, 55)
+        let forward = try Qwen3_5Forward(install: install)
+        XCTAssertEqual(forward.config.partialRotaryFactor, 0.5)
+        XCTAssertEqual(forward.config.ropeTheta, 1e7)
+    }
+
+    /// The layout is the thing a reader can get wrong while every shape stays right: the
+    /// codes are signed and the low nibble comes first.
+    func testTheFourBitCodesAreSignedAndLowNibbleFirst() throws {
+        let install = try checkpoint().appendingPathComponent("install")
+        let file = try InstallFile(url: install)
+        // A quantized weight, checked against the same arithmetic written out longhand.
+        let name = try XCTUnwrap(file.manifest.tensors.first { $0.dtype == "int4" }?.name)
+        let entry = try file.entry(name)
+        let payload = try Data(contentsOf: install.appendingPathComponent("data.bin"))[
+            entry.offset..<(entry.offset + entry.nbytes)
+        ]
+        let decoded = try file.tensor(named: name)
+        let rows = entry.shape[0]
+        let columns = entry.shape[1]
+        let padded = entry.padded_columns
+        let groups = padded / entry.group
+        let codeBytes = rows * padded / 2
+        var expected = [Float](repeating: 0, count: rows * columns)
+        payload.withUnsafeBytes { raw in
+            let base = raw.baseAddress!
+            for row in 0..<rows {
+                for index in 0..<columns {
+                    let byte = base.loadUnaligned(fromByteOffset: row * (padded / 2) + index / 2, as: UInt8.self)
+                    let nibble = index % 2 == 0 ? (byte & 0x0F) : (byte >> 4)
+                    let code = Int(nibble) >= 8 ? Int(nibble) - 16 : Int(nibble)
+                    let groupIndex = row * groups + index / entry.group
+                    let scaleWord = base.loadUnaligned(fromByteOffset: codeBytes + groupIndex * 4, as: UInt32.self)
+                    let zeroByte = base.loadUnaligned(fromByteOffset: codeBytes + groups * rows * 4 + groupIndex, as: UInt8.self)
+                    let zero = Int(zeroByte) >= 128 ? Int(zeroByte) - 256 : Int(zeroByte)
+                    expected[row * columns + index] = Float(code - zero) * Float(bitPattern: UInt32(littleEndian: scaleWord))
+                }
+            }
+        }
+        XCTAssertEqual(decoded, expected, "the reader and the format's own arithmetic must agree exactly")
+    }
+
     /// Row-range reads are what let a 2 B model run on an 8 GB node, so they are checked
     /// against the whole-tensor read rather than assumed.
     func testRowReadsMatchTheWholeTensorRead() throws {

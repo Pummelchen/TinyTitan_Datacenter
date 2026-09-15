@@ -170,6 +170,43 @@ def main() -> int:
     else:
         print("spec: skipped, build first with `swift build -c release`")
 
+    # A tiny install beside it, and the contract's output on *that*: the engine's install
+    # reader is asserted against these bits, so the int4 path gets the same guarantee the
+    # bf16 path has.
+    import quantize
+
+    spec = json.loads((FIXTURE / "spec.json").read_text()) if (FIXTURE / "spec.json").exists() else None
+    if spec is not None:
+        policy = quantize.load_policy(ROOT / "tools" / "quant_policy.json")
+        # The tiny model only exercises a few roles; add them to a copy of the policy so the
+        # fixture does not depend on which roles the pinned model happens to use.
+        tiny_policy = {"quant": dict(policy["quant"])}
+        for tensor in spec["tensors"]:
+            tiny_policy["quant"].setdefault(tensor["role"], "bf16")
+        install = FIXTURE / "install"
+        manifest = quantize.build_install(FIXTURE, install, spec, tiny_policy, "tools/quant_policy.json")
+        install_captured: dict[str, np.ndarray] = {}
+        source = quantize.InstallSource(install)
+        q35.streamed_text_forward(spec, source, TOKENS, capture=install_captured)
+        (FIXTURE / "golden-install.json").write_text(
+            json.dumps(
+                {
+                    "note": (
+                        "The contract's output on the tiny int4 install beside this file. The "
+                        "engine's install reader must reproduce these bits; regenerate with "
+                        "tools/make_tiny_qwen35_checkpoint.py."
+                    ),
+                    "tokens": TOKENS,
+                    "quantized": len(manifest["tensors"]),
+                    "kept": len(manifest["skipped"]),
+                    "tensors": {name: vector(values) for name, values in install_captured.items()},
+                },
+                indent=1,
+            )
+            + "\n"
+        )
+        print(f"install: {len(manifest['tensors'])} quantized, {len(manifest['skipped'])} kept")
+
     size = (FIXTURE / "model.safetensors").stat().st_size
     print(f"wrote {FIXTURE}: checkpoint {size} bytes, {len(captured)} captured tensors")
     return 0
