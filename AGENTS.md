@@ -1,10 +1,23 @@
 # TinyTitan Datacenter
 
+<!-- agent-harnesses:begin -->
+> **One instruction file.** This is it. Codex, DeepSeek Harness, OpenCode,
+> Qwen Code, Qoder and Zed read `AGENTS.md` directly, and Claude Code reads it
+> through the committed `CLAUDE.md`, which contains nothing but `@AGENTS.md`.
+> **Edit only this file** — do not add a second set of instructions anywhere.
+>
+> Do **not** add `.rules`, `.cursorrules`, `.windsurfrules`, `.clinerules`,
+> `.github/copilot-instructions.md` or `AGENT.md`. Zed takes the *first match*
+> from that list, **ahead of `AGENTS.md`**, so any one of them silently
+> replaces this file for every Zed user.
+<!-- agent-harnesses:end -->
+
 A distributed inference engine for large MoE language models on a cluster of Mac
-minis and Mac Studios, over LAN/SFP/QSFP and Thunderbolt. This checkout is in
-**design phase**: there is no source code yet. The repository holds the README, the
-licence, the repository scaffolding, the tooling and the reference contracts under
-`docs/`; the design, the plan and the status live in the wiki.
+minis and Mac Studios, over LAN/SFP/QSFP and Thunderbolt. The Swift engine under
+`sources/` runs Qwen3, Qwen3.5 and Qwen3.5-MoE forward passes and generation, and
+M0's gate is recorded as passing with M1's correctness claim holding on the real
+35B checkpoint; throughput is the open finding. There are **no releases and no
+tags**. The design, the plan and the status live in the wiki.
 
 ## Scope of this checkout
 
@@ -22,6 +35,9 @@ licence, the repository scaffolding, the tooling and the reference contracts und
   read-only unless a change there is explicitly requested. It is **Apache-2.0**; this
   repository is **MIT**, so check the obligations before reusing any of its code here
   (tracked as `DC-013`).
+- `docs/` holds the decision records (`m0-decisions.md`, `m1-decisions.md`), the gate
+  docs (`m0-gate.md`, `m1-gate.md`, `m0c-quantization.md`), the contracts
+  (`ir-schema.md`, `trace-format.md`, `reference-*.md`) and `repository-layout.md`.
 
 ## This node's hard limit — read before running anything
 
@@ -70,6 +86,51 @@ python3 tools/check_disk_headroom.py
 
 Clearing `.build/DISK_STOP` is a deliberate act: read it, free space, then `rm` it.
 
+## Layout
+
+- `sources/DatacenterEngine/` — the runtime: `Qwen3Forward`, `Qwen3_5Forward`,
+  `MixtureOfExperts`, `GatedDeltaNet`, `ModelCache`, `Safetensors` and
+  `ShardedSafetensors`, `UncachedFile`, `Install`, `Ops`, `TraceWriter`.
+- `sources/DatacenterIR/` — the importer: one importer per model family,
+  `TensorRole`, `IRSpec`, `Validation`.
+- `sources/DatacenterGenerate/`, `sources/DatacenterTrace/` — the two CLIs.
+- `tools/` — the Python reference implementation and every gate: `ordered_*.py`
+  (the numeric contracts), `run_m0_gate.py`, `run_m1_gate.py`, `trace_capture.py`,
+  `trace_diff.py`, `quantize.py`, `disk_watchdog.py`, `check_disk_headroom.py`,
+  the fixture builders and their tests.
+- `tests/` — mirrors `sources/` path for path.
+
+## Build and run
+
+```bash
+swift build                  # release: swift build -c release
+swift test --no-parallel
+
+# The CI link gate: local links and #anchors, offline
+python3 tools/check_markdown_links.py --verbose
+
+# Tests for the gate itself
+python3 -m unittest discover -s tools
+```
+
+**The Python side needs a venv, and the interpreter is pinned.** Everything under
+`tools/` that *gates* the repository is standard-library-only, so it runs on any
+`python3` with nothing installed; anything needing a package (Core ML conversion,
+torch, numpy) lives in `.venv` at CPython 3.14 with versions pinned in
+`tools/requirements-*.txt`. Never install into the system interpreter.
+
+```bash
+uv venv --python 3.14 .venv
+uv pip install --python .venv/bin/python -r tools/requirements-coreml.txt
+uv pip install --python .venv/bin/python -r tools/requirements-reference.txt
+```
+
+The milestone gates are documented rather than restated here — `docs/m0-gate.md`,
+`docs/m1-gate.md` and `docs/m0c-quantization.md` carry the commands and what each
+asserts. Each gate reads a frozen prompt set (`tools/m0_prompts.json`,
+`tools/m1_prompts.json`), writes its report under `.build/`, and exits non-zero on
+any failure.
+
 ## Working rules
 
 1. **Follow the loop: code, test, audit, document, update the tracker.** A change is
@@ -95,163 +156,68 @@ Clearing `.build/DISK_STOP` is a deliberate act: read it, free space, then `rm` 
 
 ## Conventions
 
-- **Swift 6.4 on Xcode 27**, once code lands: `swift-tools-version:6.4`, the Swift 6
-  language mode, and no architectural changes to imported models. `tests/` mirrors
-  `sources/` path for path. The language-feature register — which upcoming features
-  are enabled, which are deliberately not, and what each costs in diagnostics — is
-  `DC-015`, modelled on the sister project's `docs/swift-language-standard.md`.
+- **Swift 6.4 on Xcode 27**: `swift-tools-version:6.4`, the Swift 6 language mode,
+  and no architectural changes to imported models. `tests/` mirrors `sources/` path
+  for path. The language-feature register is `DC-015`.
+- The `sources/` and `tests/` directories are lower-case and declared explicitly in
+  `Package.swift`: SwiftPM's conventional capitals resolve silently on a
+  case-insensitive disk and fail on a case-sensitive one.
 - **Models**: faithful ports only. A new family costs an importer (a pure
   name-to-role map) plus whatever kernel work its attention genuinely needs.
 - **Commits**: imperative subject; the body explains *why*, not *what*. Work lands on
   `main`; a change that needs a gate is not merged before the gate passes.
 - **Markdown**: wrapped to a readable width, tables where they carry structure, and
-  every link checked by the gate below.
-- **Python 3.14**, the project's standard and what the farm runs. Everything under
-  `tools/` that gates the repository is standard-library-only, so it runs on any
-  `python3` with nothing installed. Anything that needs a package — Core ML conversion,
-  for instance — lives in the project venv (`.venv`, CPython 3.14) with its versions
-  pinned in `tools/requirements-*.txt`. Never install into the system interpreter.
+  every link checked by the link gate.
+- **Python 3.14**, the project's standard and what the farm runs. Anything that needs
+  a package lives in the pinned `.venv`; never install into the system interpreter.
 
-## Commands
+## Traps
 
-```bash
-# The CI link gate: local links and #anchors, offline
-python3 tools/check_markdown_links.py --verbose
+- **Bit-exactness is asserted two ways**: byte-identical trace bytes and exact
+  discrete decisions (router top-k index sets). Numeric tolerance is explicitly
+  **not** a substitute for the discrete check (I3).
+- **A trace is only comparable within one pinned reference build** (`torch`,
+  `transformers` in `tools/requirements-reference.txt`), and the model revision must
+  be pinned too. `tools/compare_reference_modules.py` exists to catch a `transformers`
+  upgrade changing the arithmetic.
+- **Run `tools/make_contract_vectors.py` whenever an op in
+  `tools/ordered_reference.py` changes**, then `swift test` — the Swift contract tests
+  assert those regenerated golden bit patterns.
+- **A role missing from `tools/quant_policy.json` stops the install** rather than
+  defaulting, by design.
+- **Test fixtures are `.copy` resources loaded via `Bundle.module`**; reading them
+  from a source-relative path fails in a built test bundle.
+- `coremltools==9.1.dev1` is pinned to a pre-release because there is no stable cp314
+  wheel.
+- `.gitignore` excludes `models/`, `*.gturbo`, `.venv/`, `.wiki/`, `.inspect/`: model
+  weights are never committed.
+- **The Swift CI gate is effectively a no-op today**: `macos-26` runner images carry
+  Xcode 26.x only, below the manifest's 6.4 floor, so the job prints a `::warning::`
+  and skips `swift build` and `swift test`. Run them locally.
+- **No architecture assertion exists anywhere in the repository**, and there is no
+  release artifact to assert against — do not invent a `lipo` step.
+- Earlier revisions of this file, the README and `CONTRIBUTING.md` said there was no
+  source code yet. That is stale; `sources/`, `Package.swift` and `docs/m0-gate.md`
+  are the evidence.
 
-# Tests for the gate itself
-python3 -m unittest discover -s tools
+<!-- release-rules:begin -->
+## Releasing
 
-# Core ML / Neural Engine tooling. 3.14 has no stable coremltools wheel yet, so the
-# pin is an exact pre-release (9.1.dev1); see tools/requirements-coreml.txt.
-uv venv --python 3.14 .venv
-uv pip install --python .venv/bin/python -r tools/requirements-coreml.txt
+**Read [`RELEASE.md`](RELEASE.md) before cutting a release.** It carries the
+generic rules every Pummelchen repository follows, plus this repository's own
+section. Do not improvise a release.
 
-# The golden-trace harness (M0): a model-free fixture, then a comparison.
-# A diff is only meaningful against a trace captured by the same reference build.
-python3 tools/make_synthetic_trace.py .build/ref-trace
-python3 tools/trace_diff.py .build/ref-trace .build/ref-trace
+The non-negotiables:
 
-# The reference-side capture needs torch, which lives in the venv: run it there.
-.venv/bin/python tools/trace_capture.py .build/tiny-trace --tiny
-
-# The controlled-order numeric contract (the bit-exactness target) needs numpy.
-.venv/bin/python -c "import sys; sys.path.insert(0,'tools'); import ordered_reference"
-
-# The Gated DeltaNet's chunked delta rule, transcribed from the reference and checked
-# against the reference's own function (needs the venv).
-.venv/bin/python -m unittest discover -s tools -p 'test_ordered_gdn.py'
-.venv/bin/python -m unittest discover -s tools -p 'test_ordered_qwen35.py'
-.venv/bin/python -m unittest discover -s tools -p 'test_ordered_qwen35_model.py'
-.venv/bin/python -m unittest discover -s tools -p 'test_ordered_moe.py'
-
-# Regenerate the golden bit patterns the Swift contract tests assert
-# (tests/DatacenterEngineTests/Fixtures/contract-vectors.json). Run this whenever an op
-# in tools/ordered_reference.py changes, then run `swift test`.
-.venv/bin/python tools/make_contract_vectors.py
-
-# M0's central claim as one command: run the contract in Python, run the same
-# forward in the engine, and compare the two traces byte for byte. It reads the
-# checkpoint's model_type and picks the contract, so it covers both families; the
-# qwen3_5 path streams both sides, which is how the 2 B model is checked on a node
-# that cannot hold it.
-.venv/bin/python tools/check_engine_contract.py \
-    --snapshot .build/hf-cache/models--Qwen--Qwen3-0.6B/snapshots/<revision> \
-    --tokens 1,2,3,4,5,6,7,8 --model Qwen/Qwen3-0.6B --revision <sha>
-
-# The engine's generation, checked token by token against the contract, with the
-# generated text decoded so "coherent" is something you can read.
-.venv/bin/python tools/check_engine_generation.py \
-    --snapshot .build/hf-cache/models--Qwen--Qwen3-0.6B/snapshots/<revision> \
-    --prompt "The capital of France is" --max-new-tokens 8 \
-    --model Qwen/Qwen3-0.6B --revision <sha>
-
-# Regenerate the Qwen3.5-2B inventory fixture the qwen3_5 importer is tested against
-# (names and shapes only; no weights).
-python3 tools/make_qwen35_fixture.py \
-    .build/hf-cache/models--Qwen--Qwen3.5-2B/snapshots/<revision> \
-    tests/DatacenterIRTests/Fixtures/qwen35-2b-tensors.json
-
-# Rebuild the tiny qwen3_5 checkpoint and the contract's golden output that the engine's
-# whole-tower test asserts bit for bit (157 KB; needs the venv).
-.venv/bin/python tools/make_tiny_qwen35_checkpoint.py
-
-# Run the pinned 2 B model on one node and compare it to the reference implementation.
-# The engine streams the weights, so this runs on a node that cannot hold the model.
-.build/release/datacenter-trace \
-    .build/hf-cache/models--Qwen--Qwen3.5-2B/snapshots/<revision> \
-    .build/engine-2b 1,2,3,4,5,6,7,8 --model Qwen/Qwen3.5-2B --revision <sha>
-.venv/bin/python tools/trace_capture.py .build/torch-2b \
-    --snapshot .build/hf-cache/models--Qwen--Qwen3.5-2B/snapshots/<revision> --dtype f32
-.venv/bin/python tools/compare_engine_to_oracle.py .build/engine-2b .build/torch-2b
-
-# THE M0 GATE (DC-026): the frozen prompt set, both halves of the claim, one report.
-# Reads tools/m0_prompts.json, writes .build/m0-gate/report.json, exits non-zero on any
-# failure. Slower than the other commands because it runs the oracle too.
-.venv/bin/python tools/run_m0_gate.py \
-    --snapshot .build/hf-cache/models--Qwen--Qwen3.5-2B/snapshots/<revision> \
-    --model Qwen/Qwen3.5-2B --revision <sha>
-
-# M0c: build an int4 install from a checkpoint and measure what it costs against the
-# frozen prompt set. The policy is data (tools/quant_policy.json); a role missing from
-# it stops the install rather than defaulting.
-.venv/bin/python tools/quantize.py build \
-    .build/hf-cache/models--Qwen--Qwen3.5-2B/snapshots/<revision> .build/m0c/install \
-    --spec .build/spec-2b.json
-.venv/bin/python tools/measure_quantization.py \
-    --snapshot .build/hf-cache/models--Qwen--Qwen3.5-2B/snapshots/<revision> --spec .build/spec-2b.json
-
-# Rebuild the tiny qwen3_5_moe checkpoint and the contract's golden output that the
-# engine's whole-tower test asserts bit for bit (236 KB; needs the venv, and a release
-# binary for the spec). The checkpoint carries the family's asymmetries -- two key heads
-# to four value heads, an untied head, a shared expert -- so the paths the 2 B model
-# never took are the paths it exercises.
-.venv/bin/python tools/make_tiny_qwen36_checkpoint.py
-
-# Fetch just the tokenizer files of a checkpoint whose weights are still downloading: they
-# are kilobytes against sixty-seven gigabytes, and freezing M1's prompts should not wait for
-# the shards. Do not invent token ids in the meantime.
-.venv/bin/python -c "from huggingface_hub import hf_hub_download; [hf_hub_download('Qwen/Qwen3.6-35B-A3B', n, cache_dir='.build/hf-cache') for n in ('tokenizer_config.json','vocab.json','merges.txt','tokenizer.json')]"
-
-# THE M1 GATE: correct output, a recorded tok/s baseline, and a measured cache hit rate, as
-# one command on one checkpoint. Verified against the tiny fixture, so it is not untested code
-# waiting for the 67 GB model. Writes .build/m1-gate/report.json, exits non-zero on failure.
-.venv/bin/python tools/run_m1_gate.py \
-    --snapshot .build/hf-cache/models--Qwen--Qwen3.6-35B-A3B/snapshots/<rev> \
-    --model Qwen/Qwen3.6-35B-A3B --revision <sha>
-
-# M1c: what 4-bit experts cost the mixture, measured rather than asserted. Builds a real
-# install from the tiny checkpoint and checks that the router's decisions survive exactly
-# (I3) and that the numbers stay bounded. Needs the venv.
-.venv/bin/python -m unittest discover -s tools -p 'test_ordered_qwen36_quant.py'
-
-# M1's text tower, checked against the reference's own Qwen3_5MoeTextModel: the numbers
-# layer by layer, and the router's decisions at every layer as a separate assertion (I3).
-.venv/bin/python -m unittest discover -s tools -p 'test_ordered_qwen36.py'
-
-# Does one reference family do the same arithmetic as another, or merely have the same
-# names and shapes? Parses both modules, renames one onto the other, and compares every
-# top-level entity. Exits non-zero on a difference not listed in --allow-differ, so a
-# transformers upgrade cannot quietly change the arithmetic under us.
-.venv/bin/python tools/compare_reference_modules.py \
-    .venv/lib/python3.14/site-packages/transformers/models/qwen3_5/modeling_qwen3_5.py \
-    .venv/lib/python3.14/site-packages/transformers/models/qwen3_5_moe/modeling_qwen3_5_moe.py \
-    --rename Qwen3_5Moe=Qwen3_5 --allow-differ Qwen3_5DecoderLayer,Qwen3_5ForCausalLM,Qwen3_5ForConditionalGeneration,Qwen3_5PreTrainedModel,Qwen3_5RMSNorm,Qwen3_5ModelOutputWithPast,Qwen3_5CausalLMOutputWithPast
-
-# M1's validation model: read the inventory from the shard headers and map it.
-# No weights are downloaded — the index lists the names and each shard's header the shapes.
-.venv/bin/python tools/make_qwen36_fixture.py Qwen/Qwen3.6-35B-A3B
-
-# The reference implementation that produces golden traces. Pinned exactly: a
-# trace is only comparable to another captured from the same transformers build.
-uv pip install --python .venv/bin/python -r tools/requirements-reference.txt
-```
-
-Reference material for the current milestone lives in `docs/`: `m0-decisions.md` records
-the resolved `D1`–`D7` decisions and the reasoning behind them, `trace-format.md` is the
-gate's data contract, and the two `reference-*.md` contracts record each model family's
-exact dtype boundaries and op order, by file and line. Kernel comments cite those
-contracts rather than restating them.
-
-Once code exists, the release gate is the sister project's model: a warning-free
-release build, the lint gates, the full test suite, and byte-identical golden
-baselines — never a subset of those reported as if it were all of them.
+- **Apple Silicon only** — build native `arm64` (M1–M6). Never `--arch x86_64`,
+  never `ARCHS=arm64 x86_64`, and never `lipo -create`, which is how a universal
+  binary gets made.
+- **Assert it** — `lipo -archs <binary>` must report exactly `arm64`. A build that
+  silently produced a fat binary is a release defect, not a build option.
+- **Every release carries the artifacts.** A tag alone is not a release.
+- **Identity is single-sourced and enforced** — never bump one declaration of the
+  version or build number on its own; the build or CI must fail on a mismatch.
+- **Dry run first**; publish only on an explicit flag.
+- **Never fetch a model, dataset or dependency to make a gate pass.** A check that
+  cannot run is reported *not checked*, and the release notes must name it.
+<!-- release-rules:end -->
