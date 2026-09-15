@@ -158,7 +158,7 @@ There are two options and no third:
    not "the unpack stays on the CPU" — it is the **entire expert path** staying on the CPU, which is
    the hot path. Metal's role would be reduced to the dense, unquantized ops.
 
-**My recommendation is (1)**, because the flush is a *definition* rather than an error, it is one
+**The operator chose (1)**, so the flush is now part of the contract rather than a recommendation, and the implementation notes live in `DC-089`. It was recommended because the flush is a *definition* rather than an error, it is one
 line in each of the two implementations, and it is testable exactly the way everything else in this
 project is — assert the flushed behaviour on both sides and re-run the oracle comparison with the
 new error budget recorded. But it changes what "bit-identical" means, so it is a renegotiation
