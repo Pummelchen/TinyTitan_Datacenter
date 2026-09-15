@@ -23,6 +23,46 @@ licence, the repository scaffolding, the tooling and the reference contracts und
   repository is **MIT**, so check the obligations before reusing any of its code here
   (tracked as `DC-013`).
 
+## This node's hard limit — read before running anything
+
+**Never run GB-scale jobs here.** The machine is an 8 GB Mac mini (about 4.5 GB usable after
+macOS), and on 2026-09-16 it **panicked twice** while doing exactly that: the 35 B engine at
+~4.5 GB resident plus a 20 GB install build, concurrently. macOS grew swap to *13 swapfiles and
+LOW swap space*, the system stopped responding for 90 s, and the hardware watchdog panicked it
+(`watchdog timeout: no checkins from watchdogd in 90 seconds`). No bug in the engine caused
+either panic; the memory budget did.
+
+The rules that follow from it:
+
+- **Tiny-fixture work only.** `tests/DatacenterEngineTests/Fixtures/tiny-qwen36/` runs the same
+  code paths at megabytes instead of gigabytes — importer, mixture, cache, quantisation, gate.
+- **One heavy job at a time, never concurrent**, and never a heavy job alongside an engine run.
+- **Real-model runs need explicit human approval**, with `sysctl vm.swapusage` checked first.
+- The 93 GB under `.build/` is excluded from Spotlight with a `.metadata_never_index` marker, so
+  a reboot does not start re-indexing it — that re-indexing is itself sustained I/O on a machine
+  that has just panicked.
+
+**A 5 GB disk floor is enforced, not promised.** Two tools, both standard-library only:
+
+```bash
+# The monitor. Polls free space; three readings in a row below the floor and it writes
+# .build/DISK_STOP and terminates the running heavy jobs (the engine, the contract, the install
+# builder) — SIGTERM, then SIGKILL. It never terminates itself or the agent harness.
+#
+# The three-reading rule is not decoration. The first version acted on one reading of 4.67 GB
+# that was 17.55 GB six seconds later, because APFS "purgeable" space appears and disappears as
+# the system reclaims caches, and it killed a read-only verification that had done nothing wrong.
+python3 tools/disk_watchdog.py --threshold-gb 5 --interval 5 --consecutive 3
+
+# The preflight guard. quantize.py, the contract CLIs and run_m1_gate.py call require_headroom()
+# before they touch a model, so nothing heavy starts below the floor either — and a stop marker
+# from the watchdog refuses a new run until an operator clears it, because a run that tripped the
+# limit must not resume by itself.
+python3 tools/check_disk_headroom.py
+```
+
+Clearing `.build/DISK_STOP` is a deliberate act: read it, free space, then `rm` it.
+
 ## Working rules
 
 1. **Follow the loop: code, test, audit, document, update the tracker.** A change is
