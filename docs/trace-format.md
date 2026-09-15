@@ -86,6 +86,14 @@ The reference is captured two ways, and they agree:
 | `capture` (resident) | builds the model and runs it in memory — the straightforward reference |
 | `capture_from_disk` | builds the model on the **meta** device and loads one decoder layer at a time, releasing it after use — the only way an fp32 2 B model fits an 8 GB node (D6) |
 
+Between them they are the **semantic oracle**, not the numeric contract: torch's matmul
+accumulates in an order that belongs to its BLAS kernels, and an ordered fp32 sum does not
+reproduce it (measured: 3544 of 4096 outputs differ on a real layer's shapes, with both
+results equally close to fp64). Bit-exactness is therefore defined against
+`tools/ordered_reference.py`, which states the order of every sum, and the torch trace is
+used for exact discrete decisions and per-tensor closeness. See D3 in
+[`m0-decisions.md`](m0-decisions.md).
+
 **Results on the real checkpoints**, not on a fixture:
 
 | Model | Result |

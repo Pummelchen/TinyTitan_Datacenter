@@ -103,6 +103,37 @@ embedding, 2.8e-2 at the final norm on values of scale 2.7), while *relative* er
 13285% because those activations sit near zero. A relative bound is therefore both
 unmeasurable and blind — it cannot see a top-k index flip at all.
 
+**Measured on a real layer, 2026-09-15 — this is what pinned the gate down.** A matmul of
+the shapes this model uses (8×1024 by 512×1024, fp32) computed with an explicitly ordered
+accumulation — ascending `k`, one product added per step — does **not** reproduce
+PyTorch's matmul: **3544 of 4096 outputs differed**, mean 17 ULP, max 22587 ULP. Both
+results sat at exactly the same distance from an fp64 computation of the same product
+(3.148e-07), so the difference is summation order, not accuracy — and PyTorch's order is
+a property of its BLAS kernels, not of the model. No engine can be required to reproduce
+it, and no Metal kernel ever will.
+
+So M0 has **two references, with two different jobs**:
+
+| Reference | Job |
+| --- | --- |
+| `tools/trace_capture.py` (torch) | the **semantic oracle**: is this the right model? Exact discrete decisions (I3), closeness per tensor |
+| `tools/ordered_reference.py` | the **numeric contract**: a `qwen3` dense forward in which every sum has a stated order — ascending index, one product per step, no reassociation, no fused multiply-add, fp32 throughout. The engine's bit-exactness gate compares against this |
+
+Validated on the real `Qwen3-0.6B` over 28 layers and 8 tokens: the ordered forward agrees
+with torch semantically — **the logits' argmax agrees at every position**, mean |Δ| 8.6e-6
+at the final norm — while never being bit-identical from the first matmul onward (mean |Δ|
+grows 1.6e-7 → 2.8e-5, worst element 9.3e-3). That gap is the honest measure of what
+"faithful port" means when the only difference is the order of the additions: same model,
+same decisions, different last bits.
+
+Consequences, recorded before any kernel is written:
+
+- **The engine accumulates in the contract's order** — no split-K, no FMA, no
+  reassociation — because that order is what makes I1 and I2 testable at all.
+- **I2 compares our own implementation to our own implementation.** Comparing the engine
+  to torch could never be bit-exact, and pretending otherwise would have produced a gate
+  that fails for a reason that has nothing to do with the engine.
+
 ---
 
 ## D4 — Reduction canon (delegated: best technical decision)
