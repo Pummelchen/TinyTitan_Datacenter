@@ -22,8 +22,33 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = ROOT / "tests" / "DatacenterEngineTests" / "Fixtures" / "tiny-qwen36"
 
-HAVE_SWIFT = shutil.which("swift") is not None
-swift_required = unittest.skipUnless(HAVE_SWIFT, "a Swift toolchain is needed to build the engine")
+def swift_version() -> tuple[int, ...] | None:
+    """The toolchain's version, or None when there is no toolchain.
+
+    The package is `swift-tools-version:6.4`, so a runner with 6.3 cannot build it at all
+    (`DC-036`: GitHub's `macos-26` image ships Xcode 26.x). The gate script itself is right to
+    fail there — it cannot measure anything without an engine — so the *test* skips instead,
+    the same way the Swift CI job prints its toolchain and gates only at 6.4 or above.
+    """
+    if shutil.which("swift") is None:
+        return None
+    try:
+        output = subprocess.run(["swift", "--version"], capture_output=True, text=True).stdout
+    except OSError:
+        return None
+    for word in output.replace("(", " ").split():
+        parts = word.split(".")
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            return tuple(int(part) for part in parts if part.isdigit())
+    return None
+
+
+VERSION = swift_version()
+HAVE_SWIFT = VERSION is not None and VERSION >= (6, 4)
+swift_required = unittest.skipUnless(
+    HAVE_SWIFT,
+    f"the package needs swift-tools-version 6.4; this runner has {VERSION} (DC-036)",
+)
 
 
 @swift_required
