@@ -42,7 +42,14 @@ public struct Qwen3_5Importer: Sendable {
             public var intermediate_size: Int
             public var vocab_size: Int
             public var rms_norm_eps: Double
-            public var rope_theta: Double?
+            /// `transformers` v5 keeps the rope settings in a nested block; the checkpoint
+            /// has no top-level `rope_theta` at all.
+            public struct RopeParameters: Decodable, Sendable {
+                public var rope_theta: Double?
+                public var partial_rotary_factor: Double?
+                public var rope_type: String?
+            }
+            public var rope_parameters: RopeParameters?
             public var tie_word_embeddings: Bool?
             public var full_attention_interval: Int?
             public var attn_output_gate: Bool?
@@ -65,7 +72,9 @@ public struct Qwen3_5Importer: Sendable {
             // Swift type checker will accept in reasonable time, and a chain of fourteen
             // `??` operators is not more readable for being on one line.
             let headDim: Int = text.head_dim ?? (text.hidden_size / text.num_attention_heads)
-            let ropeTheta: Double = text.rope_theta ?? 10_000
+            let rope: Text.RopeParameters? = text.rope_parameters
+            let ropeTheta: Double = rope?.rope_theta ?? 10_000
+            let partialRotary: Double? = rope?.partial_rotary_factor
             let tied: Bool = text.tie_word_embeddings ?? tie_word_embeddings ?? false
             let gate: Bool = text.attn_output_gate ?? false
             let interval: Int? = text.full_attention_interval
@@ -93,6 +102,7 @@ public struct Qwen3_5Importer: Sendable {
                 vocabSize: text.vocab_size,
                 rmsNormEps: text.rms_norm_eps,
                 ropeTheta: ropeTheta,
+                partialRotaryFactor: partialRotary,
                 tieWordEmbeddings: tied,
                 attnOutputGate: gate,
                 fullAttentionInterval: interval,

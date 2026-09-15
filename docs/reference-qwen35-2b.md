@@ -132,7 +132,15 @@ attn_output = attn_output * torch.sigmoid(gate)      # :819
 attn_output = self.o_proj(attn_output)               # :821
 ```
 
-Two facts, both easy to get wrong:
+**The flag is descriptive, not a switch.** `Qwen3_5TextConfig` has no `attn_output_gate`
+attribute at all, and `Qwen3_5Attention.__init__` hardcodes
+`num_attention_heads * head_dim * 2` while its forward always chunks the pair — so the
+module doubles the query *unconditionally* and never reads a flag. The real checkpoint's
+config nevertheless carries `attn_output_gate: true`, which is what the IR's shape contract
+reads; the two agree, and a checkpoint whose config omitted the key would be inconsistent
+with the module rather than a different architecture.
+
+Two further facts, both easy to get wrong:
 
 - The split is **per head, along the last axis**. The projection's output is viewed as
   `[tokens, heads, 2·head_dim]` and halved into `(query, gate)` of `[tokens, heads,
@@ -290,6 +298,21 @@ The full-attention layer, end to end (`Qwen3_5Attention.forward:776`,
 head dim → transpose to `[B, H, S, D]` → rotational embedding → `repeat_kv` → `q·kᵀ ×
 scaling` → mask → **softmax in fp32** → cast back to the model dtype → `·v` → reshape →
 `× sigmoid(gate)` → `o_proj`.
+
+## The engine's side
+
+`sources/DatacenterEngine/Qwen3_5Forward.swift` runs this tower with the weights loaded **one
+layer at a time**: the embedding is read a row at a time (a token needs one row of a
+`[248320, 2048]` matrix), the tied head is computed in blocks of vocabulary rows, and each
+decoder layer's tensors are read, used and released before the next layer starts. Peak
+residency is one layer — about 330 MB in fp32 for this model — which is what makes a 2 B
+parameter model runnable on a node with 4.5 GB usable.
+
+It is checked bit for bit against the contract by `Qwen3_5ForwardTests`, on a committed
+157 KB checkpoint built from this family's real geometry and naming
+(`tools/make_tiny_qwen35_checkpoint.py`): three Gated DeltaNet layers and one full-attention
+layer, a partial RoPE, a tied head, and the real nested configuration file. Every captured
+tensor matches exactly, and the logits' argmax matches as a discrete decision.
 
 ## Still to extract — do not guess these
 

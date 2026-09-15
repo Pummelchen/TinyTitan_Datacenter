@@ -120,6 +120,10 @@ python3 tools/make_qwen35_fixture.py \
     .build/hf-cache/models--Qwen--Qwen3.5-2B/snapshots/<revision> \
     tests/DatacenterIRTests/Fixtures/qwen35-2b-tensors.json
 
+# Rebuild the tiny qwen3_5 checkpoint and the contract's golden output that the engine's
+# whole-tower test asserts bit for bit (157 KB; needs the venv).
+.venv/bin/python tools/make_tiny_qwen35_checkpoint.py
+
 # The reference implementation that produces golden traces. Pinned exactly: a
 # trace is only comparable to another captured from the same transformers build.
 uv pip install --python .venv/bin/python -r tools/requirements-reference.txt

@@ -15,6 +15,10 @@ public struct ModelConfig: Codable, Sendable, Equatable {
     public var vocabSize: Int
     public var rmsNormEps: Double
     public var ropeTheta: Double
+    /// The fraction of each head that rotates. Qwen3.5 stores 0.25, which is why only 64 of
+    /// its 256 head channels are rotated; a kernel that assumed the whole head would be
+    /// wrong while every shape still matched.
+    public var partialRotaryFactor: Double?
     public var tieWordEmbeddings: Bool
     /// True when the query projection also carries the attention output gate.
     ///
@@ -43,7 +47,8 @@ public struct ModelConfig: Codable, Sendable, Equatable {
     public init(
         hiddenSize: Int, numLayers: Int, numAttentionHeads: Int, numKeyValueHeads: Int,
         headDim: Int, intermediateSize: Int, vocabSize: Int, rmsNormEps: Double,
-        ropeTheta: Double, tieWordEmbeddings: Bool, attnOutputGate: Bool = false,
+        ropeTheta: Double, partialRotaryFactor: Double? = nil, tieWordEmbeddings: Bool,
+        attnOutputGate: Bool = false,
         fullAttentionInterval: Int? = nil, mtpNumHiddenLayers: Int? = nil, numExperts: Int? = nil,
         numExpertsPerToken: Int? = nil, moeIntermediateSize: Int? = nil,
         linearKeyDim: Int? = nil, linearValueDim: Int? = nil, linearValueHeads: Int? = nil,
@@ -58,6 +63,7 @@ public struct ModelConfig: Codable, Sendable, Equatable {
         self.vocabSize = vocabSize
         self.rmsNormEps = rmsNormEps
         self.ropeTheta = ropeTheta
+        self.partialRotaryFactor = partialRotaryFactor
         self.tieWordEmbeddings = tieWordEmbeddings
         self.attnOutputGate = attnOutputGate
         self.fullAttentionInterval = fullAttentionInterval

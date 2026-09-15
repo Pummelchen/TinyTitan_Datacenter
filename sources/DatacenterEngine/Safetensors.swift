@@ -89,6 +89,63 @@ public struct SafetensorsFile {
 
     public var names: [String] { tensors.keys.sorted() }
 
+    /// A tensor's values as `Float`, restricted to a row range.
+    ///
+    /// This is what makes an 8 GB node able to run a 2 B model: the embedding is
+    /// `[248320, 2048]` — 2 GB in fp32 — and a single token needs one row of it. The
+    /// output head is the same matrix, so the logits are computed a block of rows at a
+    /// time rather than by materialising the whole matrix to multiply once.
+    public func float32(_ name: String, rows: Range<Int>) throws -> [Float] {
+        let info = try info(name)
+        guard info.shape.count >= 2 else { throw Error.malformedHeader("tensor '\(name)' is not row-addressable") }
+        let width = info.shape.dropFirst().reduce(1, *)
+        let total = info.shape[0]
+        guard rows.lowerBound >= 0, rows.upperBound <= total else {
+            throw Error.malformedHeader("row range \(rows) is outside '\(name)' (\(total) rows)")
+        }
+        let elementSize = try Self.elementSize(info.dtype)
+        let rowBytes = width * elementSize
+        let start = dataStart + info.range.lowerBound + rows.lowerBound * rowBytes
+        let byteCount = rows.count * rowBytes
+        guard start + byteCount <= mapped.count else { throw Error.truncatedFile(mapped.count) }
+
+        return try mapped.withUnsafeBytes { raw -> [Float] in
+            let base = raw.baseAddress! + start
+            var values = [Float](repeating: 0, count: rows.count * width)
+            switch info.dtype.lowercased() {
+            case "f32":
+                for index in 0..<values.count {
+                    let word = base.loadUnaligned(fromByteOffset: index * 4, as: UInt32.self)
+                    values[index] = Float(bitPattern: UInt32(littleEndian: word))
+                }
+            case "bf16":
+                for index in 0..<values.count {
+                    let word = base.loadUnaligned(fromByteOffset: index * 2, as: UInt16.self)
+                    values[index] = Float(bitPattern: UInt32(UInt16(littleEndian: word)) << 16)
+                }
+            case "f16":
+                for index in 0..<values.count {
+                    let word = base.loadUnaligned(fromByteOffset: index * 2, as: UInt16.self)
+                    values[index] = Float(Float16(bitPattern: UInt16(littleEndian: word)))
+                }
+            default:
+                throw Error.unknownDtype(info.dtype)
+            }
+            return values
+        }
+    }
+
+    static func elementSize(_ dtype: String) throws -> Int {
+        switch dtype.lowercased() {
+        case "f32", "i32": return 4
+        case "bf16", "f16": return 2
+        case "i64": return 8
+        case "u8": return 1
+        default: throw Error.unknownDtype(dtype)
+        }
+    }
+
+
     /// A tensor's values as `Float`, converting from whatever the checkpoint stores.
     ///
     /// bf16 → fp32 is exact (the widening is a shift), so this conversion cannot introduce
