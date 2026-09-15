@@ -40,6 +40,34 @@ def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True, **kwargs)
 
 
+TIME_TOOL = Path("/usr/bin/time")
+
+
+def peak_rss_bytes(stderr: str) -> int | None:
+    """The engine's peak resident memory, from `/usr/bin/time -l`.
+
+    `DC-032`'s gate says resident memory stays inside a budget, and the brief gives about 4.5 GB
+    of usable memory per node — so the number has to be measured rather than argued. Note what
+    this counts: on macOS the figure includes clean file-backed pages, which is why the M0 runs
+    reported 3.4 GB for a 2 B model whose weights were mostly mapped and shared. It is an upper
+    bound on the process, not a claim about private dirty memory.
+    """
+    for line in stderr.splitlines():
+        if "maximum resident set size" in line:
+            digits = "".join(character for character in line if character.isdigit())
+            if digits:
+                return int(digits)
+    return None
+
+
+def measured(command: list[str]) -> tuple[subprocess.CompletedProcess, int | None]:
+    """Run a command, measuring its peak memory when the platform's `time` can."""
+    if TIME_TOOL.exists():
+        result = run([str(TIME_TOOL), "-l", *command])
+        return result, peak_rss_bytes(result.stderr)
+    return run(command), None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot", type=Path, required=True)
@@ -98,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         contract_trace = args.work / f"{prompt['id']}-contract"
 
         started = time.time()
-        engine = run([
+        engine, peak_rss = measured([
             str(binary / "datacenter-trace"), str(args.snapshot), str(engine_trace), tokens_arg,
             "--model", args.model, "--revision", args.revision,
         ])
@@ -132,15 +160,17 @@ def main(argv: list[str] | None = None) -> int:
             "identical": identical,
             "diff": diff.stdout.strip(),
             "engine_seconds": round(engine_seconds, 3),
+            "peak_rss_bytes": peak_rss,
             "expert_requests": metrics.get("expert_requests"),
             "expert_hits": metrics.get("expert_hits"),
             "expert_rows_read": metrics.get("expert_rows_read"),
             "expert_hit_rate": metrics.get("expert_hit_rate"),
         }
         report["results"].append(result)
+        memory = f"{peak_rss / 1e9:.2f} GB" if peak_rss else "not measured"
         print(
             f"      {prompt['id']:12s} {'IDENTICAL' if identical else 'DIFFERS':>9s}  "
-            f"{engine_seconds:6.2f} s  hit rate {result['expert_hit_rate']}"
+            f"{engine_seconds:6.2f} s  peak {memory:>10s}  hit rate {result['expert_hit_rate']}"
         )
 
     if not args.skip_generation:
@@ -203,6 +233,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nreport: {args.work / 'report.json'}")
     print(f"  identical everywhere: {report['identical']}")
     print(f"  cache hit rate:       {report['hit_rate_overall']:.4f}")
+    peaks = [r["peak_rss_bytes"] for r in report["results"] if r.get("peak_rss_bytes")]
+    if peaks:
+        report["peak_rss_bytes"] = max(peaks)
+        print(f"  peak resident memory: {max(peaks) / 1e9:.2f} GB (includes clean file-backed pages)")
     if report["throughput"]:
         print(f"  throughput:           {report['throughput']['tokens_per_second_mean']} tok/s (mean, no KV cache)")
     if failed:

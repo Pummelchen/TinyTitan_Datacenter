@@ -14,6 +14,7 @@ cache hit rate**. One command runs all three on one checkpoint and writes a repo
 | Correctness | every prompt in `tools/m1_prompts.json`, the engine's trace against the contract's, byte for byte, through `tools/trace_diff.py` — which also compares the **discrete** router decisions exactly, because I3 makes them a different kind of claim from "the numbers are close" |
 | Throughput | greedy generation with `datacenter-generate`, its own timing parsed into the report |
 | Cache | the engine's expert-traffic counters, written beside each trace in `metrics.json` |
+| Memory | each engine run's **peak resident set size**, from the platform's `/usr/bin/time -l`, because `DC-032`'s gate is a budget and a budget needs a number. It counts clean file-backed pages, so it is an upper bound on the process rather than a claim about private dirty memory |
 
 ## Status
 
@@ -28,6 +29,7 @@ report, not M1's result:
 | Engine vs contract, tiny fixture | identical, digests equal |
 | Cache hit rate, tiny fixture | **0.0000** |
 | Throughput, tiny fixture | below the tool's tenth-of-a-second resolution |
+| Peak resident memory, tiny fixture | 0.01 GB |
 
 The hit rate of zero is worth reading rather than dismissing: the slot bank belongs to one layer
 and is built as that layer loads, so a hit needs two positions **in the same layer of the same
