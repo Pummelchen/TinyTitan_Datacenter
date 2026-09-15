@@ -32,12 +32,17 @@ let package = Package(
             path: "tests/DatacenterIRTests",
             resources: [.copy("Fixtures")]
         ),
-        .target(name: "DatacenterEngine", path: "sources/DatacenterEngine"),
+        .target(name: "DatacenterEngine", dependencies: ["DatacenterIR"], path: "sources/DatacenterEngine"),
         .testTarget(
             name: "DatacenterEngineTests",
             dependencies: ["DatacenterEngine"],
             path: "tests/DatacenterEngineTests",
             resources: [.copy("Fixtures")]
+        ),
+        .executableTarget(
+            name: "datacenter-trace",
+            dependencies: ["DatacenterEngine", "DatacenterIR"],
+            path: "sources/DatacenterTrace"
         )
     ]
 )

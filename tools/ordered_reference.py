@@ -257,3 +257,46 @@ class OrderedQwen3:
         head = "lm_head.weight" if "lm_head.weight" in self.weights else "model.embed_tokens.weight"
         captured["logits"] = ordered_matmul(hidden, self._get(head))
         return captured
+
+
+def _parse_tokens(text: str) -> list[int]:
+    return [int(part) for part in text.replace(" ", "").split(",") if part]
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Write the contract's trace for a prompt, so another implementation can be diffed.
+
+    The trace this writes is the artifact half of the reference: it is what the engine's
+    own trace is compared against, tensor for tensor, byte for byte.
+    """
+    import argparse
+    from pathlib import Path
+
+    import trace_format
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("snapshot", type=Path, help="a checkpoint directory with config.json and model.safetensors")
+    parser.add_argument("out", type=Path, help="trace directory to write")
+    parser.add_argument("--tokens", required=True, help="comma-separated token ids")
+    parser.add_argument("--model", default="", help="model id recorded in the manifest")
+    parser.add_argument("--revision", default="", help="source revision recorded in the manifest")
+    args = parser.parse_args(argv)
+
+    tokens = _parse_tokens(args.tokens)
+    model = OrderedQwen3(args.snapshot)
+    captured = model.forward(tokens)
+
+    tensors = [(name, "f32", values.shape, values.tobytes()) for name, values in captured.items()]
+    manifest = trace_format.write_trace(
+        args.out,
+        tensors=tensors,
+        model={"id": args.model, "revision": args.revision, "compute": "fp32", "contract": "ordered_reference.py"},
+        prompt={"tokens": [int(t) for t in tokens]},
+        producer="ordered-reference-python",
+    )
+    print(f"wrote {args.out}: {len(tensors)} tensors, digest {manifest['digest'][:16]}…")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

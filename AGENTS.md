@@ -95,6 +95,12 @@ python3 tools/trace_diff.py .build/ref-trace .build/ref-trace
 # in tools/ordered_reference.py changes, then run `swift test`.
 .venv/bin/python tools/make_contract_vectors.py
 
+# M0's central claim as one command: run the contract in Python, run the same
+# forward in the engine, and compare the two traces byte for byte.
+.venv/bin/python tools/check_engine_contract.py \
+    --snapshot .build/hf-cache/models--Qwen--Qwen3-0.6B/snapshots/<revision> \
+    --tokens 1,2,3,4,5,6,7,8 --model Qwen/Qwen3-0.6B --revision <sha>
+
 # The reference implementation that produces golden traces. Pinned exactly: a
 # trace is only comparable to another captured from the same transformers build.
 uv pip install --python .venv/bin/python -r tools/requirements-reference.txt

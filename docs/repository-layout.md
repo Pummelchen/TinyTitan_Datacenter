@@ -10,15 +10,25 @@ Package.swift            swift-tools-version 6.4, Swift 6 language mode
 sources/
   DatacenterIR/          the model IR: roles, shape contracts, policy, validation,
                          and the per-family importers
+  DatacenterEngine/      the numeric contract's ops, the safetensors reader, the
+                         qwen3 forward driven by the IR, and the trace writer
+  DatacenterTrace/       the `datacenter-trace` executable: run a checkpoint and
+                         write a trace the differ can compare
 tests/
   DatacenterIRTests/     mirrors sources/DatacenterIR; Fixtures/ holds a real
                          checkpoint's tensor inventory as a declared resource
+  DatacenterEngineTests/ op-level contract vectors (bit patterns) and the
+                         safetensors reader against a 296-byte fixture
 tools/                   the M0 harness and the repository gates, standard-library
                          Python only (trace_format, trace_diff, make_synthetic_trace,
-                         trace_capture, check_markdown_links) plus pinned requirements
+                         check_markdown_links) plus the venv-run pieces
+                         (trace_capture, ordered_reference, make_contract_vectors,
+                         make_safetensors_fixture, check_engine_contract) and pinned
+                         requirements
 docs/                    m0-decisions, trace-format, ir-schema, and one
                          reference-<family>.md contract per model family
-.github/                 CI: the tool suite and the link gate on every push
+.github/                 CI: the tool suite, the link gate and the Swift build on
+                         every push
 ```
 
 ## Rules that came out of building it
@@ -30,6 +40,10 @@ docs/                    m0-decisions, trace-format, ir-schema, and one
   different disk format or on CI.
 - **Fixtures are declared resources**, loaded through `Bundle.module` rather than from a
   source path, so they travel with the test bundle.
+- **A target declares its dependencies.** `DatacenterEngine` imported `DatacenterIR`
+  without declaring it, which the debug build resolved by accident through the module
+  search path and the release build refused outright (`unable to resolve module
+  dependency`). A debug-only build is not a build.
 - **A target is added when its milestone needs it.** There is no engine target yet
   because there is no engine: the IR and its importer are what M0 needs first, and
   speculative structure is the main way a project like this fails.

@@ -94,6 +94,39 @@ results equally close to fp64). Bit-exactness is therefore defined against
 used for exact discrete decisions and per-tensor closeness. See D3 in
 [`m0-decisions.md`](m0-decisions.md).
 
+## The engine's trace, and the comparison that matters
+
+The engine writes the same container: `datacenter-trace <snapshot> <out> <tokens…>`
+produces a trace from `sources/DatacenterEngine`, and the two are compared with the differ
+above. `tools/check_engine_contract.py` runs both and compares them, which is M0's central
+claim as a single command:
+
+```
+[1/4] building the engine (release)
+[2/4] running the contract in Python ... 87 tensors, digest 101195ec6be8839c…
+[3/4] running the forward in the engine ... 87 tensors, digest 101195ec6be8839c…
+[4/4] comparing
+      IDENTICAL — 87 tensor(s) ... (matching digests)
+      data.bin identical: 7680000 bytes
+OK — the engine reproduces the contract exactly
+```
+
+Measured on `Qwen/Qwen3-0.6B` at revision `c1899de2…`, 8 tokens, fp32: **87 of 87 tensors
+byte-identical**, whole-trace digest
+`101195ec6be8839c7f3340d0be444aa1c83aef706283f0b89379d5546d60de4b`, 7,680,000 bytes of
+`data.bin` identical, 5.7 s at `-O` (8.3 s unoptimised), peak resident set 2.43 GB.
+
+Two details worth keeping in mind when reading a trace:
+
+- The **digest is computed independently by each implementation** — the Swift writer
+  recomputes it over a key-sorted JSON encoding rather than copying the Python value — so
+  a matching digest is already two implementations agreeing on every tensor's bytes. The
+  raw `data.bin` comparison is run as well, because "the digests agree" and "the bytes
+  agree" should not be assumed to be the same statement.
+- The comparison runs the differ **and** the byte comparison. A digest shortcut that
+  skipped the comparison without one of them would be a gate that reports success without
+  looking.
+
 **Results on the real checkpoints**, not on a fixture:
 
 | Model | Result |
