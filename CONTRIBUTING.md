@@ -1,7 +1,6 @@
 # Contributing to TinyTitan Datacenter
 
-Thanks for looking. The engine runs, M0's gate is recorded as passing, and M1's
-correctness claim holds on the real 35B checkpoint for one prompt of the frozen set — so
+Thanks for looking. **The code here is incomplete, untested and does not run**, so
 the most useful contributions right now are design review, corrections to the
 documentation, measurements from hardware this project does not have, and anything that
 closes a gap `docs/m1-gate.md` names as unmeasured.
@@ -41,7 +40,7 @@ python3 tools/check_markdown_links.py --verbose
 python3 -m unittest discover -s tools
 ```
 
-Once code exists, the gates grow to match the sister project's: a warning-free
+Once there is a working engine, the gates grow to match the sister project's: a warning-free
 release build, the lint gates, the full test suite, and byte-identical golden
 baselines. A gate is never quietly weakened — if one cannot be met, say so in the PR
 and in the tracker, with the measurement that forced it. That record is the point.

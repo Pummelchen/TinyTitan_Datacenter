@@ -14,10 +14,10 @@
 
 A distributed inference engine for large MoE language models on a cluster of Mac
 minis and Mac Studios, over LAN/SFP/QSFP and Thunderbolt. The Swift engine under
-`sources/` runs Qwen3, Qwen3.5 and Qwen3.5-MoE forward passes and generation, and
-M0's gate is recorded as passing with M1's correctness claim holding on the real
-35B checkpoint; throughput is the open finding. There are **no releases and no
-tags**. The design, the plan and the status live in the wiki.
+**The code here is incomplete, untested and does not run** — `Package.swift`
+declares two executable targets and `sources/` holds a partial implementation, but
+there is no working engine and nothing is covered by a passing test run. There are
+**no releases and no tags**. The design, the plan and the status live in the wiki.
 
 ## Scope of this checkout
 
@@ -196,9 +196,11 @@ any failure.
   and skips `swift build` and `swift test`. Run them locally.
 - **No architecture assertion exists anywhere in the repository**, and there is no
   release artifact to assert against — do not invent a `lipo` step.
-- Earlier revisions of this file, the README and `CONTRIBUTING.md` said there was no
-  source code yet. That is stale; `sources/`, `Package.swift` and `docs/m0-gate.md`
-  are the evidence.
+- **The public status of this repository has swung twice and both extremes were
+  wrong.** An early revision said there was no source code at all; a later one said
+  the engine runs. The truth is in between: the code exists but is incomplete,
+  untested and does not run. Do not restore either claim without a working engine
+  and a passing test run to point at.
 
 <!-- release-rules:begin -->
 ## Releasing

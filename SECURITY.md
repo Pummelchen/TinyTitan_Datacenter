@@ -3,7 +3,7 @@
 ## Supported versions
 
 Security fixes are applied to the latest commit on `main`. There are no releases,
-no tags and no binaries: the project is in design phase and nothing here runs yet.
+no tags and no binaries, and the code here is incomplete, untested and does not run.
 Forks and modified copies are not supported.
 
 TinyTitan Datacenter is a research project. It is not intended for production,
@@ -11,7 +11,7 @@ multi-user, or security-critical deployments.
 
 ## Scope, stated honestly
 
-Because no runtime exists yet, the security surface today is **the repository
+Because there is no working runtime yet, the security surface today is **the repository
 itself**: documents, tooling, CI configuration and the wiki. Once a cluster runtime
 exists, its posture is part of the design and is deliberately narrow:
 
