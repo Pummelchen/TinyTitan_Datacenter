@@ -22,9 +22,6 @@ public struct Qwen3_5Forward: ForwardPass {
     public let spec: IRSpec
     public let config: ModelConfig
     let source: any WeightSource
-    /// The per-layer slot banks. A reference type with a default, so it survives every `forward` call
-    /// on this value and no initializer has to change.
-    private let banks = ExpertBanks()
     let namesByBlock: [String: [TensorRole: String]]
     let embeddingName: String
     let finalNormName: String
@@ -137,25 +134,6 @@ public struct Qwen3_5Forward: ForwardPass {
         )
     }
 
-    /// The per-layer expert slot banks, which **survive a token**.
-    ///
-    /// A reference type held by the forward, because the banks have to outlive the call that fills
-    /// them: the first version built a fresh `ExpertSlotCache` inside `loadLayer`, which runs once per
-    /// forward, so every token began with empty banks and M1's gate measured a **cache hit rate of
-    /// 0.0000 over 2240 requests** — a slot bank that is dropped with the layer is not a bank. The
-    /// brief asks for "per-layer LRU slot banks"; this is what makes them per-layer rather than
-    /// per-call.
-    final class ExpertBanks {
-        private var caches: [Int: ExpertSlotCache] = [:]
-
-        func cache(layer: Int, make: () -> ExpertSlotCache) -> ExpertSlotCache {
-            if let existing = caches[layer] { return existing }
-            let created = make()
-            caches[layer] = created
-            return created
-        }
-    }
-
     /// The weights a decoder layer needs, loaded and then released.
     func loadLayer(_ index: Int) throws -> (weights: [TensorRole: [Float]], gdn: GatedDeltaNetWeights?, feedForward: FeedForward) {
         let block = String(format: "layer.%02d", index)
@@ -177,12 +155,7 @@ public struct Qwen3_5Forward: ForwardPass {
             // this model is 3.2 GB in fp32, so the layer keeps a provider that reads one
             // expert's row range on demand and a bounded cache in front of it.
             let stacked = StackedExpertProvider(source: source, gateUpName: gateUpName, downName: downName)
-            // Reused across forwards, so an expert read for this layer by an earlier token is still
-            // resident. The provider is rebuilt every call, which is harmless: the cache holds the
-            // *weights*, and the provider only knows how to fetch one.
-            let cache = banks.cache(layer: index) {
-                ExpertSlotCache(upstream: stacked, capacity: Self.expertSlotsPerLayer)
-            }
+            let cache = ExpertSlotCache(upstream: stacked, capacity: Self.expertSlotsPerLayer)
             feedForward = .mixture(
                 MixtureWeights(
                     router: try load(.routerLogits),

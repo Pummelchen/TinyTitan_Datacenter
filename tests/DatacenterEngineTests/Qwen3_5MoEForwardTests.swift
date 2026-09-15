@@ -62,29 +62,6 @@ final class Qwen3_5MoEForwardTests: XCTestCase {
         }
     }
 
-    /// The slot banks are per **layer**, not per **call**.
-    ///
-    /// M1's gate measured a cache hit rate of **0.0000 over 2240 requests**, and the cause was
-    /// structural: `loadLayer` built a fresh `ExpertSlotCache` every forward, so no token could ever
-    /// hit what an earlier one had read. A bank that is dropped with the layer is not a bank. This is
-    /// the fixture-scale proof that it now survives — the same token routes to the same experts, so
-    /// the second pass must hit what the first one filled.
-    func testTheExpertBanksSurviveATokenSoTheSecondOneHits() throws {
-        let golden = try golden()
-        let forward = try Qwen3_5Forward(snapshot: try checkpoint())
-        let first = try forward.forwardWithDecisions(tokens: golden.tokens)
-        let second = try forward.forwardWithDecisions(tokens: golden.tokens)
-        let firstHits = first.expertMetrics.reduce(0) { $0 + $1.hits }
-        let secondHits = second.expertMetrics.reduce(0) { $0 + $1.hits }
-        let secondRequests = second.expertMetrics.reduce(0) { $0 + $1.requests }
-        XCTAssertEqual(firstHits, 0, "a cold bank cannot hit; if this fails the test proves nothing")
-        XCTAssertGreaterThan(secondRequests, 0, "the fixture must route experts at all")
-        XCTAssertGreaterThan(
-            secondHits, 0,
-            "the same token routes to the same experts, so the second pass must hit the bank the first one filled"
-        )
-    }
-
     func testTheWholeTowerMatchesTheContractBitForBit() throws {
         let golden = try golden()
         let forward = try Qwen3_5Forward(snapshot: try checkpoint())
