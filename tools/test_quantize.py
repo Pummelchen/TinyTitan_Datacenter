@@ -42,6 +42,24 @@ numpy_required = unittest.skipUnless(HAVE_MODULE, "numpy and the pass are needed
 
 @numpy_required
 class QuantizeTests(unittest.TestCase):
+    def test_the_source_file_digests_are_real(self):
+        """`I6` and `DC-098`: the artifact must be able to name the weights it came from.
+
+        It recorded `{}` — in the real install and in both committed fixtures — so a converted model
+        could not be traced to its source, which is the one question a provenance header exists to
+        answer. The check here is against an **independently computed** sha256, not against the code
+        path having run: a digest that is merely present and wrong would satisfy the weaker version.
+        """
+        fixture = Path(__file__).resolve().parent.parent / "tests/DatacenterEngineTests/Fixtures/tiny-qwen36"
+        digests = quantize.digest_snapshot(fixture)
+        self.assertTrue(digests, "the fixture has a source file to digest")
+        for name, digest in digests.items():
+            self.assertEqual(
+                digest,
+                hashlib.sha256((fixture / name).read_bytes()).hexdigest(),
+                f"{name}: the recorded digest must be the file's real sha256",
+            )
+
     def test_values_the_code_can_represent_round_trip_exactly(self):
         """The format represents `(code - zero) * scale` for codes -8..7. Values built that
         way must come back unchanged; a test that demanded it of arbitrary values would be

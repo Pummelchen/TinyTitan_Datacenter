@@ -619,16 +619,41 @@ def build_install(snapshot: Path, install: Path, spec: dict, policy: dict, polic
         entry.update({"name": tensor["name"], "role": role, "quant": quant})
         writer.add(entry)
 
+    # `I6`: digest the source files here rather than trusting the spec, which carries an empty map.
+    # The spec describes the *model*; the build is what read the bytes.
     source = {
         "repo": spec["source"]["repo"],
         "revision": spec["source"]["revision"],
-        "files": spec["source"]["files"],
+        "files": digest_snapshot(snapshot),
         "spec_family": spec["family"],
     }
     manifest = writer.finish(source=source, spec=spec, policy_files=[policy_file])
     manifest["skipped"] = skipped
     return manifest
 
+
+def digest_snapshot(snapshot: Path) -> dict[str, str]:
+    """`I6`: the sha256 of every source weight file, keyed by name.
+
+    The artifact recorded `{}` here — in the real install and in both committed fixtures — so a
+    converted model could not be traced to the weights it came from, which is the one question a
+    provenance header exists to answer. `revision` was `"local"` too; that half is `DC-098`'s other
+    edge and needs the commit, which a build does not know.
+
+    Reads through the uncached descriptor, one window at a time, so a 67 GiB checkpoint does not become
+    67 GiB of page cache — the failure mode that took this node's free disk from 17 GB to 2.96 GB once
+    already. It is a **second pass** over the shards, not a free one: at the measured 1161 MB/s
+    sequential that is tens of seconds on the real model, and it is worth it, because without it the
+    artifact cannot name its source.
+    """
+    digests: dict[str, str] = {}
+    for path in sorted(snapshot.glob("*.safetensors")):
+        descriptor = open_uncached(path)
+        try:
+            digests[path.name] = digest_of(descriptor, 0, path.stat().st_size)
+        finally:
+            os.close(descriptor)
+    return digests
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
