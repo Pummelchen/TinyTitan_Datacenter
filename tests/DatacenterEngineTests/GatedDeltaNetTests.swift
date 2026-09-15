@@ -32,13 +32,13 @@ final class GatedDeltaNetTests: XCTestCase {
         var weights: [String: Vector]
     }
 
-    private func fixture() throws -> (single: Case, multi: Case) {
+    private func fixture() throws -> (single: Case, multi: Case, asymmetric: Case) {
         let url = try XCTUnwrap(
             Bundle.module.url(forResource: "contract-vectors", withExtension: "json", subdirectory: "Fixtures")
         )
-        struct Fixture: Decodable { var gdn: Case; var gdn_multichunk: Case }
+        struct Fixture: Decodable { var gdn: Case; var gdn_multichunk: Case; var gdn_asymmetric: Case }
         let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url))
-        return (fixture.gdn, fixture.gdn_multichunk)
+        return (fixture.gdn, fixture.gdn_multichunk, fixture.gdn_asymmetric)
     }
 
     private func shape(_ config: Config) -> GatedDeltaNetShape {
@@ -82,7 +82,7 @@ final class GatedDeltaNetTests: XCTestCase {
     }
 
     func testSingleChunkMatchesTheContract() throws {
-        let (single, _) = try fixture()
+        let (single, _, _) = try fixture()
         assertSameBits(run(single), single.out, "gdn")
     }
 
@@ -113,8 +113,59 @@ final class GatedDeltaNetTests: XCTestCase {
         assertSameBits(run(asymmetric), asymmetric.out, "gdn_asymmetric")
     }
 
+    /// `D8`: the decode step is the same recurrence as the sequence path, evaluated a step at a
+    /// time instead of in chunks. Algebraically equivalent, numerically **not** bit-identical —
+    /// the chunked rule groups its sums over 64 positions and this accumulates one at a time —
+    /// so this asserts agreement to a tolerance, and says so rather than pretending otherwise.
+    ///
+    /// It runs on the asymmetric case as well as the long one, because the grouped-query head
+    /// repetition is a step the symmetric fixture cannot check.
+    private func assertDecodeMatchesSequence(_ testCase: Case, label: String) {
+        let shape = shape(testCase.config)
+        let weights = weights(testCase.weights)
+        let sequence = run(testCase)
+        let hiddenSize = testCase.config.hidden_size
+        let length = testCase.config.positions
+        let hidden = testCase.hidden.floats
+
+        let state = GatedDeltaNet.State(
+            batch: 1, convDim: shape.convDim, kernel: shape.convKernel, valueHeads: shape.valueHeads,
+            keyHeadDim: shape.keyHeadDim, valueHeadDim: shape.valueHeadDim
+        )
+        var decoded = [Float](repeating: 0, count: sequence.count)
+        for position in 0..<length {
+            let row = Array(hidden[(position * hiddenSize)..<((position + 1) * hiddenSize)])
+            let step = GatedDeltaNet.decodeStep(hidden: row, weights: weights, shape: shape, state: state)
+            for index in 0..<hiddenSize { decoded[position * hiddenSize + index] = step[index] }
+        }
+
+        let scale = sequence.map(abs).max() ?? 1
+        var worst: Float = 0
+        for index in 0..<sequence.count { worst = max(worst, abs(decoded[index] - sequence[index])) }
+        XCTAssertLessThan(
+            worst, max(1e-5, scale * 1e-5),
+            "\(label): the decode step and the sequence path must be the same recurrence "
+                + "(worst |Δ| \(worst) against scale \(scale))"
+        )
+    }
+
+    func testTheDecodeStepMatchesTheSequencePathOnTheLongCase() throws {
+        let (_, multi, _) = try fixture()
+        XCTAssertGreaterThan(multi.config.positions, GatedDeltaNet.chunkSize, "must span chunks")
+        assertDecodeMatchesSequence(multi, label: "gdn_multichunk")
+    }
+
+    func testTheDecodeStepMatchesTheSequencePathWithAsymmetricHeads() throws {
+        let (_, _, asymmetric) = try fixture()
+        XCTAssertNotEqual(
+            asymmetric.config.num_key_heads, asymmetric.config.num_value_heads,
+            "the case is pointless unless the head counts differ"
+        )
+        assertDecodeMatchesSequence(asymmetric, label: "gdn_asymmetric")
+    }
+
     func testMultipleChunksMatchTheContract() throws {
-        let (_, multi) = try fixture()
+        let (_, multi, _) = try fixture()
         XCTAssertGreaterThan(multi.config.positions, GatedDeltaNet.chunkSize, "the case must need a second chunk")
         assertSameBits(run(multi), multi.out, "gdn_multichunk")
     }

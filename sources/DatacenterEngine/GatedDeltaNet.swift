@@ -371,6 +371,149 @@ public enum GatedDeltaNet {
 
     /// The whole layer: projection, conv, split, gates, the delta rule, the gated norm and
     /// the output projection. `hidden` is `[batch, length, hiddenSize]`.
+    /// The state a Gated DeltaNet layer carries between tokens.
+    ///
+    /// Two pieces, and both are needed: the convolution's **window** — the last `kernel - 1` raw
+    /// projections per channel, because the causal conv is depthwise with a kernel of four and
+    /// would otherwise see zeros where history belongs — and the **recurrent state** `[heads,
+    /// keyHeadDim, valueHeadDim]`, which is what `Qwen3_5MoeGatedDeltaNet.forward` threads
+    /// through `initial_state`/`output_final_state`.
+    ///
+    /// The layout follows `causal_conv1d_update`: `conv` is `[channels, kernel - 1]` per batch
+    /// element, oldest first, which is exactly the window the reference concatenates its new
+    /// input onto.
+    public final class State {
+        public var conv: [Float]
+        public var recurrent: [Float]
+
+        public init(batch: Int, convDim: Int, kernel: Int, valueHeads: Int, keyHeadDim: Int, valueHeadDim: Int) {
+            self.conv = [Float](repeating: 0, count: batch * convDim * (kernel - 1))
+            self.recurrent = [Float](
+                repeating: 0, count: batch * valueHeads * keyHeadDim * valueHeadDim
+            )
+        }
+    }
+
+    /// One token through the layer, carrying `state` forward — the decode path.
+    ///
+    /// `D8`: the chunked rule is authoritative for what the model *is*, and this implements the
+    /// recurrent form of the same recurrence, which agrees with it to about 1e-7 relative rather
+    /// than to the bit, because the chunked rule groups its sums over 64 positions and this
+    /// accumulates a step at a time. That is a second numeric path by decision, not by accident,
+    /// and it is checked against the sequence path rather than assumed equal to it.
+    ///
+    /// The conv follows `causal_conv1d_update:252`: concatenate the window with the new input,
+    /// take the convolution with no padding, keep the **last** output, and store the last
+    /// `kernel - 1` inputs as the new window.
+    public static func decodeStep(
+        hidden: [Float], weights: GatedDeltaNetWeights, shape: GatedDeltaNetShape, state: State
+    ) -> [Float] {
+        let keyDim = shape.keyDim
+        let valueDim = shape.valueDim
+        let convDim = shape.convDim
+        let heads = shape.valueHeads
+        let keyHeads = shape.keyHeads
+        let headK = shape.keyHeadDim
+        let headV = shape.valueHeadDim
+        let kernel = shape.convKernel
+        let window = kernel - 1
+        let eps = shape.eps
+
+        let mixed = Ops.orderedMatmul(x: hidden, w: weights.inQKV, rows: 1, k: shape.hiddenSize, out: convDim)
+
+        // The window, oldest first, then the new projection: the reference's `torch.cat`.
+        var convolved = [Float](repeating: 0, count: convDim)
+        for channel in 0..<convDim {
+            var samples = [Float](repeating: 0, count: kernel)
+            for index in 0..<window { samples[index] = state.conv[channel * window + index] }
+            samples[window] = mixed[channel]
+            var total: Float = 0
+            for tap in 0..<kernel {
+                // The conv weight is `[convDim, 1, kernel]`, and tap `k` reads `samples[k]`.
+                total += weights.conv[channel * kernel + tap] * samples[tap]
+            }
+            convolved[channel] = Ops.silu(total)
+            // The state keeps the last `kernel - 1` inputs, which is the window shifted by one.
+            for index in 0..<window { state.conv[channel * window + index] = samples[index + 1] }
+        }
+
+        let z = Ops.orderedMatmul(x: hidden, w: weights.inZ, rows: 1, k: shape.hiddenSize, out: valueDim)
+        let b = Ops.orderedMatmul(x: hidden, w: weights.inB, rows: 1, k: shape.hiddenSize, out: heads)
+        let a = Ops.orderedMatmul(x: hidden, w: weights.inA, rows: 1, k: shape.hiddenSize, out: heads)
+
+        // Per head, as everywhere: writing the gates once per position gives the last head's
+        // values to all of them, which is wrong in a way that still produces plausible numbers.
+        var beta = [Float](repeating: 0, count: heads)
+        var decay = [Float](repeating: 0, count: heads)
+        for head in 0..<heads {
+            beta[head] = Ops.sigmoid(b[head])
+            decay[head] = -Ops.exp32(weights.aLog[head]) * softplus(a[head] + weights.dtBias[head])
+        }
+
+        // Query, key and value for this position, with the key heads repeated up to the value
+        // head count — the grouped-query step `DC-038` fixed in the sequence path.
+        let headRepeats = max(heads / max(keyHeads, 1), 1)
+        var query = [Float](repeating: 0, count: heads * headK)
+        var key = [Float](repeating: 0, count: heads * headK)
+        var value = [Float](repeating: 0, count: heads * headV)
+        for head in 0..<keyHeads {
+            for repeatIndex in 0..<headRepeats {
+                let target = (head * headRepeats + repeatIndex) * headK
+                for component in 0..<headK {
+                    query[target + component] = convolved[head * headK + component]
+                    key[target + component] = convolved[keyDim + head * headK + component]
+                }
+            }
+        }
+        for component in 0..<valueDim { value[component] = convolved[2 * keyDim + component] }
+
+        if true {
+            // `use_qk_l2norm_in_kernel`, then the unconditional scaling by 1/sqrt(head_dim) —
+            // the line whose absence leaves the output out by a constant factor.
+            query = l2norm(query, count: heads, width: headK, eps: 1e-6, rowOffset: 0)
+            key = l2norm(key, count: heads, width: headK, eps: 1e-6, rowOffset: 0)
+            let scale = 1 / Float(headK).squareRoot()
+            for index in 0..<query.count { query[index] *= scale }
+        }
+
+        // The recurrence, one step: decay the state, correct it towards this token's value, and
+        // read the output from it. Transcribed from `torch_recurrent_gated_delta_rule:440`.
+        var core = [Float](repeating: 0, count: heads * headV)
+        for head in 0..<heads {
+            let stateBase = head * headK * headV
+            let decayHead = Ops.exp32(decay[head])
+            for index in 0..<(headK * headV) { state.recurrent[stateBase + index] *= decayHead }
+
+            // `kv_mem = (state * k).sum(dim=-2)`: over the key dimension, in ascending order.
+            var kvMemory = [Float](repeating: 0, count: headV)
+            for kIndex in 0..<headK {
+                let keyValue = key[head * headK + kIndex]
+                for vIndex in 0..<headV {
+                    kvMemory[vIndex] += state.recurrent[stateBase + kIndex * headV + vIndex] * keyValue
+                }
+            }
+            var delta = [Float](repeating: 0, count: headV)
+            for vIndex in 0..<headV {
+                delta[vIndex] = (value[head * headV + vIndex] - kvMemory[vIndex]) * beta[head]
+            }
+            for kIndex in 0..<headK {
+                let keyValue = key[head * headK + kIndex]
+                for vIndex in 0..<headV {
+                    state.recurrent[stateBase + kIndex * headV + vIndex] += keyValue * delta[vIndex]
+                }
+            }
+            for kIndex in 0..<headK {
+                let queryValue = query[head * headK + kIndex]
+                for vIndex in 0..<headV {
+                    core[head * headV + vIndex] += state.recurrent[stateBase + kIndex * headV + vIndex] * queryValue
+                }
+            }
+        }
+
+        let normalised = gatedRMSNorm(hidden: core, gate: z, weight: weights.norm, rows: heads, width: headV, eps: eps)
+        return Ops.orderedMatmul(x: normalised, w: weights.outProj, rows: 1, k: valueDim, out: shape.hiddenSize)
+    }
+
     public static func layer(
         hidden: [Float], weights: GatedDeltaNetWeights, shape: GatedDeltaNetShape, batch: Int, length: Int
     ) -> [Float] {

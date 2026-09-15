@@ -52,3 +52,21 @@ relative. The discrepancy is unreconciled in the reference and is noted as such 
 `reference-qwen36-35b-a3b.md`; `tools/test_ordered_gdn_recurrent.py` carries the two measurements
 as a passing test and an expected failure so the marker removes itself if the discrepancy turns
 out to be ours.
+
+## The decode path, implemented under `D8`
+
+`GatedDeltaNet.decodeStep` carries a `State` — the convolution's window (the last `kernel - 1`
+raw projections per channel, which `causal_conv1d_update:252` concatenates onto the new input)
+and the recurrent state `[heads, keyHeadDim, valueHeadDim]`. It is checked against the layer's
+**sequence** path on the golden vectors, including the asymmetric two-key-heads-to-four case,
+at a tolerance rather than at the bit — which is `D8`'s consequence stated as a test:
+
+| | |
+| --- | --- |
+| decode step vs sequence path, long case | passes at 1e-5 relative |
+| decode step vs sequence path, asymmetric heads | passes at 1e-5 relative |
+| the sequence path vs the contract | **bit-identical** (unchanged, and still asserted) |
+
+What is not yet wired: a prefill that leaves the states behind, and the attention layers' KV
+cache. The unit is verified before either, because the wiring is where a state can be threaded
+into the wrong layer or the wrong batch element and still produce plausible text.
