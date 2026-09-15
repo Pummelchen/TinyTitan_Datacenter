@@ -151,44 +151,15 @@ stale number and the prediction cannot be confused for one another.
 
 ### Not measured
 
-### The MoE fixture does not exercise partial RoPE
+> **A withdrawn claim, kept visible.** An earlier revision of this page listed "the MoE fixture does not
+> exercise partial RoPE" here. That was **wrong**: `Fixtures/tiny-qwen36/config.json` has carried
+> `"partial_rotary_factor": 0.5` and `"rope_theta": 10000000.0` all along, and `spec.json` carries
+> `"partialRotaryFactor": 0.5`. The check that produced the claim read the fixture's config under
+> `text_config`, where the *real* checkpoint nests its geometry, while the fixture keeps those keys at
+> the top level — so the check looked in the wrong place, printed `(absent)`, and I reported my own
+> tooling's blind spot as a fact about the repository. `DC-093` is withdrawn. The fixture covers the
+> partial-RoPE path.
 
-Found by comparing the fixture's config against the checkpoint's, which is the check the checkpoint's own
-`config.json` makes easy and which the tracker's `DC-093` records.
-
-The checkpoint sets `partial_rotary_factor` to **0.25** — RoPE reaches 64 of `head_dim` 256 — and the
-engine honours it: `Qwen3_5Forward` takes `config.partialRotaryFactor ?? 1.0` and rotates only the first
-`rotary` channels (`applyPartialRope`), and both importers read the field through
-`rope_parameters.partial_rotary_factor`.
-
-Coverage, however, is not uniform:
-
-| where | partial RoPE |
-| --- | --- |
-| `tools/make_contract_vectors.py:118` | **0.5**, so the op-level contract vectors do exercise it |
-| `tools/make_tiny_qwen35_checkpoint.py:52` | **0.5**, so that family's end-to-end golden does |
-| `tests/.../Fixtures/tiny-qwen36/config.json` | **absent**, so `?? 1.0` applies and the **MoE end-to-end forward runs full RoPE** |
-
-So the path M1's gate depends on — the mixture forward, end to end, against the contract — has never run
-with a partial rotary factor, while the model it gates on always does. Nothing is known to be broken: the
-two sides agree on the default because they share it, which is exactly why the fixture cannot find a
-mistake in it. It is listed here as **not measured** rather than as a fault, and closing it means adding
-the field to that fixture and regenerating its golden.
-, and what would close the gate
-
-- the remaining **four prompts** of `tools/m1_prompts.json`;
-- a **re-measured throughput baseline** on the fixed engine, and therefore the M1 gate's actual
-  tok/s figure;
-- the **cache hit rate** on the fixed engine — the `0.0000` above is real but was taken with the
-  whole-stack decode, which changes the traffic it counts;
-- the engine running **against the 4-bit install** on the real model, rather than against the
-  checkpoint.
-
-All four need the same thing: one real-model run on this node, which needs the operator's approval
-because the process peaks at 4.16 GB against about 4.5 GB usable. The watchdog is armed, the disk
-floor is enforced, and the run is a few minutes. **M1's gate is therefore open, with its
-correctness claim holding on one prompt of five and its throughput claim retired pending that
-measurement.**
 
 ## Run on all five prompts, 2026-09-16: it works, and I1 holds on the real model
 
