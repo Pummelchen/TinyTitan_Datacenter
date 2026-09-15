@@ -23,6 +23,14 @@ public enum Ops {
     /// BLAS kernels and is not reproducible by any engine (measured: 3544 of 4096 outputs
     /// differ on a real layer's shapes, both equally close to fp64).
     public static func orderedMatmul(x: [Float], w: [Float], rows: Int, k: Int, out: Int) -> [Float] {
+        // The scalar body below is the **definition**; this is the fast path, and it is bit-equal
+        // to it on every shape the tests try (measured, `D9`). Keeping both is deliberate: a
+        // faster formulation is only trustworthy while something independent says it agrees.
+        orderedMatmulVectorized(x: x, w: w, rows: rows, k: k, out: out)
+    }
+
+    /// The definition: ascending accumulation over `k`, one rounding per multiply and per add.
+    public static func orderedMatmulScalar(x: [Float], w: [Float], rows: Int, k: Int, out: Int) -> [Float] {
         var result = [Float](repeating: 0, count: rows * out)
         for row in 0..<rows {
             let xRow = row * k
@@ -34,6 +42,59 @@ public enum Ops {
                     accumulator = accumulator + x[xRow + index] * w[wRow + index]
                 }
                 result[rRow + column] = accumulator
+            }
+        }
+        return result
+    }
+
+
+    /// `x @ wᵀ` with four outputs at a time, and the **same additions in the same order**.
+    ///
+    /// The vector is taken across the **output** dimension, never across `k`. That is the whole
+    /// trick: each lane accumulates over `k` ascending, one rounding per multiply and one per add,
+    /// exactly as the scalar op does — so the result is bit-identical to the contract rather than
+    /// merely close to it. Vectorising across `k` instead would need a horizontal reduction, which
+    /// reassociates the sum and changes the bits.
+    ///
+    /// The product is materialised before the add (`accumulator + value * lane`) because the
+    /// contract forbids fusing the two: `Float.addingProduct` is a different number, and the
+    /// contract is defined by the rounding sequence rather than by the algebra.
+    ///
+    /// The tail is the scalar loop verbatim, because there is nothing to vectorise and a second
+    /// formulation is a second chance to disagree.
+    public static func orderedMatmulVectorized(x: [Float], w: [Float], rows: Int, k: Int, out: Int) -> [Float] {
+        var result = [Float](repeating: 0, count: rows * out)
+        let width = 4
+        for row in 0..<rows {
+            let xRow = row * k
+            let rRow = row * out
+            var column = 0
+            while column + width <= out {
+                var accumulator = SIMD4<Float>(repeating: 0)
+                for index in 0..<k {
+                    let value = SIMD4<Float>(repeating: x[xRow + index])
+                    let weights = SIMD4<Float>(
+                        w[(column + 0) * k + index],
+                        w[(column + 1) * k + index],
+                        w[(column + 2) * k + index],
+                        w[(column + 3) * k + index]
+                    )
+                    accumulator = accumulator + value * weights
+                }
+                result[rRow + column + 0] = accumulator[0]
+                result[rRow + column + 1] = accumulator[1]
+                result[rRow + column + 2] = accumulator[2]
+                result[rRow + column + 3] = accumulator[3]
+                column += width
+            }
+            while column < out {
+                let wRow = column * k
+                var accumulator: Float = 0
+                for index in 0..<k {
+                    accumulator = accumulator + x[xRow + index] * w[wRow + index]
+                }
+                result[rRow + column] = accumulator
+                column += 1
             }
         }
         return result

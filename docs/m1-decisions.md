@@ -3,6 +3,47 @@
 The decisions M1 rests on, with the evidence that forced each. `m0-decisions.md` holds M0's
 `D1`–`D7`; the numbering continues here.
 
+## D9 — The fast matmul must be bit-identical, so the contract's order is the specification
+
+**Decision.** `orderedMatmul` uses a formulation that vectorises across the **output** dimension and
+keeps each lane's accumulation over `k` ascending, one rounding per multiply and one per add. It is
+adopted because it is **bit-identical** to the scalar contract, not because it is close. The scalar
+body is retained by name (`orderedMatmulScalar`) as the definition, and a test compares the two on
+more than a hundred shapes. **Fused multiply-add and therefore BLAS are excluded**, on measurement.
+
+**Why this needed deciding before any kernel work.** `I1` and `I2` are defined by the *rounding
+sequence*, not by the algebra: two formulations that agree to within any tolerance can still produce
+different output bytes, and a sharded run has to match a single-node run exactly. So the question for
+every kernel is not "is it faster" but "does it round in the same order".
+
+**The measurements** (this node, `Swift 6.4`, release, 256×256×256 and a synthetic int4 payload):
+
+| what | number |
+| --- | --- |
+| vector vs scalar matmul | **bit-identical** on every shape tried, including `out` not a multiple of four and odd `k` |
+| the whole engine after the swap | 86 tests green, golden and contract comparisons included — end-to-end bit-identity |
+| scalar matmul | 4.1 GFLOP/s |
+| vector matmul | **6.8 GFLOP/s — a 1.66× speedup**, free because the bits are unchanged |
+| `Float.addingProduct` against the ordered sum | **177 of 256 dot products differ in the last bit** |
+| `dequantizeInt4` | 370.9 M values/s, so one 35 B token's ~3.45 B values cost **~9.3 s of unpacking** |
+
+The FMA row is the decisive one: an FMA is one rounding instead of two, it differs from the contract
+on **69 % of inputs**, and every BLAS uses it. `cblas_sgemm` is therefore not available for any op the
+gate compares — not "would need care", *cannot*. The scalar rate is also the answer to "is this
+matmul-bound": 6.9 GFLOP of matmul per token is about 1.7 s at 4.1 GFLOP/s, against a measured 52.2 s
+per step, so the matmul is not where the time is going.
+
+**A prediction, labelled as one.** The 52.2 s/step was measured *before* the row-read fix in
+`DC-033`. Forty layers of whole-stack decoding is 40 × 537 M values ≈ 21.5 G values, which at the
+measured 370.9 M values/s is ≈ 58 s — the same number by a different route. With eight of 256 experts
+fetched per layer it becomes ≈ 0.67 G values ≈ 1.8 s. So that fix, made for memory, should also be
+worth most of an order of magnitude in throughput. **This is not verified and will not be claimed as
+a result until a real-model run measures it**, which needs the operator's approval.
+
+**Consequence for the remaining `DC-033` work.** The next kernels are the int4 unpack and the expert
+fetch path, not the matmul — and the unpack has to preserve the same rounding sequence, which is a
+tighter constraint than a GEMM kernel faces.
+
 ## D8 — The chunked Gated DeltaNet rule is authoritative, and a cache is a second numeric path
 
 **Decided:** the cache's decode arithmetic is built so that it agrees with the **chunked** rule,
