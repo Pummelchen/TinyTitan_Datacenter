@@ -153,6 +153,13 @@ python3 tools/make_qwen35_fixture.py \
 .venv/bin/python tools/measure_quantization.py \
     --snapshot .build/hf-cache/models--Qwen--Qwen3.5-2B/snapshots/<revision> --spec .build/spec-2b.json
 
+# Rebuild the tiny qwen3_5_moe checkpoint and the contract's golden output that the
+# engine's whole-tower test asserts bit for bit (236 KB; needs the venv, and a release
+# binary for the spec). The checkpoint carries the family's asymmetries -- two key heads
+# to four value heads, an untied head, a shared expert -- so the paths the 2 B model
+# never took are the paths it exercises.
+.venv/bin/python tools/make_tiny_qwen36_checkpoint.py
+
 # M1's text tower, checked against the reference's own Qwen3_5MoeTextModel: the numbers
 # layer by layer, and the router's decisions at every layer as a separate assertion (I3).
 .venv/bin/python -m unittest discover -s tools -p 'test_ordered_qwen36.py'
