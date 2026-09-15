@@ -74,16 +74,80 @@ contract, which is exactly what a test asserts.
 333 + 19 + 693 = 1045, the whole checkpoint. Both groups are in the file and neither is in M1. As with `qwen3_5`, the exclusion is a named
 prefix with a reason and the tests assert that every tensor is either mapped or excluded.
 
-## Still to extract before the kernels are written — do not guess these
+## The mixture of experts, transcribed (`Qwen3_5MoeSparseMoeBlock:903`)
 
-- the router's exact arithmetic: whether the logits are computed in fp32 or the model dtype,
-  whether `norm_topk_prob` is set for this checkpoint, and how the shared expert's scalar
-  gate combines with the routed sum. I3 makes the top-8 index set a discrete decision that
-  must match exactly, and it is the first thing quantisation breaks;
-- whether the stack's `gate_up` halves are `[gate | up]` or interleaved, which the shape does
-  not say;
-- `intermediate_size` is absent from the configuration, so anything that assumed a dense MLP
-  width would silently use the MoE width;
-- the Gated DeltaNet and attention are the `qwen3_5` ones by name and shape — but "by name and
-  shape" is not "by arithmetic", and this family's own reference file must be read before the
-  kernels are trusted.
+Read from `transformers` v5.17.0 `models/qwen3_5_moe/modeling_qwen3_5_moe.py`.
+
+```python
+shared = shared_expert(hidden)                       # an ordinary gate/up/down MLP
+_, routing_weights, selected = gate(hidden)          # below
+routed = experts(hidden, selected, routing_weights)  # below
+shared = sigmoid(shared_expert_gate(hidden)) * shared
+return routed + shared                               # the shared expert is added, not ranked
+```
+
+### The router (`Qwen3_5MoeTopKRouter:884`)
+
+```python
+router_logits = F.linear(hidden, weight)                              # (tokens, experts)
+router_probs  = softmax(router_logits, dtype=torch.float, dim=-1)     # ← FP32, explicitly
+router_top_value, router_indices = torch.topk(router_probs, top_k, dim=-1)
+router_top_value /= router_top_value.sum(dim=-1, keepdim=True)        # ← renormalised
+router_top_value = router_top_value.to(router_logits.dtype)           # ← back to the model dtype
+```
+
+Four things worth stating plainly:
+
+- **The softmax is fp32** while everything around it is bf16. That is a fp32 island in the
+  same sense as the attention softmax, and the router is exactly where I3 says not to
+  economise.
+- **The top-k is taken on the probabilities, not the logits.** Equivalent in ordering,
+  different in the numbers that end up being compared.
+- **The top-k weights are renormalised** to sum to one over the chosen experts. Note that
+  this is *unconditional* here: the implementation does not consult `norm_topk_prob`, so a
+  checkpoint whose configuration disabled it would still be renormalised.
+- **The weights are cast back to the model dtype** before use, so in a bf16 run the router's
+  arithmetic ends at bf16 even though its softmax did not.
+
+**Ties are not specified by the reference.** `torch.topk` does not promise which of two equal
+probabilities comes first, so the *order* of a tied top-k is implementation-defined there.
+The contract states its own rule — **lowest expert index first**, the same rule `argmax` uses
+— because I3 requires the index *set* to be comparable and a set with an undefined order is
+not.
+
+### The experts (`Qwen3_5MoeExperts:845`)
+
+```python
+for expert_idx in expert_hit:                        # ascending index order
+    top_k_pos, token_idx = where(expert_mask[expert_idx])
+    gate, up = linear(x, gate_up_proj[expert_idx]).chunk(2, dim=-1)   # ← [gate | up]
+    out = act(gate) * up
+    out = linear(out, down_proj[expert_idx])
+    out = out * top_k_weights[token_idx, top_k_pos, None]
+    final.index_add_(0, token_idx, out)
+```
+
+- The fused stack is **`[gate | up]`** — the first half is the gate — which the shape could
+  not say and the code does.
+- The accumulation runs in **ascending expert index**, not in top-k rank order. That is
+  exactly what D4 chose for the distributed reduction ("ascending global expert id"), so the
+  single-node contract and the future ring reduction agree by construction rather than by
+  coincidence.
+
+### The norms are the same as `qwen3_5`'s
+
+`Qwen3_5MoeRMSNorm:925` initialises its weight to **zeros** and multiplies by `(1 + weight)`,
+the offset convention `qwen3_5` uses and `qwen3` does not. A kernel written from the `qwen3`
+convention would be wrong here, and the decoder layer is otherwise identical: residual,
+mixer, residual, `post_attention_layernorm`, mixture.
+
+## Still to extract — do not guess these
+
+- the `attention_mask` path: what the reference does at padded positions in a batch, which
+  M1's single-sequence runs do not exercise but M2's might;
+- whether the Gated DeltaNet and attention blocks in *this* module differ in any arithmetic
+  from `qwen3_5`'s beyond the names — the shapes and the class names match, and "matches by
+  name and shape" is not "matches by arithmetic". The transcription above covers the mixture
+  only, and the two attention families must be compared line by line before M1's kernels
+  are trusted;
+- the MTP head, which is M5's feature.
