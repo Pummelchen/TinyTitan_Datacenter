@@ -300,6 +300,36 @@ class InstallTests(unittest.TestCase):
                     checked += 1
             self.assertGreater(checked, 0, "the fixture must produce slab digests")
 
+    def test_a_denormal_scale_is_flushed_on_both_sides(self):
+        """`D11`: the flush is part of the contract, so both implementations must do it.
+
+        Measured on the real install: 0.722705 % of 523,304,960 scales are denormal, so a reader that
+        did not flush would disagree with the engine on four million values per pass.
+        """
+        entry = {
+            "shape": [1, 2],
+            "padded_columns": 2,
+            "group": 2,
+            "packed": bytes([0x51]),
+            "scales": np.float32(1e-40).tobytes(),
+            "zeros": bytes([0]),
+            "dtype": "int4",
+            "quant": "int4-affine",
+        }
+        self.assertLess(float(np.float32(1e-40)), float(np.finfo(np.float32).tiny), "1e-40 is denormal")
+        self.assertTrue(np.all(quantize.flush_denormals(np.array([1e-40, 0.0, 1e-20, -1e-20], dtype=np.float32))[0] == 0))
+        values = quantize.dequantize_tensor(entry)
+        self.assertEqual(values.tolist(), [[0.0, 0.0]], "a denormal scale must flush to zero")
+
+    def test_the_quantizer_stores_a_flushed_scale(self):
+        """The stored value must be the flushed one, so an install cannot carry a scale two readers
+        disagree about — and the flush has to happen *after* packing, which divides by it."""
+        weight = np.full((1, 64), 1e-40, dtype=np.float32)
+        entry = quantize.quantize_tensor(weight)
+        stored = np.frombuffer(entry["scales"], dtype=np.float32)
+        self.assertTrue(np.all(stored == 0), f"expected zero scales, got {stored[:4]}")
+        self.assertTrue(np.all(quantize.dequantize_tensor(entry) == 0))
+
     def test_the_install_round_trips_through_its_reader(self):
         with tempfile.TemporaryDirectory() as directory:
             install = self.build(Path(directory))

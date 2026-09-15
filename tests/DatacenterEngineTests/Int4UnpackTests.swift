@@ -79,6 +79,28 @@ final class Int4UnpackTests: XCTestCase {
         XCTAssertThrowsError(try InstallFile.dequantizeInt4(body, entry: entry))
     }
 
+    /// `D11`: a denormal scale decodes to zero, on both paths, and they agree.
+    ///
+    /// Metal flushes denormal operands and the CPU does not, so the contract defines the flush rather
+    /// than discovering it — measured at 0.722705 % of the real install's scales. This is the test
+    /// that pins the definition, and the fixture cannot: it contains no denormals at all.
+    func testADenormalScaleDecodesToZeroOnBothPaths() throws {
+        let entry = try entry(rows: 1, columns: 2, padded: 2, group: 2)
+        // codes = one byte (two nibbles), scales = one denormal float, zeros = one byte.
+        var body = Data([0x51])                                   // nibbles 1 and 5
+        body.append(contentsOf: withUnsafeBytes(of: Float(1e-40).bitPattern.littleEndian) { Array($0) })
+        body.append(UInt8(0))                                     // zero point 0
+        XCTAssertLessThan(Float(1e-40), Float.leastNormalMagnitude, "1e-40 must be denormal for this test")
+
+        let vector = try InstallFile.dequantizeInt4(body, entry: entry)
+        let scalar = try InstallFile.dequantizeInt4Scalar(body, entry: entry)
+        XCTAssertEqual(vector, [0, 0], "a denormal scale must flush to zero")
+        XCTAssertEqual(vector.map(\.bitPattern), scalar.map(\.bitPattern), "the two paths must agree")
+        XCTAssertEqual(InstallFile.flushed(Float(1e-40)), 0)
+        XCTAssertEqual(InstallFile.flushed(Float(1e-20)), Float(1e-20), "normal scales are untouched")
+        XCTAssertEqual(InstallFile.flushed(-Float(1e-20)), -Float(1e-20), "and their sign survives")
+    }
+
     /// A report, not a gate. The rate is what decides whether the unpack is worth more work.
     func testUnpackThroughputReport() throws {
         let rows = 8192

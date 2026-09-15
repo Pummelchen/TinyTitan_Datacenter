@@ -158,7 +158,29 @@ There are two options and no third:
    not "the unpack stays on the CPU" — it is the **entire expert path** staying on the CPU, which is
    the hot path. Metal's role would be reduced to the dense, unquantized ops.
 
-**The operator chose (1)**, so the flush is now part of the contract rather than a recommendation, and the implementation notes live in `DC-089`. It was recommended because the flush is a *definition* rather than an error, it is one
+**The operator chose (1), and it is implemented** — four sites, and the placement is the whole
+difficulty:
+
+| where | what |
+| --- | --- |
+| `tools/quantize.py`, `flush_denormals` | the definition, one function |
+| `quantize_rows` | flushes the scale that gets **stored** |
+| `dequantize_tensor` (Python reader) | so an install that already carries denormals reads the same |
+| `Install.swift`, `flushed` | one helper, used by the vector **and** the scalar unpacker |
+
+`quantize_rows` is the interesting one: packing divides by the scale and the zero point is derived
+from it, so flushing early divides by zero — the Python suite failed on exactly that on the first
+attempt. The flush belongs on the value that finally gets stored, after the codes are built.
+
+Proven by tests the fixture could never provide, because it contains no denormals at all: a crafted
+denormal scale decodes to **zero** on both Swift paths and in the Python reader, the two agree
+bit-for-bit, normal scales keep their value and their sign, and the quantizer stores zero.
+
+**One consequence to state rather than discover.** The real install's stored scales still contain
+denormals — they are not rewritten — but every reader now flushes them, so the engine and the
+contract still agree with each other while both differ from the traces recorded before this change.
+**`capital`'s digest `b8c976c5e7ba8816…` is therefore historical**, and re-establishing the
+contract comparison on the real model needs another run of the kind the operator authorised. It was recommended because the flush is a *definition* rather than an error, it is one
 line in each of the two implementations, and it is testable exactly the way everything else in this
 project is — assert the flushed behaviour on both sides and re-run the oracle comparison with the
 new error budget recorded. But it changes what "bit-identical" means, so it is a renegotiation

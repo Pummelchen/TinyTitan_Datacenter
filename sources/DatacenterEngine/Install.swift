@@ -365,7 +365,7 @@ public struct InstallFile: WeightSource {
                 var index = 0
                 while index < layout.columns {
                     let groupIndex = rowGroups + index / layout.group
-                    let scale = Float(bitPattern: UInt32(littleEndian: scales.loadUnaligned(fromByteOffset: groupIndex * 4, as: UInt32.self)))
+                    let scale = Self.flushed(Float(bitPattern: UInt32(littleEndian: scales.loadUnaligned(fromByteOffset: groupIndex * 4, as: UInt32.self))))
                     let rawZero = Int(zeros.loadUnaligned(fromByteOffset: groupIndex, as: UInt8.self))
                     let zero = rawZero >= 128 ? rawZero - 256 : rawZero
                     // The last group of a padded tensor holds fewer real values than the group
@@ -434,6 +434,17 @@ public struct InstallFile: WeightSource {
         return values
     }
 
+    /// `D11`: a denormal scale is read as zero, on both the CPU and (already) the GPU.
+    ///
+    /// Measured on the real 35 B install: **0.722705 %** of 523,304,960 scales are denormal, and one
+    /// first-layer tensor is 41 % denormal by itself. Rather than keep every kernel away from the
+    /// whole expert path, the contract *defines* the flush — `tools/quantize.py` does the same — so a
+    /// comparison between the two stays exact. The values lost are ~1e-38 against weights of ~1e-1.
+    @inline(__always)
+    static func flushed(_ scale: Float) -> Float {
+        (scale != 0 && abs(scale) < Float.leastNormalMagnitude) ? 0 : scale
+    }
+
     /// A four-bit code as a signed integer: two's complement in four bits.
     @inline(__always)
     private static func signed(_ nibble: Int) -> Int {
@@ -471,7 +482,7 @@ public struct InstallFile: WeightSource {
                     let zeroValue = Int(zero >= 128 ? Int(zero) - 256 : Int(zero))
                     if index < columns {
                         values[row * columns + index] =
-                            Float(code - zeroValue) * Float(bitPattern: UInt32(littleEndian: scale))
+                            Float(code - zeroValue) * Self.flushed(Float(bitPattern: UInt32(littleEndian: scale)))
                     }
                 }
             }
