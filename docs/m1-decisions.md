@@ -40,6 +40,14 @@ fetched per layer it becomes ≈ 0.67 G values ≈ 1.8 s. So that fix, made for 
 worth most of an order of magnitude in throughput. **This is not verified and will not be claimed as
 a result until a real-model run measures it**, which needs the operator's approval.
 
+**What `D11` changes about `D10`.** `D10` said Metal flushes denormal operands and the CPU does not,
+so a GPU kernel could not be bit-identical for free. With the flush now **defined in the contract**,
+that objection is gone: re-checking `DC-087` against the flushed CPU shows the GPU and CPU agreeing on
+**every value** — 0 differences out of 130 — on the partly-filled groups that exposed the divergence.
+So a GPU kernel is not ruled out by denormals, and the remaining question about Metal is the measured
+**1.30×** against a CPU path that is already bit-identical, not correctness. A separate divergence
+remains on some `group = 1` shapes, undiagnosed and recorded as such.
+
 **Consequence for the remaining `DC-033` work.** The next kernels are the int4 unpack and the expert
 fetch path, not the matmul — and the unpack has to preserve the same rounding sequence, which is a
 tighter constraint than a GEMM kernel faces.
