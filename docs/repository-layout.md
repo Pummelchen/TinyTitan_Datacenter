@@ -44,7 +44,7 @@ docs/                    m0-decisions, trace-format, ir-schema, and one
   without declaring it, which the debug build resolved by accident through the module
   search path and the release build refused outright (`unable to resolve module
   dependency`). A debug-only build is not a build.
-- **A target is added when its milestone needs it.** There is no engine target yet
+- **A target is added when its milestone needs it.** The engine target arrived with M0, and each later addition followed one: the trace and generate executables with M0, `UncachedFile` and the install reader with the streaming work, `MetalUnpack` with the first Metal kernel.
   because there is no engine: the IR and its importer are what M0 needs first, and
   speculative structure is the main way a project like this fails.
 - **Kernel comments cite a contract.** Every numeric kernel cites its

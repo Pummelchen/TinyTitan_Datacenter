@@ -12,7 +12,17 @@
 
 A distributed inference engine for large MoE language models on clusters of Mac minis and Mac Studios over LAN/SFP/QSFP and Thunderbolt.
 
-**Status: design phase. Nothing here runs yet.**
+**Status: the engine runs.** `swift build` produces two CLIs (`datacenter-trace`,
+`datacenter-generate`) and the Swift engine under `sources/` runs Qwen3, Qwen3.5 and Qwen3.5-MoE
+forward passes and greedy generation on a single node, against the controlled-order Python contract
+in `tools/` and against reference implementations for the traces.
+
+M0's gate is **recorded as passing**. M1's **correctness** claim holds on the real 35B checkpoint for
+one prompt of the frozen set — the engine's trace is byte-identical to the contract's, discrete
+router decisions included — and its **throughput** claim is retired pending a re-measurement, because
+the figure on record predates three bit-identical changes to the expert read path and the kernels.
+`docs/m1-gate.md` states exactly what is proven and what is not, and `docs/m1-decisions.md` records
+the decisions behind it. There are **no releases and no tags**.
 
 ## What it does
 

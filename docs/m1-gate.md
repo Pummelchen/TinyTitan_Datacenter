@@ -68,7 +68,10 @@ Three numbers worth reading carefully:
 - **4.31 GB peak resident memory against the brief's ~4.5 GB of usable memory per node.** That is
   at the budget edge, and on macOS the figure includes clean file-backed pages, so most of it is
   the streamed weights the page cache is holding. It is a measured argument for the brief's own
-  I/O rule — expert slabs read with `F_NOCACHE`/`O_DIRECT` — which is not yet implemented.
+  I/O rule — expert slabs read with `F_NOCACHE`/`O_DIRECT`, which **was** implemented after this
+  measurement was taken and is now the rule in both languages: the same 20 GB install verifies
+  uncached in about twenty seconds at a **33.7 MB** peak with free disk steady, where reading it
+  through the page cache once took free disk from 17 GB to 2.96 GB.
 - **Cache hit rate 0.0000**: 2240 expert requests across 40 layers and no hits. A layer's slot
   bank is built as the layer loads and dropped with it, so nothing survives a token, and within
   one token two of five positions rarely agree on all eight experts.

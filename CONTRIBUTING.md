@@ -1,8 +1,10 @@
 # Contributing to TinyTitan Datacenter
 
-Thanks for looking. The project is in **design phase** — there is no source code yet —
-so the most useful contributions right now are design review, corrections to the
-documentation, and measurements from hardware this project does not have.
+Thanks for looking. The engine runs, M0's gate is recorded as passing, and M1's
+correctness claim holds on the real 35B checkpoint for one prompt of the frozen set — so
+the most useful contributions right now are design review, corrections to the
+documentation, measurements from hardware this project does not have, and anything that
+closes a gap `docs/m1-gate.md` names as unmeasured.
 
 ## Before you write code
 
