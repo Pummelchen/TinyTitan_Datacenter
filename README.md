@@ -1,4 +1,5 @@
-<img width="1254" height="1254" alt="image" src="https://github.com/user-attachments/assets/985c9444-28e3-434d-910d-7033d86308eb" />
+<img width="1254" height="1254" alt="TinyTitanDatacenter" src="https://github.com/user-attachments/assets/d7c6f173-6dcb-4085-a42e-ceb423658b51" />
+
 
 
 # TinyTitan Datacenter
