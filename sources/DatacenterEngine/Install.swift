@@ -14,6 +14,16 @@ public protocol WeightSource {
     /// A row range, in fp32. The embedding and the tied head are read this way so a
     /// `[248320, 2048]` matrix is never materialised to use one row of it.
     func rows(named name: String, range: Range<Int>) throws -> [Float]
+    /// A row range for a consumer that will not read it again soon, so its pages are not worth
+    /// keeping: the routed expert slabs. Defaults to the ordinary read, which is what an install
+    /// already does — its payload is read uncached by construction.
+    func rowsStreaming(named name: String, range: Range<Int>) throws -> [Float]
+}
+
+extension WeightSource {
+    public func rowsStreaming(named name: String, range: Range<Int>) throws -> [Float] {
+        try rows(named: name, range: range)
+    }
 }
 
 extension SafetensorsFile: WeightSource {
@@ -65,28 +75,64 @@ public struct InstallFile: WeightSource {
     }
 
     public let manifest: Manifest
-    private let blob: Data
+    private let blob: UncachedFile
     private let entries: [String: Entry]
 
-    public init(url: URL) throws {
+    /// The names whose digest this instance has already checked.
+    ///
+    /// A reference box rather than a `var`, because `WeightSource` conformance is non-mutating and
+    /// an expert tensor is fetched again and again: re-hashing a five-hundred-megabyte payload on
+    /// every read of it would be its own disaster, and a struct cannot hold that memo itself.
+    private final class ReadState {
+        var names: Set<String> = []
+        /// Payload bytes this instance has read. Exposed so a test can assert that reading one
+        /// expert of a stacked tensor does not cost the whole stack, which is the difference
+        /// between streaming and not streaming.
+        var bytesRead = 0
+    }
+
+    private let state = ReadState()
+
+    /// Payload bytes read through this instance.
+    public var bytesRead: Int { state.bytesRead }
+
+    /// Open an install.
+    ///
+    /// `verify` is **false** by default, and that is a deliberate change from the first version,
+    /// which hashed the entire payload on open. That made opening a 20 GB install a 20 GB read:
+    /// slow everywhere, and on the 8 GB development node the read filled the page cache, memory
+    /// pressure grew swap, and free disk fell from 17 GB to 2.96 GB in half a minute. Integrity
+    /// is not weakened by moving it — each payload is checked the first time it is read, so a
+    /// tampered tensor still cannot produce plausible numbers (I6) — and `verifyAll()` restores
+    /// the eager check for a gate that wants to make it explicit.
+    public init(url: URL, verify: Bool = false) throws {
         let manifestData = try Data(contentsOf: url.appendingPathComponent("install.json"))
         let manifest = try JSONDecoder().decode(Manifest.self, from: manifestData)
         self.manifest = manifest
-        // Memory-mapped: an install is around two gigabytes and the engine uses one layer of
-        // it at a time.
-        self.blob = try Data(contentsOf: url.appendingPathComponent("data.bin"), options: [.mappedIfSafe])
+        // Read through `UncachedFile`, not `mmap`: the payload is larger than the machine, and
+        // pages cached from it evict everything useful and turn a read into swap pressure.
+        self.blob = try UncachedFile(url: url.appendingPathComponent("data.bin"))
         var entries: [String: Entry] = [:]
         for entry in manifest.tensors { entries[entry.name] = entry }
         self.entries = entries
-        for entry in manifest.tensors where !Self.digestMatches(entry, blob: blob) {
+        if verify { try verifyAll() }
+    }
+
+    /// Check every payload digest, in bounded windows. For a gate rather than for normal use.
+    public func verifyAll() throws {
+        for entry in manifest.tensors where !(try digestMatches(entry)) {
             throw Error.digestMismatch(entry.name)
         }
     }
 
-    private static func digestMatches(_ entry: Entry, blob: Data) -> Bool {
-        guard entry.offset + entry.nbytes <= blob.count else { return false }
-        let payload = blob.subdata(in: entry.offset..<(entry.offset + entry.nbytes))
-        return SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined() == entry.sha256
+    private func digestMatches(_ entry: Entry) throws -> Bool {
+        if state.names.contains(entry.name) { return true }
+        guard entry.offset + entry.nbytes <= blob.byteCount else { return false }
+        let payload = try blob.readData(offset: entry.offset, byteCount: entry.nbytes)
+        let digest = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        guard digest == entry.sha256 else { return false }
+        state.names.insert(entry.name)
+        return true
     }
 
     public func entry(_ name: String) throws -> Entry {
@@ -94,13 +140,24 @@ public struct InstallFile: WeightSource {
         return entry
     }
 
-    private func payload(_ entry: Entry) -> Data {
-        blob.subdata(in: entry.offset..<(entry.offset + entry.nbytes))
+    /// A bounded read that is counted, so the cost of a row range is observable rather than
+    /// asserted.
+    private func readCounted(offset: Int, byteCount: Int) throws -> Data {
+        let data = try blob.readData(offset: offset, byteCount: byteCount)
+        state.bytesRead += data.count
+        return data
+    }
+
+    private func payload(_ entry: Entry) throws -> Data {
+        guard try digestMatches(entry) else { throw Error.digestMismatch(entry.name) }
+        let data = try blob.readData(offset: entry.offset, byteCount: entry.nbytes)
+        state.bytesRead += data.count
+        return data
     }
 
     public func tensor(named name: String) throws -> [Float] {
         let entry = try entry(name)
-        let data = payload(entry)
+        let data = try payload(entry)
         guard entry.dtype == "int4" else {
             return try Self.decodeRaw(data, dtype: entry.dtype, elementCount: entry.shape.reduce(1, *))
         }
@@ -120,16 +177,42 @@ public struct InstallFile: WeightSource {
         if entry.dtype != "int4" {
             // Sliced from the stored bytes: one row of the embedding should not cost a
             // gigabyte of decoding.
+            guard try digestMatches(entry) else { throw Error.digestMismatch(entry.name) }
             let stride = Self.elementSize(entry.dtype) * width
             let start = entry.offset + range.lowerBound * stride
-            let slice = blob.subdata(in: start..<(start + range.count * stride))
+            let slice = try blob.readData(offset: start, byteCount: range.count * stride)
             return try Self.decodeRaw(slice, dtype: entry.dtype, elementCount: range.count * width)
         }
-        // Packed codes cannot be sliced as bytes without re-deriving the group layout, so
-        // the whole tensor is decoded and the rows taken. The quantized roles are never the
-        // embedding or the head, which is what this shortcut exists for.
-        let all = try tensor(named: name)
-        return Array(all[(range.lowerBound * width)..<(range.upperBound * width)])
+        // Packed codes cannot be sliced as bytes without re-deriving the group layout, and the
+        // layout is section-major, so the rows come out of **three** ranges rather than out of a
+        // whole-tensor decode. That distinction is the difference between streaming and not: the
+        // real model's expert tensor is `[256, 1024, 2048]`, so decoding it to return one expert
+        // is 537 M parameters and two gigabytes of `Float` on a node with four and a half.
+        let totalRows = entry.shape.dropLast().reduce(1, *)
+        guard entry.padded_columns % entry.group == 0, entry.padded_columns % 2 == 0 else {
+            throw Error.badHeader("\(name): group \(entry.group) does not divide \(entry.padded_columns)")
+        }
+        guard try digestMatches(entry) else { throw Error.digestMismatch(entry.name) }
+        // The range is in **leading-axis entries** — one expert of a stack, not one payload row —
+        // so it has to be translated, and getting that wrong returns the first expert's first
+        // *row* while still looking like a tensor. One entry spans `inner` payload rows.
+        let inner = entry.shape.dropFirst().dropLast().reduce(1, *)
+        let payloadRows = range.count * inner
+        let first = range.lowerBound * inner
+        let groupsPerRow = entry.padded_columns / entry.group
+        let codesPerRow = entry.padded_columns / 2
+        let codesBytes = totalRows * codesPerRow
+        let scalesBytes = totalRows * groupsPerRow * 4
+        let codes = try readCounted(
+            offset: entry.offset + first * codesPerRow, byteCount: payloadRows * codesPerRow
+        )
+        let scales = try readCounted(
+            offset: entry.offset + codesBytes + first * groupsPerRow * 4, byteCount: payloadRows * groupsPerRow * 4
+        )
+        let zeros = try readCounted(
+            offset: entry.offset + codesBytes + scalesBytes + first * groupsPerRow, byteCount: payloadRows * groupsPerRow
+        )
+        return try Self.dequantizeInt4(codes + scales + zeros, entry: entry, rowCount: payloadRows)
     }
 
     static func elementSize(_ dtype: String) -> Int {
@@ -173,23 +256,167 @@ public struct InstallFile: WeightSource {
     /// is -8 and not 8 — reading it as 8 shifts a whole group by sixteen steps and still
     /// produces plausible weights. Each group of `group` codes shares one fp32 scale and one
     /// int4 zero point, and the reconstruction is `(code - zero) * scale`.
-    static func dequantizeInt4(_ data: Data, entry: Entry) throws -> [Float] {
+    /// Dequantize `rowCount` payload rows — the whole tensor, or a range of it.
+    ///
+    /// The layout is **section-major**: every row's codes, then every row's scales, then every
+    /// row's zeros. That is what makes a row range decodable without the rest of the tensor, since
+    /// each section is row-contiguous; it is also the thing to get wrong, because the wrong row
+    /// count still produces plausible weights.
+    /// The three sections of an int4 payload, in bytes, for a given number of rows.
+    struct Int4Layout {
+        let rows: Int
+        let columns: Int
+        let padded: Int
+        let group: Int
+        let groups: Int
+        let codeBytes: Int
+        let scaleBytes: Int
+    }
+
+    static func int4Layout(entry: Entry, rowCount: Int?, payloadBytes: Int) throws -> Int4Layout {
         // A stacked expert tensor is `[experts, rows, columns]` and its payload was quantized
-        // with the leading axis flattened, so the codes describe `experts x rows` rows. Getting
-        // this wrong would read the wrong number of groups and still produce plausible weights.
-        let rows = entry.shape.dropLast().reduce(1, *)
+        // with the leading axis flattened, so the codes describe `experts x rows` rows.
+        let rows = rowCount ?? entry.shape.dropLast().reduce(1, *)
         let columns = entry.shape.last ?? 0
         let padded = entry.padded_columns
         let group = entry.group
-        guard group > 0, padded % group == 0, padded % 2 == 0 else {
-            throw Error.badHeader("\(entry.name): group \(group) does not divide \(padded)")
+        // Each condition says which one failed: the first version reported "group does not divide
+        // padded" for a failure of the even-width rule, which sent a reader looking at the wrong
+        // number.
+        guard group > 0 else {
+            throw Error.badHeader("\(entry.name): group is \(group), which cannot divide anything")
+        }
+        guard padded % group == 0 else {
+            throw Error.badHeader("\(entry.name): group \(group) does not divide padded width \(padded)")
+        }
+        guard padded % 2 == 0 else {
+            // Two codes share a byte, so an odd padded width has no defined packing.
+            throw Error.badHeader("\(entry.name): padded width \(padded) is odd, and two codes share a byte")
         }
         let groups = padded / group
         let codeBytes = rows * padded / 2
         let scaleBytes = rows * groups * 4
-        guard data.count == codeBytes + scaleBytes + rows * groups else {
-            throw Error.badHeader("\(entry.name): payload is \(data.count) bytes, the layout needs \(codeBytes + scaleBytes + rows * groups)")
+        guard payloadBytes == codeBytes + scaleBytes + rows * groups else {
+            throw Error.badHeader("\(entry.name): payload is \(payloadBytes) bytes, the layout needs \(codeBytes + scaleBytes + rows * groups)")
         }
+        return Int4Layout(
+            rows: rows, columns: columns, padded: padded, group: group, groups: groups,
+            codeBytes: codeBytes, scaleBytes: scaleBytes
+        )
+    }
+
+    /// Unpack four-bit codes into `Float`.
+    ///
+    /// The fast path, and the reason it is free: the **only** floating-point operation here is one
+    /// multiply, `Float(code - zero) * scale`, with no summation anywhere. There is no
+    /// accumulation order to preserve, so a vector formulation is bit-identical by construction
+    /// rather than by measurement — `Float(code - zero)` is exact because the integers are tiny,
+    /// and `SIMD4<Float> * scalar` rounds once per lane exactly as the scalar multiply does.
+    ///
+    /// The win comes from the other direction: the scale and the zero point are per *group* (sixty
+    /// four values), and the scalar loop reloaded both for every element.
+    static func dequantizeInt4(_ data: Data, entry: Entry, rowCount: Int? = nil) throws -> [Float] {
+        let layout = try int4Layout(entry: entry, rowCount: rowCount, payloadBytes: data.count)
+        var values = [Float](repeating: 0, count: layout.rows * layout.columns)
+        data.withUnsafeBytes { raw in
+            let base = raw.baseAddress!
+            let codes = base
+            let scales = base + layout.codeBytes
+            let zeros = base + layout.codeBytes + layout.scaleBytes
+            for row in 0..<layout.rows {
+                let rowCodes = codes + row * (layout.padded / 2)
+                let rowGroups = row * layout.groups
+                let rowValues = row * layout.columns
+                var index = 0
+                while index < layout.columns {
+                    let groupIndex = rowGroups + index / layout.group
+                    let scale = Float(bitPattern: UInt32(littleEndian: scales.loadUnaligned(fromByteOffset: groupIndex * 4, as: UInt32.self)))
+                    let rawZero = Int(zeros.loadUnaligned(fromByteOffset: groupIndex, as: UInt8.self))
+                    let zero = rawZero >= 128 ? rawZero - 256 : rawZero
+                    // The last group of a padded tensor holds fewer real values than the group
+                    // size, so the vector loop is bounded by what is actually stored.
+                    let inGroup = min(layout.group, layout.columns - index)
+                    var offset = 0
+                    // Eight codes per load, but **only when the group is a multiple of eight**:
+                    // a wider block must not straddle two groups, because the scale and the zero
+                    // point change at the boundary. The four-wide loop below is the general case
+                    // and its arithmetic is the same one multiply per element.
+                    let scaleGroup = SIMD4<Float>(repeating: scale)
+                    if layout.group % 8 == 0 {
+                        while offset + 8 <= inGroup {
+                            let word = rowCodes.loadUnaligned(fromByteOffset: (index + offset) / 2, as: UInt32.self)
+                            let low = SIMD4<Float>(
+                                Float(signed(Int(word & 0x0F)) - zero),
+                                Float(signed(Int((word >> 4) & 0x0F)) - zero),
+                                Float(signed(Int((word >> 8) & 0x0F)) - zero),
+                                Float(signed(Int((word >> 12) & 0x0F)) - zero)
+                            ) * scaleGroup
+                            let high = SIMD4<Float>(
+                                Float(signed(Int((word >> 16) & 0x0F)) - zero),
+                                Float(signed(Int((word >> 20) & 0x0F)) - zero),
+                                Float(signed(Int((word >> 24) & 0x0F)) - zero),
+                                Float(signed(Int((word >> 28) & 0x0F)) - zero)
+                            ) * scaleGroup
+                            let base = rowValues + index + offset
+                            values[base + 0] = low[0]
+                            values[base + 1] = low[1]
+                            values[base + 2] = low[2]
+                            values[base + 3] = low[3]
+                            values[base + 4] = high[0]
+                            values[base + 5] = high[1]
+                            values[base + 6] = high[2]
+                            values[base + 7] = high[3]
+                            offset += 8
+                        }
+                    }
+                    while offset + 4 <= inGroup {
+                        // Two bytes carry four codes, low nibble first — the order is the format.
+                        let pair = rowCodes.loadUnaligned(fromByteOffset: (index + offset) / 2, as: UInt16.self)
+                        let lanes = SIMD4<Float>(
+                            Float(signed(Int(pair & 0x0F)) - zero),
+                            Float(signed(Int((pair >> 4) & 0x0F)) - zero),
+                            Float(signed(Int((pair >> 8) & 0x0F)) - zero),
+                            Float(signed(Int((pair >> 12) & 0x0F)) - zero)
+                        )
+                        let product = lanes * SIMD4<Float>(repeating: scale)
+                        values[rowValues + index + offset + 0] = product[0]
+                        values[rowValues + index + offset + 1] = product[1]
+                        values[rowValues + index + offset + 2] = product[2]
+                        values[rowValues + index + offset + 3] = product[3]
+                        offset += 4
+                    }
+                    while offset < inGroup {
+                        let position = index + offset
+                        let byte = rowCodes.loadUnaligned(fromByteOffset: position / 2, as: UInt8.self)
+                        let nibble = position % 2 == 0 ? (byte & 0x0F) : (byte >> 4)
+                        values[rowValues + position] = Float(signed(Int(nibble)) - zero) * scale
+                        offset += 1
+                    }
+                    index += inGroup
+                }
+            }
+        }
+        return values
+    }
+
+    /// A four-bit code as a signed integer: two's complement in four bits.
+    @inline(__always)
+    private static func signed(_ nibble: Int) -> Int {
+        let value = nibble & 0x0F
+        return value >= 8 ? value - 16 : value
+    }
+
+    /// The definition: one element at a time, in index order. Kept because a fast formulation is
+    /// only trustworthy while something independent says it agrees.
+    static func dequantizeInt4Scalar(_ data: Data, entry: Entry, rowCount: Int? = nil) throws -> [Float] {
+        let layout = try int4Layout(entry: entry, rowCount: rowCount, payloadBytes: data.count)
+        let rows = layout.rows
+        let columns = layout.columns
+        let padded = layout.padded
+        let group = layout.group
+        let groups = layout.groups
+        let codeBytes = layout.codeBytes
+        let scaleBytes = layout.scaleBytes
 
         var values = [Float](repeating: 0, count: rows * columns)
         data.withUnsafeBytes { raw in

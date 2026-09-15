@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import os
 import unittest
 from pathlib import Path
 
@@ -178,6 +179,79 @@ class InstallTests(unittest.TestCase):
             source = quantize.InstallSource(install)
             np.testing.assert_array_equal(source.tensor("embed.weight"), exact)
             np.testing.assert_array_equal(source.rows("embed.weight", 1, 3), exact[1:3])
+
+    def test_chunked_quantization_is_byte_identical(self):
+        """The install builder reads a tensor a block of rows at a time, because a stacked expert
+        tensor is two gigabytes in fp32 against about four and a half usable on a node. Rows are
+        independent — every group lies inside one row — so the pieces concatenate exactly, and
+        this is the test that makes that a fact rather than an argument: a chunked install and a
+        whole-tensor one must produce the same bytes."""
+        import tempfile
+        from pathlib import Path as _Path
+
+        rng = np.random.default_rng(11)
+        weight = (rng.standard_normal((37, 96)) * 1.5).astype(np.float32)
+        whole = quantize.quantize_tensor(weight)
+        pieces = [
+            quantize.quantize_rows(weight[start:end], original_shape=list(weight.shape))
+            for start, end in ((0, 5), (5, 20), (20, 37))
+        ]
+        joined = quantize.concat_rows(pieces, list(weight.shape))
+        for key in ("packed", "scales", "zeros"):
+            self.assertEqual(whole[key], joined[key], f"{key} must not depend on the chunking")
+        for key in ("shape", "rows", "columns", "padded_columns", "group"):
+            self.assertEqual(whole[key], joined[key], key)
+
+    def test_uncached_reads_return_the_same_bytes_and_digest(self):
+        """The tooling reads payloads with `F_NOCACHE` for the same reason the engine does.
+
+        Verifying the 20 GB install through the page cache is what took free disk from 17 GB to
+        2.96 GB on this node. The property that must not change is the bytes, and the digest
+        computed over them.
+        """
+        import hashlib
+        import tempfile
+        from pathlib import Path as _Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = _Path(directory) / "payload.bin"
+            body = bytes(range(256)) * 4096  # one megabyte, not a multiple of the window
+            path.write_bytes(body)
+            descriptor = quantize.open_uncached(path)
+            try:
+                self.assertEqual(quantize.pread_exact(descriptor, 0, len(body)), body)
+                self.assertEqual(quantize.pread_exact(descriptor, 1000, 5000), body[1000:6000])
+                self.assertEqual(quantize.digest_of(descriptor, 0, len(body)), hashlib.sha256(body).hexdigest())
+                self.assertEqual(quantize.digest_of(descriptor, 700, 3000), hashlib.sha256(body[700:3700]).hexdigest())
+                with self.assertRaises(quantize.PolicyError):
+                    quantize.pread_exact(descriptor, len(body) - 10, 100)
+            finally:
+                os.close(descriptor)
+
+    def test_an_install_source_verifies_a_payload_when_it_reads_it(self):
+        """The reader no longer hashes the whole install to open it, and the check moved to the
+        read rather than disappearing: a tampered payload must still refuse to decode."""
+        import json as _json
+        import shutil
+        import tempfile
+        from pathlib import Path as _Path
+
+        fixture = _Path("tests/DatacenterEngineTests/Fixtures/tiny-qwen36/install")
+        with tempfile.TemporaryDirectory() as directory:
+            copy = _Path(directory) / "install"
+            shutil.copytree(fixture, copy)
+            manifest = _json.loads((copy / "install.json").read_text())
+            target = manifest["tensors"][0]["name"]
+            body = bytearray((copy / "data.bin").read_bytes())
+            body[manifest["tensors"][0]["offset"] + 3] ^= 0xFF
+            (copy / "data.bin").write_bytes(bytes(body))
+
+            source = quantize.InstallSource(copy)  # opening does not read the payload
+            try:
+                with self.assertRaises(quantize.PolicyError):
+                    source.tensor(target)
+            finally:
+                source.close()
 
     def test_the_install_round_trips_through_its_reader(self):
         with tempfile.TemporaryDirectory() as directory:

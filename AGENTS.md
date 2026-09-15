@@ -12,38 +12,99 @@
 > replaces this file for every Zed user.
 <!-- agent-harnesses:end -->
 
-A distributed inference engine for large MoE language models across a cluster of
-Mac minis and Mac Studios over LAN/SFP/QSFP and Thunderbolt: it streams expert
-weights from SSD so a model larger than the cluster's total RAM still runs,
-optimized for a single interactive user rather than for serving throughput.
+A distributed inference engine for large MoE language models on a cluster of Mac
+minis and Mac Studios, over LAN/SFP/QSFP and Thunderbolt. The Swift engine under
+`sources/` runs Qwen3, Qwen3.5 and Qwen3.5-MoE forward passes and generation, and
+M0's gate is recorded as passing with M1's correctness claim holding on the real
+35B checkpoint; throughput is the open finding. There are **no releases and no
+tags**. The design, the plan and the status live in the wiki.
 
-**Status: the engine runs and M1's correctness claim holds on the real 35B
-checkpoint; throughput is the open finding. Nothing is released** — there are no
-releases and no installers. The README still says *"Status: design phase. Nothing
-here runs yet."*; that line is stale, so do not repeat it or treat it as current.
+## Scope of this checkout
+
+- [README](README.md) — what the project is, for a first-time reader.
+- [Wiki](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki) — the working
+  documents: [Roadmap](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Roadmap)
+  (phases and gates),
+  [Project Tracker](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Project-Tracker)
+  (`DC-nnn` tasks, risks, open questions),
+  [Architecture](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Architecture),
+  [Testbed](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Testbed),
+  [Glossary](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Glossary).
+- The sister project [TinyTitan](https://github.com/Pummelchen/TinyTitan) holds the
+  single-node streaming runtime, the install format and the repacker. Treat it as
+  read-only unless a change there is explicitly requested. It is **Apache-2.0**; this
+  repository is **MIT**, so check the obligations before reusing any of its code here
+  (tracked as `DC-013`).
+- `docs/` holds the decision records (`m0-decisions.md`, `m1-decisions.md`), the gate
+  docs (`m0-gate.md`, `m1-gate.md`, `m0c-quantization.md`), the contracts
+  (`ir-schema.md`, `trace-format.md`, `reference-*.md`) and `repository-layout.md`.
+
+## This node's hard limit — read before running anything
+
+**Never run GB-scale jobs here.** The machine is an 8 GB Mac mini (about 4.5 GB usable after
+macOS), and on 2026-09-16 it **panicked twice** while doing exactly that: the 35 B engine at
+~4.5 GB resident plus a 20 GB install build, concurrently. macOS grew swap to *13 swapfiles and
+LOW swap space*, the system stopped responding for 90 s, and the hardware watchdog panicked it
+(`watchdog timeout: no checkins from watchdogd in 90 seconds`). No bug in the engine caused
+either panic; the memory budget did.
+
+The rules that follow from it:
+
+- **Tiny-fixture work only.** `tests/DatacenterEngineTests/Fixtures/tiny-qwen36/` runs the same
+  code paths at megabytes instead of gigabytes — importer, mixture, cache, quantisation, gate.
+- **One heavy job at a time, never concurrent**, and never a heavy job alongside an engine run.
+- **Real-model runs need explicit human approval**, with `sysctl vm.swapusage` checked first.
+- **A large page-cached read is a hazard here, not a neutral operation.** Verifying the 20 GB
+  install — a read and a hash — took free disk from 17 GB to 2.96 GB in half a minute, because the
+  page cache filled memory, memory pressure grew swap, and swap is disk. The disk watchdog stopped
+  it. Model payloads now read through `UncachedFile` / `open_uncached` (`F_NOCACHE` + `pread`), and
+  a full 20 GB verification peaks at 34 MB and leaves free disk steady — but a read that does *not*
+  go through those (an `mmap`, a `read_bytes`, a `Data(contentsOf:)`) still is the old hazard, so
+  treat any new multi-gigabyte read as a heavy job until you have checked which one it is.
+- The 93 GB under `.build/` is excluded from Spotlight with a `.metadata_never_index` marker, so
+  a reboot does not start re-indexing it — that re-indexing is itself sustained I/O on a machine
+  that has just panicked.
+
+**A 5 GB disk floor is enforced, not promised.** Two tools, both standard-library only:
+
+```bash
+# The monitor. Polls free space; three readings in a row below the floor and it writes
+# .build/DISK_STOP and terminates the running heavy jobs (the engine, the contract, the install
+# builder) — SIGTERM, then SIGKILL. It never terminates itself or the agent harness.
+#
+# The three-reading rule is not decoration. The first version acted on one reading of 4.67 GB
+# that was 17.55 GB six seconds later, because APFS "purgeable" space appears and disappears as
+# the system reclaims caches, and it killed a read-only verification that had done nothing wrong.
+python3 tools/disk_watchdog.py --threshold-gb 5 --interval 5 --consecutive 3
+
+# The preflight guard. quantize.py, the contract CLIs and run_m1_gate.py call require_headroom()
+# before they touch a model, so nothing heavy starts below the floor either — and a stop marker
+# from the watchdog refuses a new run until an operator clears it, because a run that tripped the
+# limit must not resume by itself.
+python3 tools/check_disk_headroom.py
+```
+
+Clearing `.build/DISK_STOP` is a deliberate act: read it, free space, then `rm` it.
 
 ## Layout
 
 - `sources/DatacenterEngine/` — the runtime: `Qwen3Forward`, `Qwen3_5Forward`,
   `MixtureOfExperts`, `GatedDeltaNet`, `ModelCache`, `Safetensors` and
-  `ShardedSafetensors`, `Install`, `Ops`, `TraceWriter`.
+  `ShardedSafetensors`, `UncachedFile`, `Install`, `Ops`, `TraceWriter`.
 - `sources/DatacenterIR/` — the importer: one importer per model family,
   `TensorRole`, `IRSpec`, `Validation`.
 - `sources/DatacenterGenerate/`, `sources/DatacenterTrace/` — the two CLIs.
 - `tools/` — the Python reference implementation and every gate: `ordered_*.py`
   (the numeric contracts), `run_m0_gate.py`, `run_m1_gate.py`, `trace_capture.py`,
-  `trace_diff.py`, `quantize.py`, the fixture builders and their tests.
-- `docs/` — `repository-layout.md`, `trace-format.md`, `ir-schema.md`, the
-  `m0-*` / `m1-*` gate and decision records, and `reference-*.md`, which record
-  each family's exact dtype boundaries and op order by file and line. Kernel
-  comments cite those contracts rather than restating them.
+  `trace_diff.py`, `quantize.py`, `disk_watchdog.py`, `check_disk_headroom.py`,
+  the fixture builders and their tests.
 - `tests/` — mirrors `sources/` path for path.
 
 ## Build and run
 
 ```bash
-swift build -c release
-swift test
+swift build                  # release: swift build -c release
+swift test --no-parallel
 
 # The CI link gate: local links and #anchors, offline
 python3 tools/check_markdown_links.py --verbose
@@ -65,65 +126,79 @@ uv pip install --python .venv/bin/python -r tools/requirements-reference.txt
 ```
 
 The milestone gates are documented rather than restated here — `docs/m0-gate.md`,
-`docs/m1-gate.md`, `docs/m0c-quantization.md` carry the commands and what each
+`docs/m1-gate.md` and `docs/m0c-quantization.md` carry the commands and what each
 asserts. Each gate reads a frozen prompt set (`tools/m0_prompts.json`,
 `tools/m1_prompts.json`), writes its report under `.build/`, and exits non-zero on
 any failure.
 
 ## Working rules
 
-1. **Follow the loop: code, test, audit, document, update the tracker.** A change
-   is not finished when it works, but when it is tested, documented, and the
+1. **Follow the loop: code, test, audit, document, update the tracker.** A change is
+   not finished when it works. It is finished when it is tested, documented, and the
    [Project Tracker](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Project-Tracker)
    says so with the evidence that closed it.
-2. **Documentation is synced in the same push.** A commit that changes behaviour,
-   the plan or a decision updates the README, the affected wiki page and the
-   tracker together.
-3. **Gates are never quietly weakened.** A gate that cannot be met is renegotiated
-   in the tracker, with the measurement that forced it. A silently relaxed gate
+2. **Documentation is synced in the same push.** A commit that changes behaviour, the
+   plan or a decision updates the README, the affected wiki page and the tracker
+   together.
+3. **Gates are never quietly weakened.** A gate that cannot be met is renegotiated in
+   the tracker, with the measurement that forced it. A silently relaxed gate
    invalidates every claim built on it.
-4. **Do not invent numbers.** Every figure in a document is either measured and
-   reproducible, or explicitly marked as an estimate or a design intent.
-5. **No secrets, ever.** The repository and its wiki are public: no host names,
-   addresses, passwords, keys, tokens or model-access credentials — in files,
-   commit messages, issues, fixtures or test data.
-6. **No large artifacts.** Model installs, weights and similar payloads are never
-   committed; `.gitignore` covers the usual paths.
-7. **Quality over speed.** Prefer the technically clean solution over the quick
-   fix, and say when a task is not worth doing rather than doing it badly.
+4. **No secrets, ever.** The repository and its wiki are public: no host names,
+   addresses, passwords, keys, tokens or model-access credentials — in files, commit
+   messages, issues, fixtures or test data.
+5. **No large artifacts.** Model installs, weights and similar payloads are never
+   committed. `.gitignore` covers the usual paths.
+6. **Quality over speed.** Prefer the technically clean solution over the quick fix,
+   and say when a task is not worth doing rather than doing it badly.
+7. **Do not invent numbers.** Every figure in a document is either measured and
+   reproducible, or explicitly marked as an estimate or a design intent. Unmeasured
+   claims say so.
 
 ## Conventions
 
 - **Swift 6.4 on Xcode 27**: `swift-tools-version:6.4`, the Swift 6 language mode,
-  and no architectural changes to imported models. The language-feature register —
-  which upcoming features are enabled, which deliberately are not, and what each
-  costs in diagnostics — is `DC-015`, modelled on the sister project's
-  `docs/swift-language-standard.md`.
+  and no architectural changes to imported models. `tests/` mirrors `sources/` path
+  for path. The language-feature register is `DC-015`.
+- The `sources/` and `tests/` directories are lower-case and declared explicitly in
+  `Package.swift`: SwiftPM's conventional capitals resolve silently on a
+  case-insensitive disk and fail on a case-sensitive one.
 - **Models**: faithful ports only. A new family costs an importer (a pure
   name-to-role map) plus whatever kernel work its attention genuinely needs.
-- **Commits**: imperative subject; the body explains *why*, not *what*. Work lands
-  on `main`; a change that needs a gate is not merged before the gate passes.
+- **Commits**: imperative subject; the body explains *why*, not *what*. Work lands on
+  `main`; a change that needs a gate is not merged before the gate passes.
 - **Markdown**: wrapped to a readable width, tables where they carry structure, and
-  every link checked by the gate above.
+  every link checked by the link gate.
+- **Python 3.14**, the project's standard and what the farm runs. Anything that needs
+  a package lives in the pinned `.venv`; never install into the system interpreter.
 
 ## Traps
 
-- **A trace is only comparable to another captured by the same reference build.**
-  The reference implementation is pinned exactly in
-  `tools/requirements-reference.txt`; a `transformers` upgrade can change the
-  arithmetic under you, which `tools/compare_reference_modules.py` exists to catch.
+- **Bit-exactness is asserted two ways**: byte-identical trace bytes and exact
+  discrete decisions (router top-k index sets). Numeric tolerance is explicitly
+  **not** a substitute for the discrete check (I3).
+- **A trace is only comparable within one pinned reference build** (`torch`,
+  `transformers` in `tools/requirements-reference.txt`), and the model revision must
+  be pinned too. `tools/compare_reference_modules.py` exists to catch a `transformers`
+  upgrade changing the arithmetic.
 - **Run `tools/make_contract_vectors.py` whenever an op in
-  `tools/ordered_reference.py` changes**, then `swift test` — the Swift contract
-  tests assert those regenerated golden bit patterns.
+  `tools/ordered_reference.py` changes**, then `swift test` — the Swift contract tests
+  assert those regenerated golden bit patterns.
 - **A role missing from `tools/quant_policy.json` stops the install** rather than
   defaulting, by design.
-- **Do not invent token ids.** Fetch just the tokenizer files of a checkpoint whose
-  weights are still downloading rather than guessing them.
-- The sister project [TinyTitan](https://github.com/Pummelchen/TinyTitan) holds the
-  single-node streaming runtime, the install format and the repacker. Treat it as
-  read-only unless a change there is explicitly requested. It is **Apache-2.0**
-  while this repository is **MIT**, so check the obligations before reusing any of
-  its code here (tracked as `DC-013`).
+- **Test fixtures are `.copy` resources loaded via `Bundle.module`**; reading them
+  from a source-relative path fails in a built test bundle.
+- `coremltools==9.1.dev1` is pinned to a pre-release because there is no stable cp314
+  wheel.
+- `.gitignore` excludes `models/`, `*.gturbo`, `.venv/`, `.wiki/`, `.inspect/`: model
+  weights are never committed.
+- **The Swift CI gate is effectively a no-op today**: `macos-26` runner images carry
+  Xcode 26.x only, below the manifest's 6.4 floor, so the job prints a `::warning::`
+  and skips `swift build` and `swift test`. Run them locally.
+- **No architecture assertion exists anywhere in the repository**, and there is no
+  release artifact to assert against — do not invent a `lipo` step.
+- Earlier revisions of this file, the README and `CONTRIBUTING.md` said there was no
+  source code yet. That is stale; `sources/`, `Package.swift` and `docs/m0-gate.md`
+  are the evidence.
 
 <!-- release-rules:begin -->
 ## Releasing

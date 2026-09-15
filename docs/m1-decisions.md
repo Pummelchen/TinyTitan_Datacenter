@@ -3,6 +3,126 @@
 The decisions M1 rests on, with the evidence that forced each. `m0-decisions.md` holds M0's
 `D1`–`D7`; the numbering continues here.
 
+## D9 — The fast matmul must be bit-identical, so the contract's order is the specification
+
+**Decision.** `orderedMatmul` uses a formulation that vectorises across the **output** dimension and
+keeps each lane's accumulation over `k` ascending, one rounding per multiply and one per add. It is
+adopted because it is **bit-identical** to the scalar contract, not because it is close. The scalar
+body is retained by name (`orderedMatmulScalar`) as the definition, and a test compares the two on
+more than a hundred shapes. **Fused multiply-add and therefore BLAS are excluded**, on measurement.
+
+**Why this needed deciding before any kernel work.** `I1` and `I2` are defined by the *rounding
+sequence*, not by the algebra: two formulations that agree to within any tolerance can still produce
+different output bytes, and a sharded run has to match a single-node run exactly. So the question for
+every kernel is not "is it faster" but "does it round in the same order".
+
+**The measurements** (this node, `Swift 6.4`, release, 256×256×256 and a synthetic int4 payload):
+
+| what | number |
+| --- | --- |
+| vector vs scalar matmul | **bit-identical** on every shape tried, including `out` not a multiple of four and odd `k` |
+| the whole engine after the swap | 86 tests green, golden and contract comparisons included — end-to-end bit-identity |
+| scalar matmul | 4.1 GFLOP/s |
+| vector matmul | **6.8 GFLOP/s — a 1.66× speedup**, free because the bits are unchanged |
+| `Float.addingProduct` against the ordered sum | **177 of 256 dot products differ in the last bit** |
+| `dequantizeInt4` | 370.9 M values/s, so one 35 B token's ~3.45 B values cost **~9.3 s of unpacking** |
+
+The FMA row is the decisive one: an FMA is one rounding instead of two, it differs from the contract
+on **69 % of inputs**, and every BLAS uses it. `cblas_sgemm` is therefore not available for any op the
+gate compares — not "would need care", *cannot*. The scalar rate is also the answer to "is this
+matmul-bound": 6.9 GFLOP of matmul per token is about 1.7 s at 4.1 GFLOP/s, against a measured 52.2 s
+per step, so the matmul is not where the time is going.
+
+**A prediction, labelled as one.** The 52.2 s/step was measured *before* the row-read fix in
+`DC-033`. Forty layers of whole-stack decoding is 40 × 537 M values ≈ 21.5 G values, which at the
+measured 370.9 M values/s is ≈ 58 s — the same number by a different route. With eight of 256 experts
+fetched per layer it becomes ≈ 0.67 G values ≈ 1.8 s. So that fix, made for memory, should also be
+worth most of an order of magnitude in throughput. **This is not verified and will not be claimed as
+a result until a real-model run measures it**, which needs the operator's approval.
+
+**Consequence for the remaining `DC-033` work.** The next kernels are the int4 unpack and the expert
+fetch path, not the matmul — and the unpack has to preserve the same rounding sequence, which is a
+tighter constraint than a GEMM kernel faces.
+
+### The unpack, which was the easier kernel and the bigger number
+
+`D9`'s measurement put the unpack at 370.9 M values/s against the matmul's 4.1 GFLOP/s, so the
+unpack is where a token's time goes. It turned out to be a **much easier** kernel than the matmul,
+for a structural reason: its only floating-point operation is one multiply, `Float(code - zero) *
+scale`, with **no summation anywhere**. There is no accumulation order to preserve, so a vector
+formulation is bit-identical by construction rather than by luck — `Float(code - zero)` is exact
+because the codes and the zero point are small integers, and `SIMD4<Float> * scale` rounds once per
+lane exactly as the scalar multiply does. Contrast with `cblas_sgemm`, which cannot be used at all
+because it fuses.
+
+The win comes from elsewhere: the scale and zero point are per **group** (sixty-four values), and
+the scalar loop reloaded both for every element.
+
+| | scalar | four-wide | eight-wide |
+| --- | --- | --- | --- |
+| unpack rate | 648.3 M values/s | 1038.3 M values/s (1.60×) | **1185.5 M values/s — 1.83×** |
+| one 35 B token (3.45 G values) | 5.3 s | 3.3 s | **2.9 s** |
+
+Eight codes per load is worth a further 14 %, and it is guarded: a wider block must not straddle
+two groups, because the scale and the zero point change at the boundary, so the wide path runs only
+when the group is a multiple of eight and the four-wide loop remains the general case.
+
+Both are bit-identical on a grid of sixty shapes — `columns` not a multiple of four, the padded
+tail, a group of one, a single row — and on the end-to-end golden tests.
+
+**Two notes for whoever comes next.** The eight-wide path above is the nibble extraction, measured
+and adopted. What is left in Swift is thinner: the widest sensible FP lane here is 128 bits, and
+Swift offers no cheap widening from integer lanes, so the next real factor is **Metal** rather than
+more of this. And the grid above cost an hour to a Swift footgun
+worth writing down: **Swift's `%` keeps the sign of the dividend**, so `(-5) % 4` is `-1` and
+`columns + that` can be *smaller* than `columns` — the test compared the two implementations on an
+impossible layout and very nearly sent me hunting a bug in the wrong function.
+
+**The combined prediction, still a prediction.** The row-read fix divides the values unpacked per
+token by thirty-two (eight of 256 experts), and this divides the rate by 1.60, so the unpack should
+fall from ~9.3 s to ~0.6 s per token. That, plus the 21.5 G-value → 0.67 G-value arithmetic behind
+it, is the basis of the "most of an order of magnitude" prediction. **Nothing about the real model
+has been re-measured, and it needs the operator's approval to be.**
+
+## D10 — What a Metal kernel may do to the bits, and the fast-math trap
+
+**The decision, before any kernel is written.** `D9` established that the contract is a rounding
+sequence, so a kernel is admissible only if it reproduces that sequence. Generalised for the GPU:
+
+> **One accumulator per output, `k` ascending.** A kernel may parallelise across outputs, across
+> rows, across layers — but not across `k`, and it may not reassociate.
+
+That constraint is narrower than it sounds and it does **not** exclude the GPU. A one-thread-per-output
+kernel satisfies it trivially, and so does a shared-memory **tiled** kernel: a tile contributes a
+contiguous run of `k` values, so as long as each output's accumulator takes the tiles in order and
+the values inside a tile in order, the sequence is the scalar one. What is excluded is split-K and
+any reassociation — which is what a fast GEMM does *because* it is fast.
+
+**The trap, and it is a real one.** Metal compiles shaders with **fast math enabled by default**,
+and fast math is precisely the licence to reassociate and to contract `a * b + c` into an FMA. A
+kernel that looks identical to the Swift one, with identical source arithmetic, can therefore
+produce different bits by default. Every kernel must be compiled with `fastMathEnabled = false`, and
+every kernel must be **checked against the scalar op bit for bit**, not merely against a tolerance —
+which is the same discipline `D9` used to rule BLAS out.
+
+**Measured on the development node (Apple M2):**
+
+| | |
+| --- | --- |
+| `MTLCreateSystemDefaultDevice()` | returns an **Apple M2**, `hasUnifiedMemory = true` |
+| runtime-compiled MSL from a source string | **compiles** (`library.functionNames == ["unpack4"]`) |
+
+**Consequence for CI, and it is a gate rule rather than a detail.** The GitHub `macos-26` runner has
+no GPU, so `MTLCreateSystemDefaultDevice()` returns nil there. Every Metal test must therefore
+**skip** when there is no device — the same shape as the Swift-6.4 skip in `DC-036`, which has
+already been bitten twice by a toolchain difference between CI and the farm. This is that lesson
+applied before it costs anything.
+
+**The first kernel is the unpack**, and for the reason `D9` gives: it is element-wise, its only
+floating-point operation is one multiply, and it has no summation at all, so the accumulation rule
+does not even apply to it. It is the Metal kernel least able to argue with the contract, which makes
+it the right one to prove the toolchain, the test harness and the fast-math discipline on.
+
 ## D8 — The chunked Gated DeltaNet rule is authoritative, and a cache is a second numeric path
 
 **Decided:** the cache's decode arithmetic is built so that it agrees with the **chunked** rule,
@@ -120,3 +240,115 @@ The bug above was found and fixed, and after it the real model agrees on **token
 The cache is therefore trustworthy as an optimisation. It remains a second numeric path by `D8`,
 so M1's gate continues to rest on the uncached path — which is bit-identical to the contract — and
 the cached path is checked against it, with the router's decisions compared exactly.
+
+## Reading the install is itself a hazard on a 4.5 GB node
+
+Verifying the 20 GB install — a sequential read plus a sha256 over every entry — drove free disk
+from **17 GB to 2.96 GB in about thirty seconds**. The mechanism is a loop, and every step of it
+is ordinary: the read fills the page cache, the page cache fills memory, memory pressure makes
+macOS grow swap (one gigabyte per swapfile in `/System/Volumes/VM/`, transiently about fourteen
+gigabytes), and swap is disk. The debounced disk watchdog stopped the job on the third
+consecutive below-floor reading; macOS shrank the swap back to three gigabytes once the pressure
+went away, and free space returned to fourteen.
+
+This is the brief's runtime I/O rule, measured rather than taken on faith:
+
+> Expert slabs: `F_NOCACHE` / `O_DIRECT`, async worker pool, per-layer LRU slot banks …
+
+On a node this small that rule is **not a throughput optimisation, it is a stability
+requirement**. A page-cached read of a model is what turns "reading the weights" into "exhausting
+swap", and swap exhaustion is precisely what panicked this machine twice — `watchdog timeout: no
+checkins from watchdogd in 90 seconds`, with thirteen swapfiles and LOW swap space.
+
+Two consequences:
+
+- **The install's byte-level verification is outstanding, not passed.** It needs an uncached
+  reader or a machine with headroom, and it is now `DC-086` rather than a claim.
+- The engine's reads have the right *shape* — one tensor at a time, never the model — and that is
+  not sufficient. `sources/DatacenterEngine/` contains no `F_NOCACHE` and no `fcntl` at all, so
+  every one of those reads is page-cached today. The fix belongs in the file handle the provider
+  opens, which is `DC-033`'s neighbourhood.
+
+## The fix: uncached reads for the install, and verification moved to the read
+
+`InstallFile` did two things that were each, on this node, a hazard. It **memory-mapped the whole
+payload** (`Data(contentsOf:, options: [.mappedIfSafe])`), so every read populated the page cache;
+and it **hashed all twenty gigabytes on every open**, so simply starting the engine was a
+full-payload read. Neither is visible in the arithmetic, and together they are the loop that
+took free disk from 17 GB to 2.96 GB in half a minute.
+
+Both are gone. `UncachedFile` opens the payload with `O_RDONLY` and asks for `F_NOCACHE`, reads
+byte ranges with `pread` — not a seek plus a read, so two readers cannot move each other's offset
+— and loops on short reads. `InstallFile` keeps that one descriptor instead of a mapping.
+
+**Verification moved from the open to the read, and `I6` is not weakened by it.** Each payload's
+digest is checked the first time that payload is read, and remembered; a tampered tensor
+therefore still cannot produce plausible numbers, which is the property `I6` asks for. What
+changed is *when* the check costs something: a tensor nobody reads costs nothing, and opening a
+20 GB install is no longer a 20 GB read. `InstallFile(url:verify: true)` and `verifyAll()`
+restore the eager whole-payload check for a gate that wants it stated explicitly.
+
+Six tests cover the reader: uncached and mapped reads return the same bytes, a windowed read
+matches the same window of the whole file, reading past the end is an error rather than zeros,
+the streaming digest matches the one-shot digest, the cached mode is available for files whose
+pages are worth keeping, and a missing file reports an open failure. Four more cover the moved
+verification: a tampered tensor opens fine and throws **when read**, an untouched one still
+reads, `verify: true` catches it at open, and an intact install passes `verifyAll()`.
+
+**What is not done, stated plainly:** the *checkpoint* reader (`SafetensorsFile`) still
+memory-maps its shard, so the streaming path over a safetensors snapshot is page-cached exactly
+as the install was. That is the remaining work on `DC-086`, and the byte-level verification of a
+20 GB install on this node is still outstanding — it needs a machine with headroom, or the
+checkpoint reader fixed first.
+
+## `DC-086` closed: the measurement
+
+The checkpoint reader now has the same treatment as the install. `SafetensorsFile.rowsStreaming`
+reads a row range through `UncachedFile` while `float32(_:rows:)` keeps the mapping, and the split
+is by **consumer** rather than by tensor: the routed expert slabs stream (they are read once per
+token and would evict everything useful) and the embedding and head stay cached (they are read
+every token and are exactly what the cache is for). All three read paths now share one decoder, so
+they cannot drift apart.
+
+The Python tooling got the same fix, because the verification that caused the incident was a
+Python read: `open_uncached`, `pread_exact` and `digest_of` replace `read_bytes()`, which on a
+20 GB install is twenty gigabytes **resident**, not merely cached.
+
+The measurement the task asked for:
+
+| | before | after |
+| --- | --- | --- |
+| free disk during a full 20 GB verification | 17 GB → **2.96 GB** | steady at **16 GB** |
+| peak memory for the same verification | ~20 GB resident (`read_bytes`) | **33.7 MB** |
+| how long the check takes | a full read on every open | once per payload, on first read |
+
+So: a 20 GB install verifies on an 8 GB node without free disk crossing the floor, which is what
+`DC-086` said would close it. It is closed.
+
+## The row rule, and the fourth time it bit
+
+`InstallFile.rows(named:range:)` took a range in **leading-axis entries** and, for an `int4`
+tensor, passed it straight to the payload arithmetic as though it were a row index. For a rank-3
+stack those are different numbers: one expert spans `shape[1]` payload rows, so `range 1..<2` read
+the first row of expert 1 rather than expert 1. The fixture reported *"expert 0 of
+gate_up_proj has 32 values, expected 1024"* — every shape plausible, every byte in range.
+
+The rule, which this project has now learned four times and should stop learning:
+
+> **A row is one leading-axis entry.** For a `[experts, rows, columns]` stack, one row is one
+> expert. Any arithmetic that touches the payload's flattened row axis must translate first, by
+> the rows-per-entry factor.
+
+It has bitten both contract readers (each decoded a stacked expert tensor as flat rows), the
+install builder's chunking (which asked the reader for payload rows where the reader offers
+leading-axis entries), and now the row read itself.
+
+The change that came with the fix is the one `DC-033` needed: the payload is section-major, so a
+row range is **three bounded reads and one decode** rather than a whole-stack decode. Measured on
+the fixture, one expert of an eight-expert stack costs **1184 of 9472 bytes** — exactly its share,
+against eight times that before.
+
+One cost is deliberate and worth stating: the first read of an entry also hashes its whole payload,
+which is `I6`'s price and is why the measurement warms the entry first. For the real model that is
+537 MB once per expert tensor per process. A per-slab digest in the format would remove it, and
+that is a format change, so it is not in M1.
