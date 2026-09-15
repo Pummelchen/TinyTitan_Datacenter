@@ -2,7 +2,13 @@ import DatacenterEngine
 import DatacenterIR
 import Foundation
 
-/// `datacenter-generate <snapshot> <out-dir> <prompt,ids> <max-new-tokens> [--model ID] [--revision SHA]`
+/// `datacenter-generate <snapshot> <out-dir> <prompt,ids> <max-new-tokens> [--cached] [--model ID] [--revision SHA]`
+///
+/// `--cached` decodes one position per token against a per-layer state (the KV cache and the
+/// Gated DeltaNet recurrence) instead of re-running the whole sequence each step. It is a second
+/// numeric path by `D8`, so the two modes are expected to produce the same *tokens* rather than
+/// the same bytes, and the tool reports which mode it used so a measurement can never be
+/// attributed to the wrong one.
 ///
 /// Greedy generation with the whole sequence re-run at every step (M0 has no KV cache).
 /// Writes a trace of the final forward pass, with the generated tokens recorded as a
@@ -17,6 +23,11 @@ func fail(_ message: String) -> Never {
 var arguments = Array(CommandLine.arguments.dropFirst())
 var modelID = ""
 var revision = ""
+// `--cached` is a flag rather than a positional argument, so it is removed from the list before
+// the arity check — leaving it in made every cached invocation print the usage line and exit.
+let cached = arguments.contains("--cached")
+arguments.removeAll { $0 == "--cached" }
+
 for flag in ["--model", "--revision"] {
     if let index = arguments.firstIndex(of: flag) {
         guard index + 1 < arguments.count else { fail("\(flag) needs a value") }
@@ -25,7 +36,7 @@ for flag in ["--model", "--revision"] {
     }
 }
 guard arguments.count == 4 else {
-    fail("usage: datacenter-generate <snapshot> <out-dir> <prompt,ids> <max-new-tokens> [--model ID] [--revision SHA]")
+    fail("usage: datacenter-generate <snapshot> <out-dir> <prompt,ids> <max-new-tokens> [--cached] [--model ID] [--revision SHA]")
 }
 
 let snapshot = URL(fileURLWithPath: arguments[0])
@@ -44,7 +55,10 @@ do {
 
 let generation: Generation
 do {
-    generation = try forward.generate(prompt: prompt, maxNewTokens: maxNewTokens)
+    generation = cached
+        ? try (forward as? Qwen3_5Forward)?.generateCached(prompt: prompt, maxNewTokens: maxNewTokens)
+            ?? forward.generate(prompt: prompt, maxNewTokens: maxNewTokens)
+        : try forward.generate(prompt: prompt, maxNewTokens: maxNewTokens)
 } catch {
     fail("generation failed: \(error)")
 }
@@ -67,6 +81,7 @@ do {
     let total = generation.secondsPerStep.reduce(0, +)
     let slowest = generation.secondsPerStep.max() ?? 0
     print("generated: \(generation.generated.map(String.init).joined(separator: ","))")
+    print("mode: \(cached ? "cached decode" : "full sequence each step")")
     print(
         "wrote \(output.path): \(generation.captured.count) tensors, digest \(manifest.digest.prefix(16))…, "
             + String(format: "%.1f s over %d step(s), slowest %.1f s", total, generation.secondsPerStep.count, slowest)

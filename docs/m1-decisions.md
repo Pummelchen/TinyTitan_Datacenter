@@ -70,3 +70,33 @@ at a tolerance rather than at the bit — which is `D8`'s consequence stated as 
 What is not yet wired: a prefill that leaves the states behind, and the attention layers' KV
 cache. The unit is verified before either, because the wiring is where a state can be threaded
 into the wrong layer or the wrong batch element and still produce plausible text.
+
+## The cache: implemented, measurable, and **not yet trusted**
+
+`sources/DatacenterEngine/ModelCache.swift` decodes one position per token against a per-layer
+state — the Gated DeltaNet's window and recurrence, and the full-attention layers' keys and
+values — with `GatedDeltaNet.decodeStep` doing the recurrence and `attentionStep` doing the cached
+attention. `datacenter-generate --cached` measures it.
+
+| | |
+| --- | --- |
+| Cached decode, real 35 B model, 4 steps | **66.1 s (16.5 s/step)** |
+| Uncached, same prompt and steps | **208.9 s (52.2 s/step)** |
+| Speedup at a 5-token prompt | **3.2×**, and it grows with context because the uncached path re-runs the sequence |
+| Tiny fixture: cached vs uncached tokens | **identical** (5 steps) |
+| Tiny fixture: router decisions, cached vs uncached | **2 of 2 layers exactly** |
+| Tiny fixture: replay vs chunked prefill logits | **2.2e-03 relative** |
+| Reference, cached vs uncached greedy, same fixture | **identical** (8 steps) |
+
+**The last two rows are why the cache is not trusted yet.** On the tiny fixture my two paths
+produce the same tokens, and so do the reference's — but on the **real** model my cached and
+uncached paths agree on the first token and diverge from the second (`11751, 13, 561, 6511`
+against `11751, 11, 264, 3177`). That asymmetry is what makes it a suspected bug rather than a
+`D8` path difference: a numeric-path difference of the measured size usually leaves the argmax
+alone, which is precisely what the reference shows on the same fixture.
+
+So the state of this work is: **implemented, measured, and withheld from the gate** until the
+divergence is isolated. The experiment that will settle it is per-layer: cache and no-cache over
+the same prompt on the real model, comparing each layer's `hidden_out`, so the first layer that
+disagrees names the bug. Until then the cached path is an optimisation under investigation, and
+M1's gate continues to rest on the uncached path, which is bit-identical to the contract.

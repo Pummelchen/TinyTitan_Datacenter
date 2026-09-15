@@ -21,11 +21,11 @@ public struct Qwen3_5Forward: ForwardPass {
 
     public let spec: IRSpec
     public let config: ModelConfig
-    private let source: any WeightSource
-    private let namesByBlock: [String: [TensorRole: String]]
-    private let embeddingName: String
-    private let finalNormName: String
-    private let headName: String
+    let source: any WeightSource
+    let namesByBlock: [String: [TensorRole: String]]
+    let embeddingName: String
+    let finalNormName: String
+    let headName: String
 
     public enum Error: Swift.Error, CustomStringConvertible {
         case missingTensor(block: String, role: TensorRole)
@@ -118,7 +118,7 @@ public struct Qwen3_5Forward: ForwardPass {
 
     /// The feed-forward half of a decoder layer. The reference branches inside its decoder
     /// layer between `Qwen3_5MLP` and `Qwen3_5SparseMoeBlock`, and so does this.
-    private enum FeedForward {
+    enum FeedForward {
         case dense(gate: [Float], up: [Float], down: [Float])
         case mixture(MixtureWeights, provider: ExpertSlotCache)
     }
@@ -135,7 +135,7 @@ public struct Qwen3_5Forward: ForwardPass {
     }
 
     /// The weights a decoder layer needs, loaded and then released.
-    private func loadLayer(_ index: Int) throws -> (weights: [TensorRole: [Float]], gdn: GatedDeltaNetWeights?, feedForward: FeedForward) {
+    func loadLayer(_ index: Int) throws -> (weights: [TensorRole: [Float]], gdn: GatedDeltaNetWeights?, feedForward: FeedForward) {
         let block = String(format: "layer.%02d", index)
         guard let byRole = namesByBlock[block] else { throw Error.missingTensor(block: block, role: .attnNorm) }
         func load(_ role: TensorRole) throws -> [Float] {
@@ -366,7 +366,7 @@ public struct Qwen3_5Forward: ForwardPass {
         return ForwardResult(tensors: captured, discrete: discrete, expertMetrics: expertMetrics)
     }
 
-    private func attention(
+    func attention(
         _ hidden: [Float], weights: [TensorRole: [Float]], length: Int,
         tables: (cos: [Float], sin: [Float]), mask: [Float]
     ) throws -> [Float] {
@@ -435,7 +435,90 @@ public struct Qwen3_5Forward: ForwardPass {
         )
     }
 
-    private func applyPartialRope(
+    /// One position of full attention against an append-only key/value cache.
+    ///
+    /// Deliberately the *same* arithmetic as the sequence path: the scores are one ordered dot
+    /// product per cached position, the softmax runs over the same width, and the output is the
+    /// same ordered product. So `D8` does not apply here — cached attention is **bit-identical**
+    /// to attention over the whole sequence, and the test says so at that strength rather than
+    /// at a tolerance. No mask is needed: every cached position precedes the new one.
+    ///
+    /// `keys` and `values` are `[position, kvHead, headDim]` and are extended in place.
+    func attentionStep(
+        _ hidden: [Float], weights: [TensorRole: [Float]], tables: (cos: [Float], sin: [Float]),
+        keys: inout [Float], values: inout [Float], cachedLength: Int
+    ) throws -> [Float] {
+        let heads = config.numAttentionHeads
+        let kvHeads = config.numKeyValueHeads
+        let headDim = config.headDim
+        let eps = Float(config.rmsNormEps)
+        let scaling = Float(1) / Float(headDim).squareRoot()
+        let rotary = tables.cos.count
+
+        let projected = Ops.orderedMatmul(
+            x: hidden, w: weights[.attnQ]!, rows: 1, k: config.hiddenSize, out: heads * headDim * 2
+        )
+        var query = [Float](repeating: 0, count: heads * headDim)
+        var gate = [Float](repeating: 0, count: heads * headDim)
+        for head in 0..<heads {
+            for index in 0..<headDim {
+                query[head * headDim + index] = projected[(head * headDim) * 2 + index]
+                gate[head * headDim + index] = projected[(head * headDim) * 2 + headDim + index]
+            }
+        }
+        var key = Ops.orderedMatmul(
+            x: hidden, w: weights[.attnK]!, rows: 1, k: config.hiddenSize, out: kvHeads * headDim
+        )
+        let value = Ops.orderedMatmul(
+            x: hidden, w: weights[.attnV]!, rows: 1, k: config.hiddenSize, out: kvHeads * headDim
+        )
+
+        query = rmsNorm(query, weight: weights[.attnQNorm]!, rows: heads, width: headDim, eps: eps)
+        key = rmsNorm(key, weight: weights[.attnKNorm]!, rows: kvHeads, width: headDim, eps: eps)
+        query = applyPartialRope(query, tables: tables, length: 1, heads: heads, headDim: headDim, rotary: rotary)
+        key = applyPartialRope(key, tables: tables, length: 1, heads: kvHeads, headDim: headDim, rotary: rotary)
+
+        keys.append(contentsOf: key)
+        values.append(contentsOf: value)
+        let width = cachedLength + 1
+        let groups = heads / kvHeads
+
+        var mixer = [Float](repeating: 0, count: heads * headDim)
+        for head in 0..<heads {
+            let kvHead = head / groups
+            var queryHead = [Float](repeating: 0, count: headDim)
+            for index in 0..<headDim { queryHead[index] = query[head * headDim + index] }
+
+            // `[headDim, width]`, so the ordered matmul produces one score per cached position.
+            var transposedKeys = [Float](repeating: 0, count: headDim * width)
+            for position in 0..<width {
+                for index in 0..<headDim {
+                    transposedKeys[index * width + position] = keys[(position * kvHeads + kvHead) * headDim + index]
+                }
+            }
+            var scores = Ops.orderedMatmul(x: queryHead, w: transposedKeys, rows: 1, k: headDim, out: width)
+            for index in 0..<scores.count { scores[index] = scores[index] * scaling }
+            let attention = Ops.softmax(x: scores, rows: 1, width: width)
+
+            var transposedValues = [Float](repeating: 0, count: width * headDim)
+            for position in 0..<width {
+                for index in 0..<headDim {
+                    transposedValues[position * headDim + index] =
+                        values[(position * kvHeads + kvHead) * headDim + index]
+                }
+            }
+            let mixed = Ops.orderedMatmul(x: attention, w: transposedValues, rows: 1, k: width, out: headDim)
+            for index in 0..<headDim { mixer[head * headDim + index] = mixed[index] }
+        }
+
+        var gated = [Float](repeating: 0, count: mixer.count)
+        for index in 0..<mixer.count { gated[index] = mixer[index] * Ops.sigmoid(gate[index]) }
+        return Ops.orderedMatmul(
+            x: gated, w: weights[.attnO]!, rows: 1, k: heads * headDim, out: config.hiddenSize
+        )
+    }
+
+    func applyPartialRope(
         _ x: [Float], tables: (cos: [Float], sin: [Float]), length: Int, heads: Int, headDim: Int, rotary: Int
     ) -> [Float] {
         var result = x
@@ -455,7 +538,7 @@ public struct Qwen3_5Forward: ForwardPass {
         return result
     }
 
-    private func sliceHead(_ values: [Float], length: Int, heads: Int, headDim: Int, head: Int) -> [Float] {
+    func sliceHead(_ values: [Float], length: Int, heads: Int, headDim: Int, head: Int) -> [Float] {
         var slice = [Float](repeating: 0, count: length * headDim)
         for row in 0..<length {
             let source = (row * heads + head) * headDim
@@ -464,7 +547,7 @@ public struct Qwen3_5Forward: ForwardPass {
         return slice
     }
 
-    private func rmsNorm(_ x: [Float], weight: [Float], rows: Int, width: Int, eps: Float) -> [Float] {
+    func rmsNorm(_ x: [Float], weight: [Float], rows: Int, width: Int, eps: Float) -> [Float] {
         var result = [Float](repeating: 0, count: rows * width)
         for row in 0..<rows {
             let base = row * width
@@ -484,7 +567,7 @@ public struct Qwen3_5Forward: ForwardPass {
         return result
     }
 
-    private func add(_ left: [Float], _ right: [Float]) -> [Float] {
+    func add(_ left: [Float], _ right: [Float]) -> [Float] {
         var result = [Float](repeating: 0, count: left.count)
         for index in 0..<left.count { result[index] = left[index] + right[index] }
         return result
