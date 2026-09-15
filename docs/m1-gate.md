@@ -149,7 +149,32 @@ stacks instead of one expert multiplied that by thirty-two — **~55 s**, which 
 result.** No real-model run has happened since those fixes, and this section exists so that the
 stale number and the prediction cannot be confused for one another.
 
-### Not measured, and what would close the gate
+### Not measured
+
+### The MoE fixture does not exercise partial RoPE
+
+Found by comparing the fixture's config against the checkpoint's, which is the check the checkpoint's own
+`config.json` makes easy and which the tracker's `DC-093` records.
+
+The checkpoint sets `partial_rotary_factor` to **0.25** — RoPE reaches 64 of `head_dim` 256 — and the
+engine honours it: `Qwen3_5Forward` takes `config.partialRotaryFactor ?? 1.0` and rotates only the first
+`rotary` channels (`applyPartialRope`), and both importers read the field through
+`rope_parameters.partial_rotary_factor`.
+
+Coverage, however, is not uniform:
+
+| where | partial RoPE |
+| --- | --- |
+| `tools/make_contract_vectors.py:118` | **0.5**, so the op-level contract vectors do exercise it |
+| `tools/make_tiny_qwen35_checkpoint.py:52` | **0.5**, so that family's end-to-end golden does |
+| `tests/.../Fixtures/tiny-qwen36/config.json` | **absent**, so `?? 1.0` applies and the **MoE end-to-end forward runs full RoPE** |
+
+So the path M1's gate depends on — the mixture forward, end to end, against the contract — has never run
+with a partial rotary factor, while the model it gates on always does. Nothing is known to be broken: the
+two sides agree on the default because they share it, which is exactly why the fixture cannot find a
+mistake in it. It is listed here as **not measured** rather than as a fault, and closing it means adding
+the field to that fixture and regenerating its golden.
+, and what would close the gate
 
 - the remaining **four prompts** of `tools/m1_prompts.json`;
 - a **re-measured throughput baseline** on the fixed engine, and therefore the M1 gate's actual
