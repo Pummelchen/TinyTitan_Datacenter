@@ -163,6 +163,11 @@ view, on the head dim only, and to query and key but not value (`:791`–`:792`)
 nothing in this model — it is written down because a family that needs it would otherwise
 be silently mis-ported.
 
+**Validated**: `tools/ordered_qwen35.py` implements this layer in the contract's order and
+`test_ordered_qwen35.py` compares it against `transformers`' own `Qwen3_5GatedDeltaNet` on a
+tiny configuration — 20, 37 and 70 positions, the last spanning more than one 64-token chunk
+— plus the conv's causality, `softplus`'s threshold and the sign of `g`.
+
 ## The chunked delta rule, in order (`torch_chunk_gated_delta_rule:301`)
 
 1. transpose to `[B, H, S, D]` and cast **fp32** (`:330`);
@@ -209,11 +214,42 @@ return hidden.to(input_dtype)
 The two orderings are the whole point of the class: the normalised value is rounded to
 bf16 **before** the weight multiply, and the gate is activated in fp32 **after** it.
 
+## The text RoPE, and why M0's path is simpler than it looks (`Qwen3_5TextRotaryEmbedding:143`)
+
+Two settings in the checkpoint's `rope_parameters` change the answer completely:
+
+| Key | Value | Consequence |
+| --- | --- | --- |
+| `rope_theta` | **10 000 000** | not `1e6`, and not `qwen3`'s value |
+| `partial_rotary_factor` | **0.25** | `dim = int(256 × 0.25) = 64`, so **only the first 64 of 256 head dims rotate** |
+| `rope_type` | `default` | the plain inverse-frequency path, no YaRN |
+| `mrope_section` | `[11, 11, 10]` | the multimodal grid layout |
+
+`inv_freq` therefore has 32 entries, `freqs = position × inv_freq` is `[seq, 32]`, and
+`recomposition_frequencies:204` returns `cat((freqs_thw, freqs_thw), -1)` — width **64**,
+which is the `rotary_dim` in `apply_rotary_pos_emb:674`.
+
+`apply_rotary_pos_emb` is **partial**: it takes `q_rot = q[..., :64]`, applies rotate-half
+*within those 64*, and concatenates the untouched `q[..., 64:]` back (`:698`–`:706`). A
+rotate over the whole head would be wrong, and so would a rotate over 64 dims of the wrong
+128.
+
+**The mRoPE machinery is a no-op for text-only input, and that is a fact about the caller
+rather than an assumption.** `Qwen3_5TextModel.forward:1260`–`1271` builds `position_ids`
+as `arange(seq)` expanded to four identical grids when none are given, keeps the first as
+`text_position_ids` and passes the remaining three to the rotary embedding. All three grids
+are therefore equal, so `recomposition_frequencies`'s interleaved copy between grids copies
+identical values. It stops being a no-op the moment input is multimodal, which is why the
+line numbers are recorded here rather than the conclusion alone.
+
+The full-attention layer, end to end (`Qwen3_5Attention.forward:776`,
+`eager_attention_forward:724`): per-head `(query, gate)` split → `q_norm`/`k_norm` on the
+head dim → transpose to `[B, H, S, D]` → rotational embedding → `repeat_kv` → `q·kᵀ ×
+scaling` → mask → **softmax in fp32** → cast back to the model dtype → `·v` → reshape →
+`× sigmoid(gate)` → `o_proj`.
+
 ## Still to extract — do not guess these
 
-- `Qwen3_5TextRotaryEmbedding:143` and how the full-attention layers apply RoPE here: the
-  `qwen3` contract's rotate-half is **not** assumed to carry over, and there is a
-  `recomposition_frequencies` at `:204` that `qwen3` has no equivalent for;
 - the prefill/decode split between `causal_conv1d_fn:270` and `causal_conv1d_update:250` —
   M0 has no cache, so the prefill path is the one to port first, but the conv state's
   `state_len` handling at `:265` needs transcribing before any cache exists;

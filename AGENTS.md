@@ -93,6 +93,7 @@ python3 tools/trace_diff.py .build/ref-trace .build/ref-trace
 # The Gated DeltaNet's chunked delta rule, transcribed from the reference and checked
 # against the reference's own function (needs the venv).
 .venv/bin/python -m unittest discover -s tools -p 'test_ordered_gdn.py'
+.venv/bin/python -m unittest discover -s tools -p 'test_ordered_qwen35.py'
 
 # Regenerate the golden bit patterns the Swift contract tests assert
 # (tests/DatacenterEngineTests/Fixtures/contract-vectors.json). Run this whenever an op
