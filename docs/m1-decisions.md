@@ -120,3 +120,31 @@ The bug above was found and fixed, and after it the real model agrees on **token
 The cache is therefore trustworthy as an optimisation. It remains a second numeric path by `D8`,
 so M1's gate continues to rest on the uncached path — which is bit-identical to the contract — and
 the cached path is checked against it, with the router's decisions compared exactly.
+
+## Reading the install is itself a hazard on a 4.5 GB node
+
+Verifying the 20 GB install — a sequential read plus a sha256 over every entry — drove free disk
+from **17 GB to 2.96 GB in about thirty seconds**. The mechanism is a loop, and every step of it
+is ordinary: the read fills the page cache, the page cache fills memory, memory pressure makes
+macOS grow swap (one gigabyte per swapfile in `/System/Volumes/VM/`, transiently about fourteen
+gigabytes), and swap is disk. The debounced disk watchdog stopped the job on the third
+consecutive below-floor reading; macOS shrank the swap back to three gigabytes once the pressure
+went away, and free space returned to fourteen.
+
+This is the brief's runtime I/O rule, measured rather than taken on faith:
+
+> Expert slabs: `F_NOCACHE` / `O_DIRECT`, async worker pool, per-layer LRU slot banks …
+
+On a node this small that rule is **not a throughput optimisation, it is a stability
+requirement**. A page-cached read of a model is what turns "reading the weights" into "exhausting
+swap", and swap exhaustion is precisely what panicked this machine twice — `watchdog timeout: no
+checkins from watchdogd in 90 seconds`, with thirteen swapfiles and LOW swap space.
+
+Two consequences:
+
+- **The install's byte-level verification is outstanding, not passed.** It needs an uncached
+  reader or a machine with headroom, and it is now `DC-086` rather than a claim.
+- The engine's reads have the right *shape* — one tensor at a time, never the model — and that is
+  not sufficient. `sources/DatacenterEngine/` contains no `F_NOCACHE` and no `fcntl` at all, so
+  every one of those reads is page-cached today. The fix belongs in the file handle the provider
+  opens, which is `DC-033`'s neighbourhood.

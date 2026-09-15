@@ -38,6 +38,11 @@ The rules that follow from it:
   code paths at megabytes instead of gigabytes — importer, mixture, cache, quantisation, gate.
 - **One heavy job at a time, never concurrent**, and never a heavy job alongside an engine run.
 - **Real-model runs need explicit human approval**, with `sysctl vm.swapusage` checked first.
+- **A large page-cached read is a hazard here, not a neutral operation.** Verifying the 20 GB
+  install — a read and a hash — took free disk from 17 GB to 2.96 GB in half a minute, because the
+  page cache filled memory, memory pressure grew swap, and swap is disk. The disk watchdog stopped
+  it. Until `DC-086` puts `F_NOCACHE` on the shard handles, treat any multi-gigabyte read as a
+  heavy job even when it writes nothing.
 - The 93 GB under `.build/` is excluded from Spotlight with a `.metadata_never_index` marker, so
   a reboot does not start re-indexing it — that re-indexing is itself sustained I/O on a machine
   that has just panicked.
