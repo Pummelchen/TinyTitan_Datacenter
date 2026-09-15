@@ -37,9 +37,9 @@ let tokens = arguments[2].split(separator: ",").compactMap { Int($0.trimmingChar
 guard !tokens.isEmpty else { fail("no token ids given") }
 
 let started = Date()
-let forward: Qwen3Forward
+let forward: any ForwardPass
 do {
-    forward = try Qwen3Forward(snapshot: snapshot)
+    forward = try ModelLoader.open(snapshot: snapshot)
 } catch {
     fail("could not load \(snapshot.path): \(error)")
 }

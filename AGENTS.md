@@ -124,6 +124,15 @@ python3 tools/make_qwen35_fixture.py \
 # whole-tower test asserts bit for bit (157 KB; needs the venv).
 .venv/bin/python tools/make_tiny_qwen35_checkpoint.py
 
+# Run the pinned 2 B model on one node and compare it to the reference implementation.
+# The engine streams the weights, so this runs on a node that cannot hold the model.
+.build/release/datacenter-trace \
+    .build/hf-cache/models--Qwen--Qwen3.5-2B/snapshots/<revision> \
+    .build/engine-2b 1,2,3,4,5,6,7,8 --model Qwen/Qwen3.5-2B --revision <sha>
+.venv/bin/python tools/trace_capture.py .build/torch-2b \
+    --snapshot .build/hf-cache/models--Qwen--Qwen3.5-2B/snapshots/<revision> --dtype f32
+.venv/bin/python tools/compare_engine_to_oracle.py .build/engine-2b .build/torch-2b
+
 # The reference implementation that produces golden traces. Pinned exactly: a
 # trace is only comparable to another captured from the same transformers build.
 uv pip install --python .venv/bin/python -r tools/requirements-reference.txt

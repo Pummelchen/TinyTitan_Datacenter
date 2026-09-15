@@ -35,9 +35,9 @@ let maxNewTokens = Int(arguments[3]) ?? -1
 guard !prompt.isEmpty else { fail("the prompt must contain at least one token") }
 guard maxNewTokens >= 0 else { fail("max-new-tokens must be a non-negative integer") }
 
-let forward: Qwen3Forward
+let forward: any ForwardPass
 do {
-    forward = try Qwen3Forward(snapshot: snapshot)
+    forward = try ModelLoader.open(snapshot: snapshot)
 } catch {
     fail("could not load \(snapshot.path): \(error)")
 }

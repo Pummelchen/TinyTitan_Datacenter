@@ -127,6 +127,36 @@ Two details worth keeping in mind when reading a trace:
   skipped the comparison without one of them would be a gate that reports success without
   looking.
 
+## The other comparison: the engine against the semantic oracle
+
+`trace_diff.py` answers "are these two traces identical". The engine against the *reference
+implementation* is a different question, because the reference accumulates in a different
+order and can never be byte-identical (D3, R13). `tools/compare_engine_to_oracle.py` reports
+the two claims separately — the numeric spread per tensor, relative to that tensor's own
+scale, and the **discrete decisions** as an index set:
+
+```
+$ .venv/bin/python tools/compare_engine_to_oracle.py .build/engine-2b .build/torch-2b --quiet
+engine 51 tensors, oracle 75, shared 27
+  argmax engine: [5328, 220, 16, 5, 6, 24218, 4653, 2037]
+  argmax oracle: [5328, 220, 16, 5, 6, 24218, 4653, 2037]
+  smallest top-1 margin: 0.2192
+  discrete decisions: MATCH
+worst relative difference: 4.08e-06 at final_norm.out
+```
+
+That is the pinned **Qwen3.5-2B** at revision `15852e8c…`, 8 tokens, fp32: the engine's
+eleven-thousand-odd output numbers differ from `transformers`' by at most **4.1e-6
+relative** after 24 layers — the shape of a summation-order difference and nothing else —
+while **every one of the 8 discrete decisions matches**. The smallest top-1 margin on that
+prompt is 0.2192, three orders of magnitude above the divergence, which is why the decisions
+survived; on a marginally-decided prompt they would not necessarily, and that is the whole
+argument for asserting decisions separately rather than trusting a tolerance.
+
+Run on this machine: 8 tokens in 19.3 s, peak resident set **3.41 GB** — dominated by clean
+file-backed pages of the memory-mapped checkpoint rather than by the working set, since the
+design keeps one decoder layer resident at a time.
+
 ## Discrete decisions live beside the numbers
 
 The manifest's `discrete` section carries the decisions that a tolerance cannot express:

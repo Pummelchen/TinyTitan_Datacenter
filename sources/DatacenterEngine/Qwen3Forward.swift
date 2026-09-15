@@ -7,7 +7,7 @@ import Foundation
 /// by `(block, role)`, so the same code runs any checkpoint whose importer maps its names
 /// onto the same roles. The arithmetic is `Ops`, which is bit-identical to
 /// `tools/ordered_reference.py` — that is the whole point of this file being so plain.
-public struct Qwen3Forward {
+public struct Qwen3Forward: ForwardPass {
     public struct LayerWeights {
         let attnNorm: [Float]
         let q: [Float]
@@ -94,6 +94,8 @@ public struct Qwen3Forward {
         self.finalNorm = finalNorm
         self.head = head
     }
+
+    public var vocabularySize: Int { config.vocabSize }
 
     /// Run the forward, capturing the same tensors the reference does, in the same order.
     public func forward(tokens: [Int]) throws -> [TraceWriter.Tensor] {

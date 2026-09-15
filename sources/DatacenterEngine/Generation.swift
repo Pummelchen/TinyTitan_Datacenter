@@ -55,35 +55,3 @@ public struct Generation {
         self.captured = captured
     }
 }
-
-extension Qwen3Forward {
-    /// Generate `maxNewTokens` tokens greedily.
-    ///
-    /// The loop is shaped so that the last forward pass is over the full sequence
-    /// (prompt plus everything generated), which is what the trace records — the Python
-    /// contract uses the identical loop, so the two traces cover the same computation
-    /// rather than two computations that happen to end at the same token.
-    public func generate(prompt: [Int], maxNewTokens: Int) throws -> Generation {
-        guard !prompt.isEmpty else { throw Error.emptyPrompt }
-        var tokens = prompt
-        var generated: [Int] = []
-        var seconds: [Double] = []
-
-        var captured = try forward(tokens: tokens)
-        for _ in 0..<maxNewTokens {
-            guard let logits = captured.last, logits.name == "logits" else {
-                throw Error.missingTensor(block: "head", role: .outputHead)
-            }
-            let width = config.vocabSize
-            let offset = (tokens.count - 1) * width
-            let next = Greedy.argmax(logits.values, offset: offset, width: width)
-            generated.append(next)
-            tokens.append(next)
-
-            let started = Date()
-            captured = try forward(tokens: tokens)
-            seconds.append(Date().timeIntervalSince(started))
-        }
-        return Generation(prompt: prompt, generated: generated, secondsPerStep: seconds, captured: captured)
-    }
-}

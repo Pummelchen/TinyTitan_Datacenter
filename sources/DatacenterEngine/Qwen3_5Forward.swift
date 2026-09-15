@@ -14,7 +14,7 @@ import Foundation
 /// Everything numeric lives in `Ops` and `GatedDeltaNet`, which are bit-identical to
 /// `tools/ordered_qwen35.py`; this file is the wiring, and the wiring is what the tests
 /// against a real checkpoint check.
-public struct Qwen3_5Forward {
+public struct Qwen3_5Forward: ForwardPass {
     /// How many vocabulary rows the head is computed in. 8192 rows is 64 MB of fp32, which
     /// is small next to a layer and large enough that the block count stays modest.
     public static let headBlockRows = 8192
@@ -121,7 +121,7 @@ public struct Qwen3_5Forward {
 
     /// The Gated DeltaNet's geometry, assembled from the IR's configuration.
     public func gatedShape() throws -> GatedDeltaNetShape {
-        guard let keyDim = config.linearKeyDim, let valueDim = config.linearValueDim,
+        guard let keyDim = config.linearKeyDim,
               let valueHeads = config.linearValueHeads, let valueHeadDim = config.linearValueHeadDim,
               let convKernel = config.linearConvKernelDim
         else { throw Error.missingTensor(block: "config", role: .linearInQKV) }
@@ -160,6 +160,8 @@ public struct Qwen3_5Forward {
         }
         return (cosines, sines)
     }
+
+    public var vocabularySize: Int { config.vocabSize }
 
     /// The whole tower, capturing the same tensors the Python contract does.
     public func forward(tokens: [Int]) throws -> [TraceWriter.Tensor] {
