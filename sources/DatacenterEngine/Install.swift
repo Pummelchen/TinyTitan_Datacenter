@@ -262,22 +262,129 @@ public struct InstallFile: WeightSource {
     /// row's zeros. That is what makes a row range decodable without the rest of the tensor, since
     /// each section is row-contiguous; it is also the thing to get wrong, because the wrong row
     /// count still produces plausible weights.
-    static func dequantizeInt4(_ data: Data, entry: Entry, rowCount: Int? = nil) throws -> [Float] {
+    /// The three sections of an int4 payload, in bytes, for a given number of rows.
+    struct Int4Layout {
+        let rows: Int
+        let columns: Int
+        let padded: Int
+        let group: Int
+        let groups: Int
+        let codeBytes: Int
+        let scaleBytes: Int
+    }
+
+    static func int4Layout(entry: Entry, rowCount: Int?, payloadBytes: Int) throws -> Int4Layout {
         // A stacked expert tensor is `[experts, rows, columns]` and its payload was quantized
         // with the leading axis flattened, so the codes describe `experts x rows` rows.
         let rows = rowCount ?? entry.shape.dropLast().reduce(1, *)
         let columns = entry.shape.last ?? 0
         let padded = entry.padded_columns
         let group = entry.group
-        guard group > 0, padded % group == 0, padded % 2 == 0 else {
-            throw Error.badHeader("\(entry.name): group \(group) does not divide \(padded)")
+        // Each condition says which one failed: the first version reported "group does not divide
+        // padded" for a failure of the even-width rule, which sent a reader looking at the wrong
+        // number.
+        guard group > 0 else {
+            throw Error.badHeader("\(entry.name): group is \(group), which cannot divide anything")
+        }
+        guard padded % group == 0 else {
+            throw Error.badHeader("\(entry.name): group \(group) does not divide padded width \(padded)")
+        }
+        guard padded % 2 == 0 else {
+            // Two codes share a byte, so an odd padded width has no defined packing.
+            throw Error.badHeader("\(entry.name): padded width \(padded) is odd, and two codes share a byte")
         }
         let groups = padded / group
         let codeBytes = rows * padded / 2
         let scaleBytes = rows * groups * 4
-        guard data.count == codeBytes + scaleBytes + rows * groups else {
-            throw Error.badHeader("\(entry.name): payload is \(data.count) bytes, the layout needs \(codeBytes + scaleBytes + rows * groups)")
+        guard payloadBytes == codeBytes + scaleBytes + rows * groups else {
+            throw Error.badHeader("\(entry.name): payload is \(payloadBytes) bytes, the layout needs \(codeBytes + scaleBytes + rows * groups)")
         }
+        return Int4Layout(
+            rows: rows, columns: columns, padded: padded, group: group, groups: groups,
+            codeBytes: codeBytes, scaleBytes: scaleBytes
+        )
+    }
+
+    /// Unpack four-bit codes into `Float`.
+    ///
+    /// The fast path, and the reason it is free: the **only** floating-point operation here is one
+    /// multiply, `Float(code - zero) * scale`, with no summation anywhere. There is no
+    /// accumulation order to preserve, so a vector formulation is bit-identical by construction
+    /// rather than by measurement — `Float(code - zero)` is exact because the integers are tiny,
+    /// and `SIMD4<Float> * scalar` rounds once per lane exactly as the scalar multiply does.
+    ///
+    /// The win comes from the other direction: the scale and the zero point are per *group* (sixty
+    /// four values), and the scalar loop reloaded both for every element.
+    static func dequantizeInt4(_ data: Data, entry: Entry, rowCount: Int? = nil) throws -> [Float] {
+        let layout = try int4Layout(entry: entry, rowCount: rowCount, payloadBytes: data.count)
+        var values = [Float](repeating: 0, count: layout.rows * layout.columns)
+        data.withUnsafeBytes { raw in
+            let base = raw.baseAddress!
+            let codes = base
+            let scales = base + layout.codeBytes
+            let zeros = base + layout.codeBytes + layout.scaleBytes
+            for row in 0..<layout.rows {
+                let rowCodes = codes + row * (layout.padded / 2)
+                let rowGroups = row * layout.groups
+                let rowValues = row * layout.columns
+                var index = 0
+                while index < layout.columns {
+                    let groupIndex = rowGroups + index / layout.group
+                    let scale = Float(bitPattern: UInt32(littleEndian: scales.loadUnaligned(fromByteOffset: groupIndex * 4, as: UInt32.self)))
+                    let rawZero = Int(zeros.loadUnaligned(fromByteOffset: groupIndex, as: UInt8.self))
+                    let zero = rawZero >= 128 ? rawZero - 256 : rawZero
+                    // The last group of a padded tensor holds fewer real values than the group
+                    // size, so the vector loop is bounded by what is actually stored.
+                    let inGroup = min(layout.group, layout.columns - index)
+                    var offset = 0
+                    while offset + 4 <= inGroup {
+                        // Two bytes carry four codes, low nibble first — the order is the format.
+                        let pair = rowCodes.loadUnaligned(fromByteOffset: (index + offset) / 2, as: UInt16.self)
+                        let lanes = SIMD4<Float>(
+                            Float(signed(Int(pair & 0x0F)) - zero),
+                            Float(signed(Int((pair >> 4) & 0x0F)) - zero),
+                            Float(signed(Int((pair >> 8) & 0x0F)) - zero),
+                            Float(signed(Int((pair >> 12) & 0x0F)) - zero)
+                        )
+                        let product = lanes * SIMD4<Float>(repeating: scale)
+                        values[rowValues + index + offset + 0] = product[0]
+                        values[rowValues + index + offset + 1] = product[1]
+                        values[rowValues + index + offset + 2] = product[2]
+                        values[rowValues + index + offset + 3] = product[3]
+                        offset += 4
+                    }
+                    while offset < inGroup {
+                        let position = index + offset
+                        let byte = rowCodes.loadUnaligned(fromByteOffset: position / 2, as: UInt8.self)
+                        let nibble = position % 2 == 0 ? (byte & 0x0F) : (byte >> 4)
+                        values[rowValues + position] = Float(signed(Int(nibble)) - zero) * scale
+                        offset += 1
+                    }
+                    index += inGroup
+                }
+            }
+        }
+        return values
+    }
+
+    /// A four-bit code as a signed integer: two's complement in four bits.
+    @inline(__always)
+    private static func signed(_ nibble: Int) -> Int {
+        let value = nibble & 0x0F
+        return value >= 8 ? value - 16 : value
+    }
+
+    /// The definition: one element at a time, in index order. Kept because a fast formulation is
+    /// only trustworthy while something independent says it agrees.
+    static func dequantizeInt4Scalar(_ data: Data, entry: Entry, rowCount: Int? = nil) throws -> [Float] {
+        let layout = try int4Layout(entry: entry, rowCount: rowCount, payloadBytes: data.count)
+        let rows = layout.rows
+        let columns = layout.columns
+        let padded = layout.padded
+        let group = layout.group
+        let groups = layout.groups
+        let codeBytes = layout.codeBytes
+        let scaleBytes = layout.scaleBytes
 
         var values = [Float](repeating: 0, count: rows * columns)
         data.withUnsafeBytes { raw in

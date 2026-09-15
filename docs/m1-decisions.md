@@ -44,6 +44,41 @@ a result until a real-model run measures it**, which needs the operator's approv
 fetch path, not the matmul — and the unpack has to preserve the same rounding sequence, which is a
 tighter constraint than a GEMM kernel faces.
 
+### The unpack, which was the easier kernel and the bigger number
+
+`D9`'s measurement put the unpack at 370.9 M values/s against the matmul's 4.1 GFLOP/s, so the
+unpack is where a token's time goes. It turned out to be a **much easier** kernel than the matmul,
+for a structural reason: its only floating-point operation is one multiply, `Float(code - zero) *
+scale`, with **no summation anywhere**. There is no accumulation order to preserve, so a vector
+formulation is bit-identical by construction rather than by luck — `Float(code - zero)` is exact
+because the codes and the zero point are small integers, and `SIMD4<Float> * scale` rounds once per
+lane exactly as the scalar multiply does. Contrast with `cblas_sgemm`, which cannot be used at all
+because it fuses.
+
+The win comes from elsewhere: the scale and zero point are per **group** (sixty-four values), and
+the scalar loop reloaded both for every element.
+
+| | scalar | vector |
+| --- | --- | --- |
+| unpack rate | 648.3 M values/s | **1038.3 M values/s — 1.60×** |
+| one 35 B token (3.45 G values) | 5.3 s | **3.3 s** |
+
+Both are bit-identical on a grid of sixty shapes — `columns` not a multiple of four, the padded
+tail, a group of one, a single row — and on the end-to-end golden tests.
+
+**Two notes for whoever comes next.** The remaining factor is nibble extraction: four values per
+iteration is one 128-bit register, so widening to eight nibbles at a time with integer lanes is the
+obvious next step and is **not measured here**. And the grid above cost an hour to a Swift footgun
+worth writing down: **Swift's `%` keeps the sign of the dividend**, so `(-5) % 4` is `-1` and
+`columns + that` can be *smaller* than `columns` — the test compared the two implementations on an
+impossible layout and very nearly sent me hunting a bug in the wrong function.
+
+**The combined prediction, still a prediction.** The row-read fix divides the values unpacked per
+token by thirty-two (eight of 256 experts), and this divides the rate by 1.60, so the unpack should
+fall from ~9.3 s to ~0.6 s per token. That, plus the 21.5 G-value → 0.67 G-value arithmetic behind
+it, is the basis of the "most of an order of magnitude" prediction. **Nothing about the real model
+has been re-measured, and it needs the operator's approval to be.**
+
 ## D8 — The chunked Gated DeltaNet rule is authoritative, and a cache is a second numeric path
 
 **Decided:** the cache's decode arithmetic is built so that it agrees with the **chunked** rule,
