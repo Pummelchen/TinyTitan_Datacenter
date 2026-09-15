@@ -99,6 +99,83 @@ def main() -> None:
         },
     }
 
+    # --- The Gated DeltaNet, family two -------------------------------------------------
+    # A tiny configuration of the real geometry: two key heads and two value heads of
+    # width 4, a convolution kernel of 4, and five positions, so the chunked rule runs
+    # with a single chunk but every reshape, gate and boundary is exercised.
+    import ordered_qwen35 as q35
+
+    class TinyConfig:
+        hidden_size = 16
+        linear_num_key_heads = 2
+        linear_num_value_heads = 2
+        linear_key_head_dim = 4
+        linear_value_head_dim = 4
+        linear_conv_kernel_dim = 4
+        rms_norm_eps = 1e-6
+        hidden_act = "silu"
+        head_dim = 8
+        rope_parameters = {"rope_theta": 1e7, "partial_rotary_factor": 0.5}
+
+    tiny = TinyConfig()
+    key_dim = tiny.linear_num_key_heads * tiny.linear_key_head_dim
+    value_dim = tiny.linear_num_value_heads * tiny.linear_value_head_dim
+    conv_dim = key_dim * 2 + value_dim
+    positions, hidden_size = 5, tiny.hidden_size
+
+    gdn_weights = {
+        "in_proj_qkv": ref.f32(rng.standard_normal((conv_dim, hidden_size)) * 0.4),
+        "in_proj_z": ref.f32(rng.standard_normal((value_dim, hidden_size)) * 0.4),
+        "in_proj_b": ref.f32(rng.standard_normal((tiny.linear_num_value_heads, hidden_size)) * 0.4),
+        "in_proj_a": ref.f32(rng.standard_normal((tiny.linear_num_value_heads, hidden_size)) * 0.4),
+        "conv1d": ref.f32(rng.standard_normal((conv_dim, 1, tiny.linear_conv_kernel_dim)) * 0.4),
+        "A_log": ref.f32(rng.standard_normal(tiny.linear_num_value_heads)),
+        "dt_bias": ref.f32(rng.standard_normal(tiny.linear_num_value_heads) * 0.2),
+        "norm": ref.f32(rng.standard_normal(tiny.linear_value_head_dim) * 0.2 + 1.0),
+        "out_proj": ref.f32(rng.standard_normal((hidden_size, value_dim)) * 0.4),
+    }
+    gdn_hidden = ref.f32(rng.standard_normal((1, positions, hidden_size)) * 0.7)
+    gdn_out = q35.gated_delta_net_layer(gdn_hidden, gdn_weights, tiny)
+
+    # A second case long enough to need two chunks: the sequential scan over chunks is
+    # where a padding or state-threading error would hide, and a single-chunk case never
+    # runs it.
+    long_positions = 70
+    gdn_hidden_long = ref.f32(rng.standard_normal((1, long_positions, hidden_size)) * 0.7)
+    gdn_out_long = q35.gated_delta_net_layer(gdn_hidden_long, gdn_weights, tiny)
+
+    payload["gdn_multichunk"] = {
+        "config": {
+            "hidden_size": hidden_size,
+            "num_key_heads": tiny.linear_num_key_heads,
+            "num_value_heads": tiny.linear_num_value_heads,
+            "key_head_dim": tiny.linear_key_head_dim,
+            "value_head_dim": tiny.linear_value_head_dim,
+            "conv_kernel": tiny.linear_conv_kernel_dim,
+            "eps": tiny.rms_norm_eps,
+            "positions": long_positions,
+        },
+        "hidden": vector(gdn_hidden_long),
+        "out": vector(gdn_out_long),
+        "weights": {name: vector(value) for name, value in gdn_weights.items()},
+    }
+
+    payload["gdn"] = {
+        "config": {
+            "hidden_size": hidden_size,
+            "num_key_heads": tiny.linear_num_key_heads,
+            "num_value_heads": tiny.linear_num_value_heads,
+            "key_head_dim": tiny.linear_key_head_dim,
+            "value_head_dim": tiny.linear_value_head_dim,
+            "conv_kernel": tiny.linear_conv_kernel_dim,
+            "eps": tiny.rms_norm_eps,
+            "positions": positions,
+        },
+        "hidden": vector(gdn_hidden),
+        "out": vector(gdn_out),
+        "weights": {name: vector(value) for name, value in gdn_weights.items()},
+    }
+
     FIXTURE.parent.mkdir(parents=True, exist_ok=True)
     FIXTURE.write_text(json.dumps(payload, indent=2) + "\n")
     tensors = sum(1 for value in payload.values() if isinstance(value, dict))

@@ -196,10 +196,20 @@ the reference module rather than by reading the two implementations side by side
 nothing in this model — it is written down because a family that needs it would otherwise
 be silently mis-ported.
 
-**Validated**: `tools/ordered_qwen35.py` implements this layer in the contract's order and
-`test_ordered_qwen35.py` compares it against `transformers`' own `Qwen3_5GatedDeltaNet` on a
-tiny configuration — 20, 37 and 70 positions, the last spanning more than one 64-token chunk
-— plus the conv's causality, `softplus`'s threshold and the sign of `g`.
+**Validated twice.** `tools/ordered_qwen35.py` implements this layer in the contract's order
+and `test_ordered_qwen35.py` compares it against `transformers`' own `Qwen3_5GatedDeltaNet`
+on a tiny configuration — 20, 37 and 70 positions, the last spanning more than one 64-token
+chunk — plus the conv's causality, `softplus`'s threshold and the sign of `g`.
+
+Then the Swift kernel in `sources/DatacenterEngine/GatedDeltaNet.swift` reproduces that
+contract **bit for bit**: `GatedDeltaNetTests` asserts golden bit patterns emitted by
+`tools/make_contract_vectors.py` for both a single-chunk and a two-chunk case, and it
+passes under `-Onone` *and* `-O` — which is itself a claim worth testing, since a compiler
+that contracted `a * b + c` into an FMA would break every one of these invariants silently.
+
+Two disagreements were found this way rather than by inspection: the gate and decay arrays
+were being written once per position instead of once per *head*, and the contract carried a
+second `silu` with a different branch structure, which showed up as a 1-ULP disagreement.
 
 ## The chunked delta rule, in order (`torch_chunk_gated_delta_rule:301`)
 

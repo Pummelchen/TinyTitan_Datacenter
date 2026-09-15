@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ordered_reference import exp32, f32, ordered_matmul, ordered_sum
+from ordered_reference import exp32, f32, ordered_matmul, ordered_sum, silu
 
 
 def cumulative_sum(x: np.ndarray, axis: int) -> np.ndarray:
@@ -76,7 +76,12 @@ def gated_rms_norm(hidden: np.ndarray, gate: np.ndarray, weight: np.ndarray, eps
     variance = f32(ordered_sum(f32(hidden * hidden), axis=-1) / np.float32(hidden.shape[-1]))
     inverse = f32(np.float32(1.0) / np.sqrt(f32(variance + np.float32(eps))))
     normalised = f32(weight * f32(hidden * inverse[..., None]))
-    return f32(normalised * f32(gate / (np.float32(1.0) + exp32(f32(-gate)))))
+    # The *one* silu in the contract, imported rather than spelled again: this function
+    # originally carried its own single-branch form, which differs from the stable one in
+    # the last bit for negative inputs. The cross-language test found it as a 1-ULP
+    # disagreement, which is exactly what a second implementation of a stated function
+    # costs.
+    return f32(normalised * silu(gate))
 
 
 def chunk_gated_delta_rule(

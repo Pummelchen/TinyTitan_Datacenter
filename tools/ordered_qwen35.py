@@ -54,7 +54,10 @@ def softplus(x: np.ndarray, beta: float = 1.0, threshold: float = 20.0) -> np.nd
     out = np.empty_like(x)
     large = scaled > np.float32(threshold)
     out[large] = x[large]
-    out[~large] = f32(np.log1p(np.exp(scaled[~large])) / np.float32(beta))
+    # The contract's transcendental rule: evaluated in double, rounded to Float. Stating
+    # it that way rather than calling float32 `log1p`/`exp` is what lets the Swift
+    # implementation reproduce these bits.
+    out[~large] = f32(np.log1p(np.exp(np.float64(scaled[~large]))) / np.float64(beta))
     return out
 
 
