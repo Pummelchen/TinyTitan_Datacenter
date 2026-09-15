@@ -428,3 +428,25 @@ One cost is deliberate and worth stating: the first read of an entry also hashes
 which is `I6`'s price and is why the measurement warms the entry first. For the real model that is
 537 MB once per expert tensor per process. A per-slab digest in the format would remove it, and
 that is a format change, so it is not in M1.
+
+## The leading-axis trap, five times, and where it hid the last time
+
+This project has now been bitten five times by the same confusion, and the fifth is the instructive
+one because it was not an index at all:
+
+| # | where | what it was |
+| --- | --- | --- |
+| 1 | both contract readers | a stacked expert tensor read as flat rows |
+| 2 | the install builder's chunking | asked the reader for payload rows where it offers leading-axis entries |
+| 3 | the `int4` row read | used the entry range as a payload-row index, so "expert 1" became "the first row of expert 1" |
+| 4 | Metal's unpack | the same, caught by a bit-identity test |
+| 5 | **the slab-digest guard** | `range.count % inner == 0`, which for one expert of a stack is `1 % 32` — so the whole branch was skipped, silently and correctly, at full cost |
+
+The fifth had no wrong index, no wrong value and no failing assertion: the code took the other
+branch and the result was *right*. It was only visible as a **cost**, which is why it survived a
+review of the arithmetic and two rounds of reading. The lesson is narrower than "mind your indices":
+
+> A guard that decides between a fast path and a correct fallback needs a test that would **fail when
+> the guard stops matching** — not merely one that passes when the answer is right.
+
+The `bytesRead` counter on `InstallFile` is that test, and it is the reason this was found at all.
