@@ -283,6 +283,37 @@ not been fetched, so the throughput baseline and the hit rate M1's gate asks for
 
 The `gdn_asymmetric` and `moe` vector groups exist for the same reason at the kernel level.
 
+## A cache is a second numeric path, and the reference says so in code
+
+`Qwen3_5MoeGatedDeltaNet.forward:625`:
+
+```python
+if use_precomputed_states and seq_len == 1:
+    core_attn_out, last_recurrent_state = torch_recurrent_gated_delta_rule(...)   # decode
+else:
+    core_attn_out, last_recurrent_state = torch_chunk_gated_delta_rule(...)       # prefill
+```
+
+The two functions are algebraically equivalent and **not bit-identical**: the chunked rule groups
+its sums over a chunk of 64 positions and the recurrent one accumulates a step at a time, so the
+associations differ. The reference therefore does **not** produce the same bytes with and without
+a cache — the path depends on `seq_len == 1` and on a precomputed state.
+
+Three consequences for M1, and they are decisions rather than accidents:
+
+- **M1's bit-identity claim belongs to the uncached path**, which is the one the contract matches
+  and the one the gate measures: 83 tensors, 40 discrete decisions, matching digests.
+- **The cached path is validated differently**: against the reference's *own* cached path — the
+  torch oracle, which has one — with the agreed numeric protocol, and with the **discrete
+  decisions still asserted exactly** (I3 does not relax because the path changed).
+- **I1 is not weakened.** "Identical input and identical shard count gives identical output
+  bytes" still holds: the same prompt in the same mode is deterministic. What I1 does not promise
+  — and what the reference itself does not deliver — is that two *different* numeric paths agree.
+
+The honest consequence is that a cache buys speed by taking a path the contract cannot check, so
+its gate is the oracle plus the discrete decisions, and the fact belongs in the code comments and
+in the tracker rather than in a footnote.
+
 ## What 4-bit costs this model, so far
 
 Measured on the tiny checkpoint (`tools/test_ordered_qwen36_quant.py`, which builds a real
