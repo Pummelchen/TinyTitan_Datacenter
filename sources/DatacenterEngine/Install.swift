@@ -337,6 +337,38 @@ public struct InstallFile: WeightSource {
                     // size, so the vector loop is bounded by what is actually stored.
                     let inGroup = min(layout.group, layout.columns - index)
                     var offset = 0
+                    // Eight codes per load, but **only when the group is a multiple of eight**:
+                    // a wider block must not straddle two groups, because the scale and the zero
+                    // point change at the boundary. The four-wide loop below is the general case
+                    // and its arithmetic is the same one multiply per element.
+                    let scaleGroup = SIMD4<Float>(repeating: scale)
+                    if layout.group % 8 == 0 {
+                        while offset + 8 <= inGroup {
+                            let word = rowCodes.loadUnaligned(fromByteOffset: (index + offset) / 2, as: UInt32.self)
+                            let low = SIMD4<Float>(
+                                Float(signed(Int(word & 0x0F)) - zero),
+                                Float(signed(Int((word >> 4) & 0x0F)) - zero),
+                                Float(signed(Int((word >> 8) & 0x0F)) - zero),
+                                Float(signed(Int((word >> 12) & 0x0F)) - zero)
+                            ) * scaleGroup
+                            let high = SIMD4<Float>(
+                                Float(signed(Int((word >> 16) & 0x0F)) - zero),
+                                Float(signed(Int((word >> 20) & 0x0F)) - zero),
+                                Float(signed(Int((word >> 24) & 0x0F)) - zero),
+                                Float(signed(Int((word >> 28) & 0x0F)) - zero)
+                            ) * scaleGroup
+                            let base = rowValues + index + offset
+                            values[base + 0] = low[0]
+                            values[base + 1] = low[1]
+                            values[base + 2] = low[2]
+                            values[base + 3] = low[3]
+                            values[base + 4] = high[0]
+                            values[base + 5] = high[1]
+                            values[base + 6] = high[2]
+                            values[base + 7] = high[3]
+                            offset += 8
+                        }
+                    }
                     while offset + 4 <= inGroup {
                         // Two bytes carry four codes, low nibble first — the order is the format.
                         let pair = rowCodes.loadUnaligned(fromByteOffset: (index + offset) / 2, as: UInt16.self)

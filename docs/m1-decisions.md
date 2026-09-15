@@ -58,17 +58,22 @@ because it fuses.
 The win comes from elsewhere: the scale and zero point are per **group** (sixty-four values), and
 the scalar loop reloaded both for every element.
 
-| | scalar | vector |
-| --- | --- | --- |
-| unpack rate | 648.3 M values/s | **1038.3 M values/s — 1.60×** |
-| one 35 B token (3.45 G values) | 5.3 s | **3.3 s** |
+| | scalar | four-wide | eight-wide |
+| --- | --- | --- | --- |
+| unpack rate | 648.3 M values/s | 1038.3 M values/s (1.60×) | **1185.5 M values/s — 1.83×** |
+| one 35 B token (3.45 G values) | 5.3 s | 3.3 s | **2.9 s** |
+
+Eight codes per load is worth a further 14 %, and it is guarded: a wider block must not straddle
+two groups, because the scale and the zero point change at the boundary, so the wide path runs only
+when the group is a multiple of eight and the four-wide loop remains the general case.
 
 Both are bit-identical on a grid of sixty shapes — `columns` not a multiple of four, the padded
 tail, a group of one, a single row — and on the end-to-end golden tests.
 
-**Two notes for whoever comes next.** The remaining factor is nibble extraction: four values per
-iteration is one 128-bit register, so widening to eight nibbles at a time with integer lanes is the
-obvious next step and is **not measured here**. And the grid above cost an hour to a Swift footgun
+**Two notes for whoever comes next.** The eight-wide path above is the nibble extraction, measured
+and adopted. What is left in Swift is thinner: the widest sensible FP lane here is 128 bits, and
+Swift offers no cheap widening from integer lanes, so the next real factor is **Metal** rather than
+more of this. And the grid above cost an hour to a Swift footgun
 worth writing down: **Swift's `%` keeps the sign of the dividend**, so `(-5) % 4` is `-1` and
 `columns + that` can be *smaller* than `columns` — the test compared the two implementations on an
 impossible layout and very nearly sent me hunting a bug in the wrong function.
