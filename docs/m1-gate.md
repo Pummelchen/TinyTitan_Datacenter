@@ -149,6 +149,39 @@ stacks instead of one expert multiplied that by thirty-two — **~55 s**, which 
 result.** No real-model run has happened since those fixes, and this section exists so that the
 stale number and the prediction cannot be confused for one another.
 
+## Covered already — checked before proposing work
+
+An audit aimed at the two largest engine surfaces nobody in this session had personally probed returned
+"already covered, and specifically", which is worth recording so the next round does not propose the
+same probing again.
+
+**The Gated DeltaNet recurrence**, where `D8` makes the chunked rule authoritative and the cache a
+second numeric path — the exact shape that diverges silently:
+
+| test | what it pins |
+| --- | --- |
+| `testSingleChunkMatchesTheContract` | one chunk, against the contract |
+| `testMultipleChunksMatchTheContract` | the chunked rule itself |
+| `testTheDecodeStepMatchesTheSequencePathOnTheLongCase` | the **cache** against the sequence path |
+| `testTheDecodeStepMatchesTheSequencePathWithAsymmetricHeads` | the same, where head widths differ |
+| `testTheConvIsCausalAndLeftPadded` | the convolution's causality and padding |
+| `testSoftplusUsesTheThreshold` | the gating nonlinearity's threshold |
+| `testTriangularSolveMatchesForwardSubstitution` | the solve, against an independent formulation |
+
+**The cache path**, including the property this audit was going to add before finding it present:
+
+| test | what it pins |
+| --- | --- |
+| `testCachedGenerationProducesTheSameTokensAsUncached` | prefill plus decode against one long sequence |
+| `testCachedAttentionIsBitIdenticalToTheSequenceAttention` | bit identity, not tolerance |
+| `testTheCachedPathChoosesTheSameExperts` | the discrete decision through the cache (I3) |
+| `testTheReplayLandsOnThePromptsLastPosition` | the position the cache resumes at |
+| `testASteppedPositionIsCheaperThanTheWholeSequence` | that a step reads less than the sequence |
+
+**Configuration provenance**, which independently confirms that `DC-093`'s claim was false:
+`testTheConfigurationComesFromTheCheckpointNotFromDefaults`, `testTheRopeTablesArePartial` and
+`testTheFixtureExercisesBothLayerKinds` all exist and pass.
+
 ### Not measured
 
 ### The spec carries the checkpoint's geometry, field by field
