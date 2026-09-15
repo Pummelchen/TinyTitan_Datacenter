@@ -18,6 +18,7 @@ runs the fixtures instead. Exits non-zero on any difference.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -48,10 +49,40 @@ def main(argv: list[str] | None = None) -> int:
         print(built.stdout + built.stderr, file=sys.stderr)
         return 2
 
-    print("[2/4] running the contract in Python")
-    contract = run(
-        [
-            sys.executable if Path(sys.executable).name.startswith("python") else "python3",
+    binary = ROOT / ".build" / args.configuration / "datacenter-trace"
+
+    # The family decides which contract runs, and the checkpoint decides the family. The
+    # `qwen3_5` path also needs the engine's IR spec, because that is where the tensor names
+    # live: the Python side reads the spec rather than carrying a second copy of the
+    # importer's mapping (L2).
+    config_path = args.snapshot / "config.json"
+    model_type = json.loads(config_path.read_text()).get("model_type", "qwen3")
+    python = sys.executable if Path(sys.executable).name.startswith("python") else "python3"
+    print(f"[2/4] running the contract in Python ({model_type})")
+    if model_type == "qwen3_5":
+        spec_path = args.work / "spec.json"
+        spec = run([str(binary), "--emit-spec", str(spec_path), str(args.snapshot)])
+        if spec.returncode != 0:
+            print(spec.stdout + spec.stderr, file=sys.stderr)
+            return 2
+        print("      " + spec.stdout.strip())
+        contract_command = [
+            python,
+            str(ROOT / "tools" / "ordered_qwen35_trace.py"),
+            str(args.snapshot),
+            str(contract_trace),
+            "--spec",
+            str(spec_path),
+            "--tokens",
+            args.tokens,
+            "--model",
+            args.model,
+            "--revision",
+            args.revision,
+        ]
+    else:
+        contract_command = [
+            python,
             str(ROOT / "tools" / "ordered_reference.py"),
             str(args.snapshot),
             str(contract_trace),
@@ -62,14 +93,13 @@ def main(argv: list[str] | None = None) -> int:
             "--revision",
             args.revision,
         ]
-    )
+    contract = run(contract_command)
     if contract.returncode != 0:
         print(contract.stdout + contract.stderr, file=sys.stderr)
         return 2
     print("      " + contract.stdout.strip())
 
     print("[3/4] running the forward in the engine")
-    binary = ROOT / ".build" / args.configuration / "datacenter-trace"
     engine = run(
         [
             str(binary),

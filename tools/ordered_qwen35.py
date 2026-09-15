@@ -298,3 +298,157 @@ def text_model_forward(weights: dict, config, tokens, capture: dict | None = Non
     if capture is not None:
         capture["logits"] = logits
     return logits
+
+
+# --------------------------------------------------------------------------------------
+# Streaming: the same forward, with each layer's weights fetched and released in turn.
+# --------------------------------------------------------------------------------------
+
+
+class SpecConfig:
+    """The IR spec's configuration, in the shape these functions expect.
+
+    The spec carries everything the contract needs, which is the point of L1: the Python
+    side reads the *engine's* spec and stays ignorant of every tensor name, so the importer
+    remains the only place where names live (L2).
+    """
+
+    def __init__(self, config: dict):
+        self.hidden_size = config["hiddenSize"]
+        self.num_hidden_layers = config["numLayers"]
+        self.num_attention_heads = config["numAttentionHeads"]
+        self.num_key_value_heads = config["numKeyValueHeads"]
+        self.head_dim = config["headDim"]
+        self.intermediate_size = config["intermediateSize"]
+        self.vocab_size = config["vocabSize"]
+        self.rms_norm_eps = config["rmsNormEps"]
+        self.hidden_act = "silu"
+        self.tie_word_embeddings = config["tieWordEmbeddings"]
+        self.attn_output_gate = config["attnOutputGate"]
+        interval = config.get("fullAttentionInterval")
+        self.layer_types = [
+            "full_attention" if interval and index % interval == interval - 1 else "linear_attention"
+            for index in range(self.num_hidden_layers)
+        ]
+        value_heads = config.get("linearValueHeads")
+        self.linear_num_value_heads = value_heads
+        # The IR stores the totals; the per-head width follows from them, as in the engine.
+        self.linear_num_key_heads = value_heads
+        key_dim = config.get("linearKeyDim")
+        self.linear_key_head_dim = key_dim // value_heads if key_dim and value_heads else None
+        self.linear_value_head_dim = config.get("linearValueHeadDim")
+        self.linear_conv_kernel_dim = config.get("linearConvKernelDim")
+        self.rope_parameters = {
+            "rope_theta": config.get("ropeTheta", 10_000.0),
+            "partial_rotary_factor": config.get("partialRotaryFactor", 1.0) or 1.0,
+            "rope_type": "default",
+        }
+
+
+def roles_by_block(spec: dict) -> dict:
+    """`block -> role -> tensor name`, straight out of the spec."""
+    blocks: dict = {}
+    for tensor in spec["tensors"]:
+        blocks.setdefault(tensor["block"], {})[tensor["role"]] = tensor["name"]
+    return blocks
+
+
+_LAYER_ROLES = {
+    "input_layernorm": "norm.attn",
+    "post_attention_layernorm": "norm.mlp",
+}
+
+
+def layer_weights(names: dict, source, materialise) -> dict:
+    """Assemble one layer's role-keyed weights through the source.
+
+    `materialise` maps a role to the key the contract's functions use, so the layer
+    dictionaries are built once here instead of in every caller.
+    """
+    weights = {
+        "input_layernorm": materialise(names["norm.attn"]),
+        "post_attention_layernorm": materialise(names["norm.mlp"]),
+        "mlp": {
+            "gate_proj": materialise(names["mlp.gate"]),
+            "up_proj": materialise(names["mlp.up"]),
+            "down_proj": materialise(names["mlp.down"]),
+        },
+    }
+    if "attn.q" in names:
+        weights["self_attn"] = {
+            "q_proj": materialise(names["attn.q"]),
+            "k_proj": materialise(names["attn.k"]),
+            "v_proj": materialise(names["attn.v"]),
+            "o_proj": materialise(names["attn.o"]),
+            "q_norm": materialise(names["attn.q_norm"]),
+            "k_norm": materialise(names["attn.k_norm"]),
+        }
+    else:
+        weights["linear_attn"] = {
+            "in_proj_qkv": materialise(names["linear.in_qkv"]),
+            "in_proj_z": materialise(names["linear.in_z"]),
+            "in_proj_b": materialise(names["linear.in_b"]),
+            "in_proj_a": materialise(names["linear.in_a"]),
+            "conv1d": materialise(names["linear.conv"]),
+            "A_log": materialise(names["linear.a_log"]),
+            "dt_bias": materialise(names["linear.dt_bias"]),
+            "norm": materialise(names["linear.norm"]),
+            "out_proj": materialise(names["linear.out"]),
+        }
+    return weights
+
+
+def streamed_text_forward(spec: dict, source, tokens, capture: dict | None = None, head_block: int = 8192) -> np.ndarray:
+    """The text tower, one layer resident at a time.
+
+    `source.tensor(name)` returns a whole tensor in fp32 and `source.rows(name, start, end)`
+    a row range — the same two operations the Swift engine's reader offers, so the two
+    implementations stream identically rather than one of them being special.
+    """
+    config = SpecConfig(spec["config"])
+    names = roles_by_block(spec)
+    tokens = list(tokens)
+
+    def materialise(name):
+        return source.tensor(name)
+
+    embedding = names["embed"].get("token.embedding")
+    if embedding is None:
+        raise ValueError("the spec has no token.embedding tensor")
+    hidden = f32(source.rows(embedding, tokens[0], tokens[0] + 1))
+    if len(tokens) > 1:
+        hidden = np.concatenate([source.rows(embedding, token, token + 1) for token in tokens], axis=0)
+        hidden = f32(hidden)
+    if capture is not None:
+        capture["embed.out"] = hidden
+
+    positions = np.arange(len(tokens), dtype=np.float64)
+    cos, sin = rope_tables(config, positions)
+    mask = np.triu(np.full((len(tokens), len(tokens)), -np.inf, dtype=np.float32), k=1)
+
+    for index in range(config.num_hidden_layers):
+        block = f"layer.{index:02d}"
+        if capture is not None:
+            capture[f"{block}.hidden_in"] = hidden
+        weights = layer_weights(names[block], source, materialise)
+        hidden = decoder_layer(hidden, weights, config, index, cos, sin, mask)
+        if capture is not None:
+            capture[f"{block}.hidden_out"] = hidden
+        del weights  # released before the next layer is read, as the engine does
+
+    final_name = names["final"]["norm.final"]
+    hidden = rms_norm(hidden, source.tensor(final_name), config.rms_norm_eps)
+    if capture is not None:
+        capture["final_norm.out"] = hidden
+
+    head_name = names.get("head", {}).get("head.lm", embedding)
+    logits = np.zeros((len(tokens), config.vocab_size), dtype=np.float32)
+    start = 0
+    while start < config.vocab_size:
+        end = min(start + head_block, config.vocab_size)
+        block = f32(source.rows(head_name, start, end))
+        logits[:, start:end] = ordered_matmul(hidden, block)
+        start = end
+    if capture is not None:
+        capture["logits"] = logits
+    return logits

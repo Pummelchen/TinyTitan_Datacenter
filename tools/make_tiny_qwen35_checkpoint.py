@@ -156,6 +156,20 @@ def main() -> int:
     }
     (FIXTURE / "golden.json").write_text(json.dumps(expected, indent=1) + "\n")
 
+    # The spec, emitted by the engine's own importer: the Python side reads *this* rather
+    # than carrying a second copy of the mapping (L2). Requires the release binary to have
+    # been built, which the end-to-end gate builds anyway.
+    binary = ROOT / ".build" / "release" / "datacenter-trace"
+    if binary.exists():
+        import subprocess
+
+        result = subprocess.run(
+            [str(binary), "--emit-spec", str(FIXTURE / "spec.json"), str(FIXTURE)], capture_output=True, text=True
+        )
+        print("spec:", (result.stdout or result.stderr).strip())
+    else:
+        print("spec: skipped, build first with `swift build -c release`")
+
     size = (FIXTURE / "model.safetensors").stat().st_size
     print(f"wrote {FIXTURE}: checkpoint {size} bytes, {len(captured)} captured tensors")
     return 0

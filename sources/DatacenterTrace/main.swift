@@ -15,6 +15,12 @@ func fail(_ message: String) -> Never {
 }
 
 var arguments = Array(CommandLine.arguments.dropFirst())
+var emitSpecPath: String?
+if let index = arguments.firstIndex(of: "--emit-spec") {
+    guard index + 1 < arguments.count else { fail("--emit-spec needs a path") }
+    emitSpecPath = arguments[index + 1]
+    arguments.removeSubrange(index...(index + 1))
+}
 var modelID = ""
 var revision = ""
 if let index = arguments.firstIndex(of: "--model") {
@@ -27,6 +33,26 @@ if let index = arguments.firstIndex(of: "--revision") {
     revision = arguments[index + 1]
     arguments.removeSubrange(index...(index + 1))
 }
+// `--emit-spec <path> <snapshot>` writes the IR spec and stops: the spec is data (L1),
+// and handing it to another implementation is how that implementation can stay ignorant of
+// every tensor name.
+if let specPath = emitSpecPath {
+    guard !arguments.isEmpty else { fail("--emit-spec needs a snapshot") }
+    let forward: any ForwardPass
+    do {
+        forward = try ModelLoader.open(snapshot: URL(fileURLWithPath: arguments[0]))
+    } catch {
+        fail("could not load \(arguments[0]): \(error)")
+    }
+    do {
+        try forward.spec.encodeJSON().write(to: URL(fileURLWithPath: specPath))
+    } catch {
+        fail("could not write the spec: \(error)")
+    }
+    print("wrote \(specPath): family \(forward.spec.family), \(forward.spec.tensors.count) tensors")
+    exit(0)
+}
+
 guard arguments.count == 3 else {
     fail("usage: datacenter-trace <snapshot> <out-dir> <token,ids> [--model ID] [--revision SHA]")
 }

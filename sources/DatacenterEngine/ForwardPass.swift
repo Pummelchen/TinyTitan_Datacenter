@@ -1,3 +1,4 @@
+import DatacenterIR
 import Foundation
 
 /// A model that can be run for a token sequence and asked to generate.
@@ -6,6 +7,10 @@ import Foundation
 /// guess about the future. Everything above it — the trace writer, the differ, the
 /// command-line tools — works against this and never against a family.
 public protocol ForwardPass {
+    /// The model's IR spec — roles, shapes, policies — so a tool can consume a model
+    /// without knowing its family, and so the *importer* stays the only place that knows
+    /// tensor names.
+    var spec: IRSpec { get }
     /// The size of the vocabulary, so a caller can slice the logits without knowing the
     /// model.
     var vocabularySize: Int { get }

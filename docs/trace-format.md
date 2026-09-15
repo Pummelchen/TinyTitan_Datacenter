@@ -127,6 +127,49 @@ Two details worth keeping in mind when reading a trace:
   skipped the comparison without one of them would be a gate that reports success without
   looking.
 
+## The engine and the contract, on the real model
+
+The two halves of M0b are now met on the pinned **`Qwen/Qwen3.5-2B`** at revision
+`15852e8c…`:
+
+| | |
+| --- | --- |
+| Engine vs **the contract** | **bit-identical**: 11,223,040 bytes of `data.bin`, 51 of 51 tensors, digest `a1503f64…`, differ exit 0 |
+| Engine vs **the oracle** (torch) | worst relative difference 4.1e-6 after 24 layers, **all 8 discrete decisions matching** |
+
+Neither implementation can hold the model: 2 B parameters are 8 GB in fp32 and the node has
+about 4.5 GB usable. So both stream — the engine reads a layer's tensors, uses them and
+releases them; the Python contract does the same; both read the embedding a row at a time and
+the tied head in blocks of vocabulary rows. The symmetry is the point: the bit-exactness
+target has to run where the engine runs, or it is not a target.
+
+**The tensor names travel as data.** `datacenter-trace --emit-spec` writes the engine's own
+`IRSpec`, and the Python side consumes it (`tools/ordered_qwen35_trace.py --spec …`) rather
+than carrying a second copy of the importer's table. That is L2 holding across languages: the
+importer is still the only place that knows a tensor name, and the spec file L1 promised is
+now an artifact something else actually reads.
+
+`tools/check_engine_contract.py` runs the whole claim for either family — it reads the
+checkpoint's `model_type` and picks the contract, emitting the spec first when the family is
+`qwen3_5`:
+
+```
+$ .venv/bin/python tools/check_engine_contract.py --snapshot <snapshot> --tokens 1,2,3,4,5,6,7,8
+[2/4] running the contract in Python (qwen3_5)
+      wrote …/spec.json: family qwen3_5, 320 tensors
+      wrote …/contract: 51 tensors, digest a1503f648d0f7c91…
+[3/4] running the forward in the engine
+      wrote …/engine: 51 tensors, digest a1503f648d0f7c91…, 18.2 s
+[4/4] comparing
+      IDENTICAL — 51 tensor(s) … (matching digests)
+      data.bin identical: 11223040 bytes
+OK — the engine reproduces the contract exactly
+```
+
+The two Python paths are checked against each other too, on the committed tiny checkpoint, so
+the streaming path is covered by CI rather than only by a run on a machine that happens to
+have a 5 GB file (`tools/test_ordered_qwen35_stream.py`).
+
 ## The other comparison: the engine against the semantic oracle
 
 `trace_diff.py` answers "are these two traces identical". The engine against the *reference
