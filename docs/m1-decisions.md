@@ -497,3 +497,41 @@ The same file also carried **two** whole-entry digest checks on that path, one b
 one after. Every attempt changed exactly one, so a whole-entry check always survived and rejected
 any tamper anywhere in the entry — which made a tamper test report the *untouched* expert as bad and
 sent me chasing offsets that were correct all along.
+
+## D12 — the slot bank's size, which the brief leaves open
+
+Found by auditing `DC-091`'s own fix one round after making it, and it is a good argument for the audit
+step existing.
+
+`Qwen3_5Forward.expertSlotsPerLayer = 16`, and the brief asks for "per-layer LRU slot banks" without
+saying how large. Making those banks persist across tokens — which is what the hit rate needs — turns a
+**per-layer** budget into a **total** one, and the total does not fit:
+
+| quantity | value |
+| --- | --- |
+| one expert, gate+up | 12.6 MB |
+| one expert, down | 6.3 MB |
+| **one expert** | **18.9 MB** of fp32 |
+| 16 slots, one layer | **302 MB** |
+| 16 slots × 48 layers | **14.5 GB** |
+| usable RAM per node | **~4.5 GB** |
+
+So the persistent-bank change was reverted rather than shipped: on this node it would have swapped
+during the very real-model run it was meant to improve, and the fixture cannot see it because the
+fixture's experts are kilobytes. `97` Swift tests are green again, at the pre-change count.
+
+**The correct shape of the fix is a total budget, not a per-layer count.** A 1.5 GB cache across 48
+layers allows **1.66 slots per layer** — a bank of one or two, not sixteen — and the split between
+"more layers" and "more slots per layer" is a decision with a measurable trade: slots buy cross-token
+hits, layers buy nothing at all if the bank is dropped. With top-k of 8 against 128 experts, a
+one-slot-per-layer bank will still hit rarely, so the honest options are:
+
+1. **size the bank from a total budget** (1–2 slots per layer), accept a low hit rate, and rely on the
+   measured uncached read bandwidth — which is the bottleneck the brief names anyway;
+2. **weight the budget towards the layers where routing concentrates**, since the router is not
+   uniform and the first layers were where the denormal scales concentrated too;
+3. **keep banks only for a window of layers** (the per-layer LRU evicts whole layers), which bounds
+   memory but only hits when consecutive tokens reuse a layer's expert, which they do not.
+
+This is open, and it is the operator's call because it trades RAM against hit rate on a node whose RAM
+limit has already caused two panics.
