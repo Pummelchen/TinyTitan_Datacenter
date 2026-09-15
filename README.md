@@ -5,9 +5,8 @@
 [![Last Commit](https://img.shields.io/github/last-commit/Pummelchen/TinyTitan_Datacenter?style=flat-square&logo=git&label=Last%20Commit&color=2ea44f)](https://github.com/Pummelchen/TinyTitan_Datacenter/commits/main)
 [![Contact](https://img.shields.io/badge/Contact-0xa0b1%40gmail.com-blue?style=flat-square&logo=gmail&logoColor=white)](mailto:0xa0b1@gmail.com)
 
-# Shard
 
-A distributed inference engine for large sparse-MoE language models on Apple Silicon clusters.
+A distributed inference engine for large MoE language models on Apple Silicon clusters.
 
 **Status: design phase. Nothing here runs yet.**
 
@@ -17,12 +16,12 @@ Runs models far larger than your total RAM across a cluster of Macs, streaming e
 weights from SSD, optimized for a single user rather than for serving throughput.
 
 Development target is 4x Mac mini M2 (8 GB each) over Thunderbolt. The engine is
-parameterized for 2/4/8/16 nodes.
+scaled to allow an unlimited count of Mac nodes (same model type).
 
 ## Why
 
-Single-node SSD streaming already works (see NVMAI/TinyTitan) and gets ~1–3 tok/s on
-a 100B-class MoE. The obvious next step — splitting layers across machines — doesn't
+Single-node SSD streaming already works (see NVMAI/TinyTitan) and gets ~4-6 tok/s on
+a 180B-class MoE. The obvious next step — splitting layers across machines — doesn't
 help: with one sequence in flight only one node is ever busy, so bytes-read-per-token
 is unchanged.
 
@@ -67,11 +66,8 @@ check still looks green.
 
 ## Target models
 
-| Model | Total / active | Notes |
-|---|---|---|
-| Qwen3-30B-A3B | 30B / 3B | Validation model — small, conventional, fast to iterate |
-| DeepSeek-V4-Flash | 284B / 13B | 43 layers, 256 experts (top-6 + shared), CSA+HCA, mHC, MIT |
-| Qwen3.8-Flash-Next | 125B + 51B n-gram / 6B | 48 layers, 512 experts (top-10 + shared), GDN + QSA, MTP head |
+DeepSeek-V4.1 Editions
+Qwen 3.8/4.0 Editions
 
 Both frontier families are converging on the same shape — fine-grained MoE, shared
 expert, compressed or sparse hybrid attention, constant-size recurrent state, MTP
@@ -83,12 +79,12 @@ importer changes only.
 
 - **M0** — Single node, small dense model, bf16. Gate: bit-matches reference golden
   traces. Ships the trace-capture and diff harness.
-- **M1** — Qwen3-30B-A3B, single node, 4-bit, SSD-streamed. Gate: correct output,
+- **M1** — Qwen3.6-35B-A3B, single node, 4-bit, SSD-streamed. Gate: correct output,
   recorded tok/s baseline.
 - **M2** — 2 nodes, expert-parallel. **Gate: bit-identical to M1.** This is the real
   gate for the project.
 - **M3** — 4 nodes. Gate: ≥3x the M1 tok/s.
-- **M4** — DeepSeek-V4-Flash. Gate: matches reference at 128K context.
+- **M4** — DeepSeek-V4.1-Flash. Gate: matches reference at 128K context.
 - **M5** — Qwen3.8-Flash-Next. Gate: same.
 
 ## Non-goals
