@@ -509,21 +509,30 @@ saying how large. Making those banks persist across tokens — which is what the
 
 | quantity | value |
 | --- | --- |
-| one expert, gate+up | 12.6 MB |
-| one expert, down | 6.3 MB |
-| **one expert** | **18.9 MB** of fp32 |
-| 16 slots, one layer | **302 MB** |
-| 16 slots × 48 layers | **14.5 GB** |
+| one expert, gate+up | 8.39 MB |
+| one expert, down | 4.19 MB |
+| **one expert** | **12.58 MB** of fp32 |
+| 16 slots, one layer | **201 MB** |
+| 16 slots × 40 layers | **8.05 GB** |
 | usable RAM per node | **~4.5 GB** |
+
+The geometry is the checkpoint's, not a recollection: `hidden_size` 2048, `moe_intermediate_size`
+512, `num_hidden_layers` 40 with **every** layer a mixture, `num_experts` 256, `num_experts_per_tok`
+8. Source: [`Qwen/Qwen3.6-35B-A3B` `config.json`](https://huggingface.co/Qwen/Qwen3.6-35B-A3B/raw/main/config.json)
+(`transformers_version` 4.57.1) — and the same figures were already in this repository's
+`docs/reference-qwen36-35b-a3b.md`. The first version of this table used numbers from memory
+(`768`, `48`, `128`) that are **all wrong**, which is why the rule about not inventing numbers exists
+and why the arithmetic here is now cited rather than remembered. The conclusion is unchanged and in
+fact sharper: 8.05 GB still does not fit in 4.5 GB.
 
 So the persistent-bank change was reverted rather than shipped: on this node it would have swapped
 during the very real-model run it was meant to improve, and the fixture cannot see it because the
 fixture's experts are kilobytes. `97` Swift tests are green again, at the pre-change count.
 
-**The correct shape of the fix is a total budget, not a per-layer count.** A 1.5 GB cache across 48
-layers allows **1.66 slots per layer** — a bank of one or two, not sixteen — and the split between
+**The correct shape of the fix is a total budget, not a per-layer count.** A 1.5 GB cache across 40
+layers allows **2.98 slots per layer** — a bank of one or two, not sixteen — and the split between
 "more layers" and "more slots per layer" is a decision with a measurable trade: slots buy cross-token
-hits, layers buy nothing at all if the bank is dropped. With top-k of 8 against 128 experts, a
+hits, layers buy nothing at all if the bank is dropped. With top-k of 8 against 256 experts, a
 one-slot-per-layer bank will still hit rarely, so the honest options are:
 
 1. **size the bank from a total budget** (1–2 slots per layer), accept a low hit rate, and rely on the
