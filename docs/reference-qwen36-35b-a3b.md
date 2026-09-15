@@ -239,6 +239,26 @@ the offset convention `qwen3_5` uses and `qwen3` does not. A kernel written from
 convention would be wrong here, and the decoder layer is otherwise identical: residual,
 mixer, residual, `post_attention_layernorm`, mixture.
 
+## The engine runs this model
+
+`sources/DatacenterEngine/Qwen3_5Forward.swift` handles both `qwen3_5` families, because the
+reference branches *inside* its decoder layer between `Qwen3_5MLP` and `Qwen3_5SparseMoeBlock`
+and everything else in the layer was proven identical by `tools/compare_reference_modules.py`.
+A block carrying a `.routerLogits` role is a mixture; one without is dense. The router's
+decisions are captured as `TraceWriter.Discrete` rather than as a tensor, and the trace's
+digest covers them.
+
+`tools/make_tiny_qwen36_checkpoint.py` writes a 236 KB checkpoint and its golden output, and
+`Qwen3_5MoEForwardTests` asserts the engine against it bit for bit. What the fixture is *for*:
+it carries this family's asymmetries — two key heads to four value heads, an untied head, a
+shared expert — so the paths the 2 B model never took are the paths it exercises.
+
+**What does not yet work on the real model**: the forward materialises a whole layer's experts
+at once, which is 3.2 GB in fp32 and 1.6 GB even in bf16, against about 4.5 GB of usable memory
+per node. The engine therefore runs the tiny checkpoint and not the 67 GB one, and closing that
+gap — streaming the *chosen* experts — is `DC-032`. The `gdn_asymmetric` and `moe` vector groups
+exist for the same reason at the kernel level.
+
 ## Still to extract — do not guess these
 
 - the `attention_mask` path: what the reference does at padded positions in a batch, which

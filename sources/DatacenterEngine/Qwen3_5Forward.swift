@@ -31,6 +31,7 @@ public struct Qwen3_5Forward: ForwardPass {
         case missingTensor(block: String, role: TensorRole)
         case noEmbedding
         case emptyPrompt
+        case notAMixture
 
         public var description: String {
             switch self {
@@ -38,6 +39,7 @@ public struct Qwen3_5Forward: ForwardPass {
                 return "no tensor with role \(role.rawValue) in block \(block)"
             case .noEmbedding: return "the checkpoint has no embedding tensor"
             case .emptyPrompt: return "the prompt must contain at least one token"
+            case .notAMixture: return "the configuration describes no mixture of experts"
             }
         }
     }
@@ -61,14 +63,25 @@ public struct Qwen3_5Forward: ForwardPass {
         }
 
         let configData = try Data(contentsOf: snapshot.appendingPathComponent("config.json"))
-        let hfConfig = try JSONDecoder().decode(Qwen3_5Importer.HuggingFaceConfig.self, from: configData)
-        let config = hfConfig.modelConfig()
         let inventory = file.names.map { (name: $0, shape: file.tensors[$0]!.shape) }
-        let spec = try Qwen3_5Importer.makeSpec(
-            source: Provenance(repo: snapshot.lastPathComponent, revision: "local"),
-            config: config,
-            inventory: inventory
-        )
+        let source = Provenance(repo: snapshot.lastPathComponent, revision: "local")
+
+        // The family's **importer** is chosen by the checkpoint's own `model_type`, which is
+        // what the loader above already does. Two importers share one forward pass because the
+        // arithmetic they describe is shared; they differ in the names they map.
+        let declared = (try? JSONSerialization.jsonObject(with: configData)) as? [String: Any]
+        let modelType = (declared?["model_type"] as? String) ?? "qwen3_5"
+        let config: ModelConfig
+        let spec: IRSpec
+        if modelType == Qwen3_5MoEImporter.family {
+            let hfConfig = try JSONDecoder().decode(Qwen3_5MoEImporter.HuggingFaceConfig.self, from: configData)
+            config = hfConfig.modelConfig()
+            spec = try Qwen3_5MoEImporter.makeSpec(source: source, config: config, inventory: inventory)
+        } else {
+            let hfConfig = try JSONDecoder().decode(Qwen3_5Importer.HuggingFaceConfig.self, from: configData)
+            config = hfConfig.modelConfig()
+            spec = try Qwen3_5Importer.makeSpec(source: source, config: config, inventory: inventory)
+        }
         try self.init(source: file, config: config, spec: spec)
     }
 
@@ -102,24 +115,65 @@ public struct Qwen3_5Forward: ForwardPass {
         self.headName = namesByBlock["head"]?[.outputHead] ?? embedding
     }
 
+    /// The feed-forward half of a decoder layer. The reference branches inside its decoder
+    /// layer between `Qwen3_5MLP` and `Qwen3_5SparseMoeBlock`, and so does this.
+    private enum FeedForward {
+        case dense(gate: [Float], up: [Float], down: [Float])
+        case mixture(MixtureWeights)
+    }
+
+    /// The mixture's geometry, from the IR.
+    public func mixtureShape() throws -> MixtureShape {
+        guard let experts = config.numExperts, let topK = config.numExpertsPerToken,
+              let intermediate = config.moeIntermediateSize
+        else { throw Error.notAMixture }
+        return MixtureShape(
+            hiddenSize: config.hiddenSize, experts: experts, topK: topK, intermediate: intermediate,
+            sharedIntermediate: config.sharedExpertIntermediateSize ?? intermediate
+        )
+    }
+
     /// The weights a decoder layer needs, loaded and then released.
-    private func loadLayer(_ index: Int) throws -> (weights: [TensorRole: [Float]], gdn: GatedDeltaNetWeights?) {
+    private func loadLayer(_ index: Int) throws -> (weights: [TensorRole: [Float]], gdn: GatedDeltaNetWeights?, feedForward: FeedForward) {
         let block = String(format: "layer.%02d", index)
         guard let byRole = namesByBlock[block] else { throw Error.missingTensor(block: block, role: .attnNorm) }
         func load(_ role: TensorRole) throws -> [Float] {
             guard let name = byRole[role] else { throw Error.missingTensor(block: block, role: role) }
             return try source.tensor(named: name)
         }
-        var weights: [TensorRole: [Float]] = [
-            .attnNorm: try load(.attnNorm), .mlpNorm: try load(.mlpNorm),
-            .mlpGate: try load(.mlpGate), .mlpUp: try load(.mlpUp), .mlpDown: try load(.mlpDown),
-        ]
+        var weights: [TensorRole: [Float]] = [.attnNorm: try load(.attnNorm), .mlpNorm: try load(.mlpNorm)]
+
+        // Which feed-forward this layer has is a fact about its roles, not about its family:
+        // a block carrying a router is a mixture.
+        let feedForward: FeedForward
+        if byRole[.routerLogits] != nil {
+            feedForward = .mixture(
+                MixtureWeights(
+                    router: try load(.routerLogits),
+                    gateUp: try load(.expertGateUpStack),
+                    down: try load(.expertDownStack),
+                    sharedGate: try load(.sharedExpertGate),
+                    sharedUp: try load(.sharedExpertUp),
+                    sharedDown: try load(.sharedExpertDown),
+                    sharedScalarGate: try load(.sharedExpertGateScalar)
+                )
+            )
+        } else {
+            let gate = try load(.mlpGate)
+            let up = try load(.mlpUp)
+            let down = try load(.mlpDown)
+            weights[.mlpGate] = gate
+            weights[.mlpUp] = up
+            weights[.mlpDown] = down
+            feedForward = .dense(gate: gate, up: up, down: down)
+        }
+
         let isFullAttention = byRole[.attnQ] != nil
         if isFullAttention {
             for role in [TensorRole.attnQ, .attnK, .attnV, .attnO, .attnQNorm, .attnKNorm] {
                 weights[role] = try load(role)
             }
-            return (weights: weights, gdn: nil)
+            return (weights: weights, gdn: nil, feedForward: feedForward)
         }
         var gdnWeights: [TensorRole: [Float]] = [:]
         for role in [TensorRole.linearInQKV, .linearInZ, .linearInA, .linearInB, .linearConv, .linearALog, .linearDTBias, .linearNorm, .linearOut] {
@@ -133,7 +187,7 @@ public struct Qwen3_5Forward: ForwardPass {
             dtBias: gdnWeights[.linearDTBias]!, norm: gdnWeights[.linearNorm]!,
             outProj: gdnWeights[.linearOut]!
         )
-        return (weights: weights, gdn: gdn)
+        return (weights: weights, gdn: gdn, feedForward: feedForward)
     }
 
     /// The Gated DeltaNet's geometry, assembled from the IR's configuration.
@@ -184,10 +238,15 @@ public struct Qwen3_5Forward: ForwardPass {
 
     /// The whole tower, capturing the same tensors the Python contract does.
     public func forward(tokens: [Int]) throws -> [TraceWriter.Tensor] {
+        try forwardWithDecisions(tokens: tokens).tensors
+    }
+
+    public func forwardWithDecisions(tokens: [Int]) throws -> ForwardResult {
         guard !tokens.isEmpty else { throw Error.emptyPrompt }
         let length = tokens.count
         let hiddenSize = config.hiddenSize
         var captured: [TraceWriter.Tensor] = []
+        var discrete: [TraceWriter.Discrete] = []
 
         var hidden = [Float](repeating: 0, count: length * hiddenSize)
         for (row, token) in tokens.enumerated() {
@@ -231,21 +290,39 @@ public struct Qwen3_5Forward: ForwardPass {
                 hidden, weight: layer.weights[.mlpNorm]!, rows: length, width: hiddenSize,
                 eps: Float(config.rmsNormEps)
             )
-            let gate = Ops.orderedMatmul(
-                x: postNormed, w: layer.weights[.mlpGate]!, rows: length, k: hiddenSize,
-                out: config.intermediateSize
-            )
-            let up = Ops.orderedMatmul(
-                x: postNormed, w: layer.weights[.mlpUp]!, rows: length, k: hiddenSize,
-                out: config.intermediateSize
-            )
-            var activated = [Float](repeating: 0, count: length * config.intermediateSize)
-            for position in 0..<activated.count { activated[position] = Ops.silu(gate[position]) * up[position] }
-            let down = Ops.orderedMatmul(
-                x: activated, w: layer.weights[.mlpDown]!, rows: length, k: config.intermediateSize,
-                out: hiddenSize
-            )
-            hidden = add(residual, down)
+            switch layer.feedForward {
+            case .dense(let gate, let up, let down):
+                let projectedGate = Ops.orderedMatmul(
+                    x: postNormed, w: gate, rows: length, k: hiddenSize, out: config.intermediateSize
+                )
+                let projectedUp = Ops.orderedMatmul(
+                    x: postNormed, w: up, rows: length, k: hiddenSize, out: config.intermediateSize
+                )
+                var activated = [Float](repeating: 0, count: length * config.intermediateSize)
+                for position in 0..<activated.count {
+                    activated[position] = Ops.silu(projectedGate[position]) * projectedUp[position]
+                }
+                let downProjected = Ops.orderedMatmul(
+                    x: activated, w: down, rows: length, k: config.intermediateSize, out: hiddenSize
+                )
+                hidden = add(residual, downProjected)
+
+            case .mixture(let weights):
+                let shape = try mixtureShape()
+                let (routed, indices, _) = MixtureOfExperts.block(
+                    hidden: postNormed, tokens: length, weights: weights, shape: shape
+                )
+                hidden = add(residual, routed)
+                // The router's decision, recorded as its own kind of thing rather than as a
+                // tensor: I3 asserts it apart from any tolerance, and the trace's digest
+                // covers it (I1).
+                discrete.append(
+                    TraceWriter.Discrete(
+                        name: "\(tag).router.topk", shape: [length, shape.topK],
+                        values: indices.flatMap { $0 }
+                    )
+                )
+            }
             captured.append(TraceWriter.Tensor(name: "\(tag).hidden_out", shape: [length, hiddenSize], values: hidden))
         }
 
@@ -273,7 +350,7 @@ public struct Qwen3_5Forward: ForwardPass {
         captured.append(
             TraceWriter.Tensor(name: "logits", shape: [length, config.vocabSize], values: logits)
         )
-        return captured
+        return ForwardResult(tensors: captured, discrete: discrete)
     }
 
     private func attention(

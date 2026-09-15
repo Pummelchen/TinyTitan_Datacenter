@@ -1,0 +1,447 @@
+{
+  "blocks" : [
+    {
+      "id" : "embed",
+      "kind" : "embedding"
+    },
+    {
+      "id" : "layer.00",
+      "index" : 0,
+      "kind" : "decoder"
+    },
+    {
+      "id" : "layer.01",
+      "index" : 1,
+      "kind" : "decoder"
+    },
+    {
+      "id" : "final",
+      "kind" : "final-norm"
+    },
+    {
+      "id" : "head",
+      "kind" : "output-head"
+    }
+  ],
+  "config" : {
+    "attnOutputGate" : true,
+    "fullAttentionInterval" : 2,
+    "headDim" : 8,
+    "hiddenSize" : 32,
+    "intermediateSize" : 16,
+    "linearConvKernelDim" : 4,
+    "linearKeyDim" : 16,
+    "linearKeyHeads" : 2,
+    "linearValueDim" : 32,
+    "linearValueHeadDim" : 8,
+    "linearValueHeads" : 4,
+    "moeIntermediateSize" : 16,
+    "numAttentionHeads" : 4,
+    "numExperts" : 8,
+    "numExpertsPerToken" : 2,
+    "numKeyValueHeads" : 2,
+    "numLayers" : 2,
+    "partialRotaryFactor" : 0.5,
+    "rmsNormEps" : 1e-06,
+    "ropeTheta" : 10000000,
+    "sharedExpertIntermediateSize" : 16,
+    "tieWordEmbeddings" : false,
+    "vocabSize" : 128
+  },
+  "family" : "qwen3_5_moe",
+  "irVersion" : 1,
+  "policy" : {
+    "quant" : {
+      "attn.k" : "bf16",
+      "attn.k_norm" : "bf16",
+      "attn.o" : "bf16",
+      "attn.q" : "bf16",
+      "attn.q_norm" : "bf16",
+      "attn.v" : "bf16",
+      "expert.shared.down" : "bf16",
+      "expert.shared.gate" : "bf16",
+      "expert.shared.scalar" : "bf16",
+      "expert.shared.up" : "bf16",
+      "expert.stack_down" : "bf16",
+      "expert.stack_gate_up" : "bf16",
+      "head.lm" : "bf16",
+      "linear.a_log" : "bf16",
+      "linear.conv" : "bf16",
+      "linear.dt_bias" : "bf16",
+      "linear.in_a" : "bf16",
+      "linear.in_b" : "bf16",
+      "linear.in_qkv" : "bf16",
+      "linear.in_z" : "bf16",
+      "linear.norm" : "bf16",
+      "linear.out" : "bf16",
+      "norm.attn" : "bf16",
+      "norm.final" : "bf16",
+      "norm.mlp" : "bf16",
+      "router.logits" : "bf16",
+      "token.embedding" : "bf16"
+    },
+    "shard" : {
+      "attn.k" : "replicate",
+      "attn.k_norm" : "replicate",
+      "attn.o" : "replicate",
+      "attn.q" : "replicate",
+      "attn.q_norm" : "replicate",
+      "attn.v" : "replicate",
+      "expert.shared.down" : "replicate",
+      "expert.shared.gate" : "replicate",
+      "expert.shared.scalar" : "replicate",
+      "expert.shared.up" : "replicate",
+      "expert.stack_down" : "replicate",
+      "expert.stack_gate_up" : "replicate",
+      "head.lm" : "replicate",
+      "linear.a_log" : "replicate",
+      "linear.conv" : "replicate",
+      "linear.dt_bias" : "replicate",
+      "linear.in_a" : "replicate",
+      "linear.in_b" : "replicate",
+      "linear.in_qkv" : "replicate",
+      "linear.in_z" : "replicate",
+      "linear.norm" : "replicate",
+      "linear.out" : "replicate",
+      "norm.attn" : "replicate",
+      "norm.final" : "replicate",
+      "norm.mlp" : "replicate",
+      "router.logits" : "replicate",
+      "token.embedding" : "replicate"
+    }
+  },
+  "source" : {
+    "files" : {
+
+    },
+    "passes" : [
+
+    ],
+    "policies" : [
+
+    ],
+    "repo" : "tiny-qwen36",
+    "revision" : "local"
+  },
+  "tensors" : [
+    {
+      "block" : "head",
+      "name" : "lm_head.weight",
+      "role" : "head.lm",
+      "shape" : [
+        128,
+        32
+      ]
+    },
+    {
+      "block" : "embed",
+      "name" : "model.language_model.embed_tokens.weight",
+      "role" : "token.embedding",
+      "shape" : [
+        128,
+        32
+      ]
+    },
+    {
+      "block" : "layer.00",
+      "name" : "model.language_model.layers.0.input_layernorm.weight",
+      "role" : "norm.attn",
+      "shape" : [
+        32
+      ]
+    },
+    {
+      "block" : "layer.00",
+      "name" : "model.language_model.layers.0.linear_attn.A_log",
+      "role" : "linear.a_log",
+      "shape" : [
+        4
+      ]
+    },
+    {
+      "block" : "layer.00",
+      "name" : "model.language_model.layers.0.linear_attn.conv1d.weight",
+      "role" : "linear.conv",
+      "shape" : [
+        64,
+        1,
+        4
+      ]
+    },
+    {
+      "block" : "layer.00",
+      "name" : "model.language_model.layers.0.linear_attn.dt_bias",
+      "role" : "linear.dt_bias",
+      "shape" : [
+        4
+      ]
+    },
+    {
+      "block" : "layer.00",
+      "name" : "model.language_model.layers.0.linear_attn.in_proj_a.weight",
+      "role" : "linear.in_a",
+      "shape" : [
+        4,
+        32
+      ]
+    },
+    {
+      "block" : "layer.00",
+      "name" : "model.language_model.layers.0.linear_attn.in_proj_b.weight",
+      "role" : "linear.in_b",
+      "shape" : [
+        4,
+        32
+      ]
+    },
+    {
+      "block" : "layer.00",
+      "name" : "model.language_model.layers.0.linear_attn.in_proj_qkv.weight",
+      "role" : "linear.in_qkv",
+      "shape" : [
+        64,
+        32
+      ]
+    },
+    {
+      "block" : "layer.00",
+      "name" : "model.language_model.layers.0.linear_attn.in_proj_z.weight",
+      "role" : "linear.in_z",
+      "shape" : [
+        32,
+        32
+      ]
+    },
+    {
+      "block" : "layer.00",
+      "name" : "model.language_model.layers.0.linear_attn.norm.weight",
+      "role" : "linear.norm",
+      "shape" : [
+        8
+      ]
+    },
+    {
+      "block" : "layer.00",
+      "name" : "model.language_model.layers.0.linear_attn.out_proj.weight",
+      "role" : "linear.out",
+      "shape" : [
+        32,
+        32
+      ]
+    },
+    {
+      "block" : "layer.00",
+      "name" : "model.language_model.layers.0.mlp.experts.down_proj",
+      "role" : "expert.stack_down",
+      "shape" : [
+        8,
+        32,
+        16
+      ]
+    },
+    {
+      "block" : "layer.00",
+      "name" : "model.language_model.layers.0.mlp.experts.gate_up_proj",
+      "role" : "expert.stack_gate_up",
+      "shape" : [
+        8,
+        32,
+        32
+      ]
+    },
+    {
+      "block" : "layer.00",
+      "name" : "model.language_model.layers.0.mlp.gate.weight",
+      "role" : "router.logits",
+      "shape" : [
+        8,
+        32
+      ]
+    },
+    {
+      "block" : "layer.00",
+      "name" : "model.language_model.layers.0.mlp.shared_expert.down_proj.weight",
+      "role" : "expert.shared.down",
+      "shape" : [
+        32,
+        16
+      ]
+    },
+    {
+      "block" : "layer.00",
+      "name" : "model.language_model.layers.0.mlp.shared_expert.gate_proj.weight",
+      "role" : "expert.shared.gate",
+      "shape" : [
+        16,
+        32
+      ]
+    },
+    {
+      "block" : "layer.00",
+      "name" : "model.language_model.layers.0.mlp.shared_expert.up_proj.weight",
+      "role" : "expert.shared.up",
+      "shape" : [
+        16,
+        32
+      ]
+    },
+    {
+      "block" : "layer.00",
+      "name" : "model.language_model.layers.0.mlp.shared_expert_gate.weight",
+      "role" : "expert.shared.scalar",
+      "shape" : [
+        1,
+        32
+      ]
+    },
+    {
+      "block" : "layer.00",
+      "name" : "model.language_model.layers.0.post_attention_layernorm.weight",
+      "role" : "norm.mlp",
+      "shape" : [
+        32
+      ]
+    },
+    {
+      "block" : "layer.01",
+      "name" : "model.language_model.layers.1.input_layernorm.weight",
+      "role" : "norm.attn",
+      "shape" : [
+        32
+      ]
+    },
+    {
+      "block" : "layer.01",
+      "name" : "model.language_model.layers.1.mlp.experts.down_proj",
+      "role" : "expert.stack_down",
+      "shape" : [
+        8,
+        32,
+        16
+      ]
+    },
+    {
+      "block" : "layer.01",
+      "name" : "model.language_model.layers.1.mlp.experts.gate_up_proj",
+      "role" : "expert.stack_gate_up",
+      "shape" : [
+        8,
+        32,
+        32
+      ]
+    },
+    {
+      "block" : "layer.01",
+      "name" : "model.language_model.layers.1.mlp.gate.weight",
+      "role" : "router.logits",
+      "shape" : [
+        8,
+        32
+      ]
+    },
+    {
+      "block" : "layer.01",
+      "name" : "model.language_model.layers.1.mlp.shared_expert.down_proj.weight",
+      "role" : "expert.shared.down",
+      "shape" : [
+        32,
+        16
+      ]
+    },
+    {
+      "block" : "layer.01",
+      "name" : "model.language_model.layers.1.mlp.shared_expert.gate_proj.weight",
+      "role" : "expert.shared.gate",
+      "shape" : [
+        16,
+        32
+      ]
+    },
+    {
+      "block" : "layer.01",
+      "name" : "model.language_model.layers.1.mlp.shared_expert.up_proj.weight",
+      "role" : "expert.shared.up",
+      "shape" : [
+        16,
+        32
+      ]
+    },
+    {
+      "block" : "layer.01",
+      "name" : "model.language_model.layers.1.mlp.shared_expert_gate.weight",
+      "role" : "expert.shared.scalar",
+      "shape" : [
+        1,
+        32
+      ]
+    },
+    {
+      "block" : "layer.01",
+      "name" : "model.language_model.layers.1.post_attention_layernorm.weight",
+      "role" : "norm.mlp",
+      "shape" : [
+        32
+      ]
+    },
+    {
+      "block" : "layer.01",
+      "name" : "model.language_model.layers.1.self_attn.k_norm.weight",
+      "role" : "attn.k_norm",
+      "shape" : [
+        8
+      ]
+    },
+    {
+      "block" : "layer.01",
+      "name" : "model.language_model.layers.1.self_attn.k_proj.weight",
+      "role" : "attn.k",
+      "shape" : [
+        16,
+        32
+      ]
+    },
+    {
+      "block" : "layer.01",
+      "name" : "model.language_model.layers.1.self_attn.o_proj.weight",
+      "role" : "attn.o",
+      "shape" : [
+        32,
+        32
+      ]
+    },
+    {
+      "block" : "layer.01",
+      "name" : "model.language_model.layers.1.self_attn.q_norm.weight",
+      "role" : "attn.q_norm",
+      "shape" : [
+        8
+      ]
+    },
+    {
+      "block" : "layer.01",
+      "name" : "model.language_model.layers.1.self_attn.q_proj.weight",
+      "role" : "attn.q",
+      "shape" : [
+        64,
+        32
+      ]
+    },
+    {
+      "block" : "layer.01",
+      "name" : "model.language_model.layers.1.self_attn.v_proj.weight",
+      "role" : "attn.v",
+      "shape" : [
+        16,
+        32
+      ]
+    },
+    {
+      "block" : "final",
+      "name" : "model.language_model.norm.weight",
+      "role" : "norm.final",
+      "shape" : [
+        32
+      ]
+    }
+  ]
+}

@@ -70,17 +70,19 @@ do {
     fail("could not load \(snapshot.path): \(error)")
 }
 
-let captured: [TraceWriter.Tensor]
+let result: ForwardResult
 do {
-    captured = try forward.forward(tokens: tokens)
+    result = try forward.forwardWithDecisions(tokens: tokens)
 } catch {
     fail("forward failed: \(error)")
 }
+let captured = result.tensors
 
-let writer = TraceWriter(
+var writer = TraceWriter(
     producer: "datacenter-engine-swift",
     model: ["id": modelID, "revision": revision, "compute": "fp32", "contract": "ordered_reference.py"]
 )
+writer.discrete = result.discrete
 do {
     let manifest = try writer.write(
         to: output,
@@ -89,7 +91,8 @@ do {
     )
     let elapsed = Date().timeIntervalSince(started)
     print(
-        "wrote \(output.path): \(captured.count) tensors, digest \(manifest.digest.prefix(16))…, "
+        "wrote \(output.path): \(captured.count) tensors, "
+            + "\(result.discrete.count) discrete, digest \(manifest.digest.prefix(16))…, "
             + String(format: "%.1f s", elapsed)
     )
 } catch {
