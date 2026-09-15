@@ -1,0 +1,38 @@
+{
+ "note": "The per-role quantization policy (I4). It is data: changing what is quantized is changing this file, not the code. A role that is absent from 'quant' stops the install rather than defaulting.",
+ "schema": 1,
+ "why": {
+  "norms, embedding and head": "I3: gating and normalisation decide the discrete outcomes; they stay at bf16 or above. The head is tied to the embedding, so quantizing it would quantize the embedding twice over.",
+  "attn.q_norm / attn.k_norm / linear.norm": "per-head normalisation vectors, one per head dimension: quantizing 256 numbers to 4 bits saves nothing measurable and costs accuracy",
+  "linear.a_log / linear.dt_bias": "the Gated DeltaNet's decay is exponentiated; a 4-bit error there is not a small error",
+  "linear.in_a / linear.in_b / linear.conv": "the gates and the causal convolution: small, and on the path that decides how much state to keep"
+ },
+
+ "quant": {
+  "attn.q": "int4-affine",
+  "attn.k": "int4-affine",
+  "attn.v": "int4-affine",
+  "attn.o": "int4-affine",
+  "linear.in_qkv": "int4-affine",
+  "linear.in_z": "int4-affine",
+  "linear.out": "int4-affine",
+  "mlp.down": "int4-affine",
+  "mlp.gate": "int4-affine",
+  "mlp.up": "int4-affine",
+
+  "norm.attn": "bf16",
+  "norm.mlp": "bf16",
+  "norm.final": "bf16",
+  "head.lm": "bf16",
+  "token.embedding": "bf16",
+
+  "attn.q_norm": "fp32",
+  "attn.k_norm": "fp32",
+  "linear.norm": "fp32",
+  "linear.a_log": "fp32",
+  "linear.dt_bias": "fp32",
+  "linear.in_a": "bf16",
+  "linear.in_b": "bf16",
+  "linear.conv": "bf16"
+ }
+}

@@ -143,6 +143,15 @@ python3 tools/make_qwen35_fixture.py \
     --snapshot .build/hf-cache/models--Qwen--Qwen3.5-2B/snapshots/<revision> \
     --model Qwen/Qwen3.5-2B --revision <sha>
 
+# M0c: build an int4 install from a checkpoint and measure what it costs against the
+# frozen prompt set. The policy is data (tools/quant_policy.json); a role missing from
+# it stops the install rather than defaulting.
+.venv/bin/python tools/quantize.py build \
+    .build/hf-cache/models--Qwen--Qwen3.5-2B/snapshots/<revision> .build/m0c/install \
+    --spec .build/spec-2b.json
+.venv/bin/python tools/measure_quantization.py \
+    --snapshot .build/hf-cache/models--Qwen--Qwen3.5-2B/snapshots/<revision> --spec .build/spec-2b.json
+
 # The reference implementation that produces golden traces. Pinned exactly: a
 # trace is only comparable to another captured from the same transformers build.
 uv pip install --python .venv/bin/python -r tools/requirements-reference.txt
