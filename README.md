@@ -102,6 +102,22 @@ attention family costs real kernel work, and that's expected.
 Swift + Metal. Raw sockets over Thunderbolt bridge for the all-reduce. macOS only.
 
 
+## Documentation
+
+The design, the plan and the live task list are kept in the
+[wiki](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki):
+
+| Page | What it holds |
+|---|---|
+| [Roadmap](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Roadmap) | The phases M0–M5 with the gate each one has to pass |
+| [Project Tracker](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Project-Tracker) | Every task (`DC-nnn`), its status, the risks and the open questions |
+| [Architecture](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Architecture) | Expert parallelism, the invariants, the IR and the transport |
+| [Testbed](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Testbed) | The hardware and toolchain the work assumes |
+| [Glossary](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Glossary) | The terms used on those pages |
+
+A commit that changes the plan or a decision updates the README, the affected wiki page
+and the tracker in the same push.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Copyright (c) 2026 André Borchert.
