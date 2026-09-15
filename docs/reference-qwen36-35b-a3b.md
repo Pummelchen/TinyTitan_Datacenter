@@ -178,6 +178,19 @@ for expert_idx in expert_hit:                        # ascending index order
   single-node contract and the future ring reduction agree by construction rather than by
   coincidence.
 
+### The kernel, and what it is checked against
+
+`sources/DatacenterEngine/MixtureOfExperts.swift` implements all of the above and
+`MixtureOfExpertsTests` asserts it against golden **bit patterns** emitted by
+`tools/ordered_moe.py`: the block's output, the renormalised weights, and — as its own
+assertion, because I3 says so — **the chosen experts, in order**. It passes under `-Onone`
+and `-O`, so the compiler is not quietly contracting a multiply-add into the fused operation
+the contract forbids.
+
+The tie-break is tested directly rather than through a vector that happens to contain no
+ties, because Swift's `sorted(by:)` is not a stable sort: the comparator carries the index,
+and a tie above the cut has its own case.
+
 ### The norms are the same as `qwen3_5`'s
 
 `Qwen3_5MoeRMSNorm:925` initialises its weight to **zeros** and multiplies by `(1 + weight)`,

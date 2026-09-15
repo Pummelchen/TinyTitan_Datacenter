@@ -176,6 +176,41 @@ def main() -> None:
         "weights": {name: vector(value) for name, value in gdn_weights.items()},
     }
 
+    # --- The mixture of experts, M1's model ---------------------------------------------
+    # A tiny mixture with the real shape of the problem: 8 experts, top-2, and a shared
+    # expert of the same width. The discrete decision (the index set) is part of the vector,
+    # because I3 asserts it separately from the numbers.
+    import ordered_moe as moe
+
+    tokens, hidden_size, experts, top_k, inter = 4, 24, 8, 2, 12
+    moe_weights = {
+        "router_weight": ref.f32(rng.standard_normal((experts, hidden_size)) * 0.6),
+        "gate_up": ref.f32(rng.standard_normal((experts, 2 * inter, hidden_size)) * 0.4),
+        "down": ref.f32(rng.standard_normal((experts, hidden_size, inter)) * 0.4),
+        "shared_gate": ref.f32(rng.standard_normal((inter, hidden_size)) * 0.4),
+        "shared_up": ref.f32(rng.standard_normal((inter, hidden_size)) * 0.4),
+        "shared_down": ref.f32(rng.standard_normal((hidden_size, inter)) * 0.4),
+        "shared_scalar_gate": ref.f32(rng.standard_normal((1, hidden_size)) * 0.3),
+    }
+    moe_hidden = ref.f32(rng.standard_normal((tokens, hidden_size)) * 0.7)
+    moe_out, moe_indices, moe_weights_out = moe.sparse_moe_block(
+        moe_hidden, top_k=top_k, **moe_weights
+    )
+    payload["moe"] = {
+        "config": {
+            "tokens": tokens,
+            "hidden_size": hidden_size,
+            "experts": experts,
+            "top_k": top_k,
+            "intermediate": inter,
+        },
+        "hidden": vector(moe_hidden),
+        "out": vector(moe_out),
+        "indices": {"shape": list(moe_indices.shape), "values": [int(v) for v in moe_indices.reshape(-1)]},
+        "weights": {name: vector(value) for name, value in moe_weights.items()},
+        "top_k_weights": vector(moe_weights_out),
+    }
+
     FIXTURE.parent.mkdir(parents=True, exist_ok=True)
     FIXTURE.write_text(json.dumps(payload, indent=2) + "\n")
     tensors = sum(1 for value in payload.values() if isinstance(value, dict))
