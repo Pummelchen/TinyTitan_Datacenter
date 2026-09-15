@@ -13,20 +13,29 @@ from __future__ import annotations
 
 import unittest
 
-import numpy as np
+try:
+    import numpy as np
 
-import ordered_reference as ref
+    import ordered_reference as ref
+
+    HAVE_NUMPY = True
+except ImportError:  # the repository gates run without packages installed
+    HAVE_NUMPY = False
 
 try:
-    import torch
+    import torch  # noqa: F401
 
     HAVE_TORCH = True
-except Exception:  # pragma: no cover - the gate runs where torch is absent
+except Exception:
     HAVE_TORCH = False
 
+NUMPY_REASON = "numpy is not installed in this interpreter; the contract needs it, so run with .venv/bin/python"
 SKIP_REASON = "torch is not installed in this interpreter; run with .venv/bin/python"
 
+numpy_required = unittest.skipUnless(HAVE_NUMPY, NUMPY_REASON)
 
+
+@numpy_required
 class OrderTests(unittest.TestCase):
     def test_ordered_matmul_matches_a_naive_triple_loop(self):
         """The contract is a specific sequence of fp32 additions, so it must equal the
@@ -78,6 +87,7 @@ class OrderTests(unittest.TestCase):
             self.assertAlmostEqual(float(ref.ordered_sum(row)), 1.0, places=6)
 
 
+@numpy_required
 @unittest.skipUnless(HAVE_TORCH, SKIP_REASON)
 class TorchComparisonTests(unittest.TestCase):
     def test_ordered_matmul_differs_from_torch_and_neither_is_more_accurate(self):
