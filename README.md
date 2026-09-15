@@ -1,3 +1,6 @@
+<img width="1254" height="1254" alt="image" src="https://github.com/user-attachments/assets/985c9444-28e3-434d-910d-7033d86308eb" />
+
+
 # TinyTitan Datacenter
 
 [![Stars](https://img.shields.io/github/stars/Pummelchen/TinyTitan_Datacenter?style=flat-square&logo=github&label=Stars&color=e3b341)](https://github.com/Pummelchen/TinyTitan_Datacenter/stargazers)
