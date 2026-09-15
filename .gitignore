@@ -26,7 +26,8 @@ models/
 .env.*
 *.local
 
-# Python bytecode and tool caches (tools/ is stdlib-only Python)
+# Python: the gates in tools/ are stdlib-only; package work lives in the pinned venv
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.venv/

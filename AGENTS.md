@@ -59,6 +59,11 @@ status live in the wiki.
   `main`; a change that needs a gate is not merged before the gate passes.
 - **Markdown**: wrapped to a readable width, tables where they carry structure, and
   every link checked by the gate below.
+- **Python**: everything under `tools/` that gates the repository is
+  standard-library-only, so it runs on any `python3` with nothing installed. Anything
+  that needs a package — Core ML conversion, for instance — lives in the project venv
+  (`.venv`, CPython 3.13) with its versions pinned in `tools/requirements-*.txt`.
+  Never install into the system interpreter.
 
 ## Commands
 
@@ -68,6 +73,11 @@ python3 tools/check_markdown_links.py --verbose
 
 # Tests for the gate itself
 python3 -m unittest discover -s tools
+
+# Core ML / Neural Engine tooling. coremltools is pinned because CPython 3.14 has
+# only a dev pre-release wheel; 3.13 is the newest with a stable one.
+uv venv --python 3.13 .venv
+uv pip install --python .venv/bin/python -r tools/requirements-coreml.txt
 ```
 
 Once code exists, the release gate is the sister project's model: a warning-free

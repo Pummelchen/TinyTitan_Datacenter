@@ -133,6 +133,16 @@ class LinkGateTests(unittest.TestCase):
         self.assertEqual(self.problems(), [])
         self.assertEqual(gate.markdown_files(self.root), [])
 
+    def test_virtual_environment_is_skipped(self) -> None:
+        # coremltools ships README files inside site-packages. A third party's
+        # broken relative link must not be able to fail this repository's gate.
+        self.write(
+            ".venv/lib/python3.13/site-packages/coremltools/README.md",
+            "See [x](missing.md).\n",
+        )
+        self.assertEqual(self.problems(), [])
+        self.assertEqual(gate.markdown_files(self.root), [])
+
     # --- the repository itself ---------------------------------------------
 
     def test_this_repository_is_clean(self) -> None:

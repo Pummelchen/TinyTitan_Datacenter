@@ -28,13 +28,19 @@ import sys
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-# Directories that never contain repository Markdown worth checking.
+# Directories that never contain repository Markdown worth checking. The virtual
+# environments matter: coremltools ships its own README files, and a third party's
+# broken relative link must not be able to fail this repository's gate.
 SKIP_DIRS = {
     ".git",
     ".build",
     ".swiftpm",
     ".wiki",
     ".inspect",
+    ".venv",
+    "venv",
+    "site-packages",
+    "__pycache__",
     "DerivedData",
     "node_modules",
     "models",

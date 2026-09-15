@@ -1,0 +1,14 @@
+# Python tooling for Core ML / Neural Engine work, pinned.
+#
+# This is deliberately not the repository's default Python: the manifest and the
+# Markdown link gate are standard-library-only Python 3 that any interpreter can
+# run. Core ML conversion needs coremltools, which at the time of writing has a
+# stable wheel for CPython 3.13 but only a development pre-release for 3.14 —
+# so this file is installed into the project venv on 3.13.
+#
+#   uv venv --python 3.13 .venv
+#   uv pip install --python .venv/bin/python -r tools/requirements-coreml.txt
+#
+# Pinned on purpose: a conversion toolchain that changes under the project would
+# make a converted model unattributable to the version that produced it.
+coremltools==9.0
