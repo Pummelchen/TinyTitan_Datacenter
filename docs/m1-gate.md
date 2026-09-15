@@ -110,3 +110,54 @@ answer is a cache that survives a token, which is a design change and will be re
 - **The prompt set is short.** `long` is 67 tokens: beyond one delta-rule chunk, but nothing like
   the 128K the later milestones must hold at. Long-context conversion failures are real and this
   gate does not look for them.
+
+## Status, 2026-09-16: correctness holds on one prompt of five, throughput is superseded
+
+Written because the tables above are the only surviving record of the first real-model run — the
+report JSON under `.build/` is gone — and **their throughput figures are no longer current**. Nobody
+should quote `0.0191 tok/s` as M1's baseline without reading this section first.
+
+### Proven
+
+| | |
+| --- | --- |
+| Correct output | **IDENTICAL** on one prompt of five (`capital`, 5 tokens): 83 tensors and 40 discrete decisions, digests equal, through `trace_diff.py` |
+| Discrete decisions | exact, asserted separately from the numbers, as `I3` requires |
+| The cached path | now agrees with the uncached one on **tokens and margins** (`11751,11,264,3177`; `1.6400, 0.0972, 1.2532, 2.6414`) after the weight-layout fix in the attention cache |
+| The 4-bit install | builds (20 GB, peak footprint 4.44 GB), and a full verification reads it uncached in ~20 s at a 33.7 MB peak with free disk steady |
+
+### Superseded, and by how much
+
+The measured throughput above was taken **before** three changes, each of which is bit-identical and
+each of which was measured locally:
+
+| change | measured effect |
+| --- | --- |
+| the `int4` row read decodes **one expert** instead of the whole stack | one expert of eight now costs 1184 of 9472 bytes where it cost all of them |
+| the ordered matmul vectorised across outputs | **1.66×** (4.1 → 6.8 GFLOP/s) |
+| the int4 unpack vectorised by group and widened to eight codes per load | **1.83×** (648 → 1185 M values/s) |
+
+The first of those is the one that should matter most, and the arithmetic is why: the active experts
+are ~2.0 B parameters per token, so unpacking them at the old rate is ~9.3 s, and decoding whole
+stacks instead of one expert multiplied that by thirty-two — **~55 s**, which is the measured
+52.2 s/step reached independently by a different route.
+
+**So the prediction is that throughput improves by most of an order of magnitude. It is not a
+result.** No real-model run has happened since those fixes, and this section exists so that the
+stale number and the prediction cannot be confused for one another.
+
+### Not measured, and what would close the gate
+
+- the remaining **four prompts** of `tools/m1_prompts.json`;
+- a **re-measured throughput baseline** on the fixed engine, and therefore the M1 gate's actual
+  tok/s figure;
+- the **cache hit rate** on the fixed engine — the `0.0000` above is real but was taken with the
+  whole-stack decode, which changes the traffic it counts;
+- the engine running **against the 4-bit install** on the real model, rather than against the
+  checkpoint.
+
+All four need the same thing: one real-model run on this node, which needs the operator's approval
+because the process peaks at 4.16 GB against about 4.5 GB usable. The watchdog is armed, the disk
+floor is enforced, and the run is a few minutes. **M1's gate is therefore open, with its
+correctness claim holding on one prompt of five and its throughput claim retired pending that
+measurement.**
