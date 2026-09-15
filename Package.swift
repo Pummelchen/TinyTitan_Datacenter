@@ -11,13 +11,14 @@ import PackageDescription
 /// The Swift language standard for this tree (`DC-015`).
 ///
 /// Declared once and applied to **every** target, so a target added later cannot quietly opt out.
-/// Measured on this toolchain: the tree is clean of diagnostics, and each of these four costs
-/// **zero** further diagnostics. `ExistentialAny` is deliberately absent — it costs fourteen
-/// warnings and belongs to its own pass.
+/// Measured on this toolchain with `swift test`, which is the only command that compiles the test
+/// targets too: the tree is clean of diagnostics, and each of these three costs **zero** further
+/// diagnostics. Two are deliberately absent. `MemberImportVisibility` requires explicit imports in
+/// the test targets as well and does not converge in one pass; `ExistentialAny` costs fourteen
+/// warnings. Both belong to their own commits.
 let shardLanguageStandard: [SwiftSetting] = [
     .enableUpcomingFeature("InferIsolatedConformances"),
     .enableUpcomingFeature("ImmutableWeakCaptures"),
-    .enableUpcomingFeature("MemberImportVisibility"),
     .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
 ]
 

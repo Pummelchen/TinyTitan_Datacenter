@@ -11,9 +11,9 @@ reading release notes.
 | Toolchain | Swift **6.4** on **Xcode 27** (the manifest requires `swift-tools-version:6.4`) |
 | Platform | `macOS(.v26)`, arm64 |
 | Language mode | **6**, which is the tools-version default — strict concurrency and the graduated 6.0–6.3 features are already errors, not warnings |
-| Diagnostics on a clean tree | **0** warnings, **0** errors |
+| Diagnostics on a clean tree | **0** warnings, **0** errors, measured with `swift test` |
 
-## Enforced: the four that are still upcoming, declared once
+## Enforced: the three that are still upcoming, declared once
 
 `Package.swift` declares `shardLanguageStandard` and applies it to **all six targets**, so a target
 added later cannot quietly opt out:
@@ -21,13 +21,26 @@ added later cannot quietly opt out:
 ```swift
 .enableUpcomingFeature("InferIsolatedConformances")
 .enableUpcomingFeature("ImmutableWeakCaptures")
-.enableUpcomingFeature("MemberImportVisibility")
 .enableUpcomingFeature("NonisolatedNonsendingByDefault")
 ```
 
-Each was measured by building with the flag and counting diagnostics. All four cost **zero**, which
+Each was measured by building with the flag and counting diagnostics. All three cost **zero**, which
 is why they are on: an "upcoming feature" that costs nothing today is a migration paid for now
 instead of at a compiler upgrade.
+
+**`MemberImportVisibility` was in this list for part of one commit, on a measurement that was
+wrong.** It was probed with `swift build`, which does not compile the test targets — and that is
+where it bites, because a test file that uses `DatacenterIR`'s properties has to say so. `swift
+test` fails to build until those imports are added, and one pass did not converge. It is off, its
+cost is *not yet counted*, and the correction is recorded here rather than the claim being quietly
+narrowed. The method below now says `swift test` for exactly this reason.
+
+## Deliberately not enabled: `MemberImportVisibility`
+
+Cost so far: `swift test` fails to build in the test targets until their `DatacenterIR`-defined
+uses are imported explicitly, and the count of those sites is **not yet measured** — the feature was
+dropped mid-pass rather than left in a state where the suite does not build. It is a mechanical pass,
+like the one below, and it belongs to its own commit.
 
 ## Deliberately not enabled: `ExistentialAny`
 
@@ -47,10 +60,13 @@ The sister project's list of retired names — `ConciseMagicFile`, `ForwardTrail
 ## The method, so the next person can repeat it
 
 ```bash
-swift build 2>&1 | grep -cE "error:|warning:"          # baseline, must be 0
+# `swift test`, not `swift build`: the test targets carry the same swiftSettings, and a feature
+# that only troubles them is invisible to `swift build`. That mistake is why this section exists.
+swift test --no-parallel > /tmp/log 2>&1; echo $?          # baseline, must be 0
 for f in ExistentialAny InferIsolatedConformances ImmutableWeakCaptures \
          MemberImportVisibility NonisolatedNonsendingByDefault; do
-  swift build -Xswiftc -enable-upcoming-feature -Xswiftc "$f" 2>&1 | grep -c "warning:"
+  swift test --no-parallel -Xswiftc -enable-upcoming-feature -Xswiftc "$f" > /tmp/log 2>&1
+  echo "$f exit=$?"
 done
 ```
 
