@@ -1,0 +1,43 @@
+name: Swift
+
+# The engine's gates, on a clean machine. Until this existed, a Swift change was only
+# ever built on the machine that wrote it — which is exactly how a toolchain
+# requirement becomes folklore instead of a check.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - converted_to_draft
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: swift-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        # Printed deliberately: the manifest asks for swift-tools-version 6.4, and if
+        # the image ships something older this line is the whole diagnosis.
+        run: |
+          swift --version
+          xcodebuild -version
+      - name: Build
+        run: swift build
+      - name: Test
+        # --no-parallel because the numeric tests are the point and a serial run is
+        # easier to attribute when one fails.
+        run: swift test --no-parallel
