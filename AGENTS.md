@@ -3,8 +3,8 @@
 A distributed inference engine for large MoE language models on a cluster of Mac
 minis and Mac Studios, over LAN/SFP/QSFP and Thunderbolt. This checkout is in
 **design phase**: there is no source code yet. The repository holds the README, the
-licence, the repository scaffolding and the tooling; the design, the plan and the
-status live in the wiki.
+licence, the repository scaffolding, the tooling and the reference contracts under
+`docs/`; the design, the plan and the status live in the wiki.
 
 ## Scope of this checkout
 
@@ -78,7 +78,15 @@ python3 -m unittest discover -s tools
 # pin is an exact pre-release (9.1.dev1); see tools/requirements-coreml.txt.
 uv venv --python 3.14 .venv
 uv pip install --python .venv/bin/python -r tools/requirements-coreml.txt
+
+# The reference implementation that produces golden traces. Pinned exactly: a
+# trace is only comparable to another captured from the same transformers build.
+uv pip install --python .venv/bin/python -r tools/requirements-reference.txt
 ```
+
+Reference material for the current milestone lives in `docs/` — start with
+`docs/m0-reference-contract.md`, which records the model revision and the exact
+dtype boundaries of every op. Kernel comments cite it rather than restating it.
 
 Once code exists, the release gate is the sister project's model: a warning-free
 release build, the lint gates, the full test suite, and byte-identical golden

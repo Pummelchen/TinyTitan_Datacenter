@@ -1,0 +1,16 @@
+# The reference implementation's stack, pinned.
+#
+# This is the harness that produces golden traces, so its versions are part of
+# the evidence: a trace is only comparable to another trace captured from the
+# same transformers build, and the model revision is pinned separately in
+# docs/m0-reference-contract.md.
+#
+#   uv venv --python 3.14 .venv
+#   uv pip install --python .venv/bin/python -r tools/requirements-reference.txt
+#
+# Both are pinned exactly, for the same reason coremltools is: if the reference
+# moves, a gate that passed yesterday says nothing today. torch is large
+# (~1 GB installed), which is why it is a separate file from the Core ML
+# requirements — a node that only runs the engine does not need it.
+torch==2.14.0
+transformers==5.17.0
