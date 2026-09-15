@@ -308,13 +308,14 @@ class InstallSource:
 
 
 def build_install(snapshot: Path, install: Path, spec: dict, policy: dict, policy_file: str) -> dict:
-    """The pass itself: every tensor in the spec, quantized or copied per the policy."""
-    from safetensors import safe_open
+    """The pass itself: every tensor in the spec, quantized or copied per the policy.
 
-    candidates = sorted(snapshot.glob("model.safetensors*"))
-    if not candidates:
-        raise SystemExit(f"no safetensors file in {snapshot}")
-    handle = safe_open(str(candidates[0]), framework="pt")
+    The source is shard-aware. Taking the first shard — which this did — builds an install that
+    is missing five sixth of a sharded model's layers and reports success.
+    """
+    from safetensors_source import SafetensorsSource
+
+    handle = SafetensorsSource(snapshot)
 
     entries: list[dict] = []
     skipped: list[str] = []
@@ -326,7 +327,7 @@ def build_install(snapshot: Path, install: Path, spec: dict, policy: dict, polic
             # These are the roles the policy holds at higher precision — norms, the
             # convolution, the per-head decay — and I3 is explicit that gating stays at
             # bf16 or above.
-            value = handle.get_tensor(tensor["name"]).float().numpy().astype(np.float32)
+            value = handle.tensor(tensor["name"])
             raw = value.astype(np.float16).tobytes() if quant == "fp16" else None
             if quant == "bf16":
                 # bf16 from a widened bf16 is exact: the low sixteen bits are already zero.
@@ -348,7 +349,7 @@ def build_install(snapshot: Path, install: Path, spec: dict, policy: dict, polic
                 }
             )
             continue
-        weight = handle.get_tensor(tensor["name"]).float().numpy().astype(np.float32)
+        weight = handle.tensor(tensor["name"])
         entry = quantize_tensor(weight)
         entry.update({"name": tensor["name"], "role": role, "quant": quant})
         entries.append(entry)

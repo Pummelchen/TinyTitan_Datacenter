@@ -18,6 +18,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -125,6 +126,99 @@ class ShardedCheckpointTests(unittest.TestCase):
         result = self.trace(sharded, work / "trace")
         self.assertNotEqual(result.returncode, 0, "a sharded checkpoint with no index must not run")
         self.assertIn("index", (result.stdout + result.stderr).lower())
+
+
+@unittest.skipUnless(HAVE_SAFETENSORS, "safetensors is needed to build a sharded checkpoint")
+class PythonReaderShardingTests(unittest.TestCase):
+    """The Python side must agree with the Swift side about what a sharded checkpoint is.
+
+    Both readers used to take `sorted(glob(...))[0]`: the contract would have computed a partial
+    model's forward, and the install builder would have written an install missing five sixth of a
+    sharded model's layers and reported success. These tests need no Swift, so they run wherever
+    the venv does.
+    """
+
+    def sharded(self, work: Path) -> Path:
+        sys.path.insert(0, str(ROOT / "tools"))
+        import test_sharded_checkpoint as module  # the helper above
+
+        target = work / "sharded"
+        ShardedCheckpointTests.shard(self, FIXTURE, target)
+        return target
+
+    def testTheContractReadsShardedAndSingleFileTheSame(self):
+        import sys as _sys
+
+        _sys.path.insert(0, str(ROOT / "tools"))
+        import ordered_qwen36 as q36
+        from safetensors_source import SafetensorsSource
+
+        work = Path(tempfile.mkdtemp(prefix="sharded-py-"))
+        sharded = self.sharded(work)
+        spec = json.loads((FIXTURE / "spec.json").read_text())
+        tokens = json.loads((FIXTURE / "golden.json").read_text())["tokens"]
+
+        single_capture: dict = {}
+        single_decisions: dict = {}
+        q36.streamed_text_forward(
+            spec, SafetensorsSource(FIXTURE), tokens,
+            capture=single_capture, discrete=single_decisions,
+        )
+        split_capture: dict = {}
+        split_decisions: dict = {}
+        q36.streamed_text_forward(
+            spec, SafetensorsSource(sharded), tokens,
+            capture=split_capture, discrete=split_decisions,
+        )
+        self.assertEqual(sorted(single_capture), sorted(split_capture))
+        for name in single_capture:
+            self.assertEqual(
+                single_capture[name].tobytes(), split_capture[name].tobytes(),
+                f"{name}: a sharded checkpoint must read as the same model",
+            )
+        for name in single_decisions:
+            self.assertEqual(
+                single_decisions[name].tolist(), split_decisions[name].tolist(), f"{name}: decisions"
+            )
+
+    def testAShardedCheckpointWithoutAnIndexIsRefusedByThePythonReader(self):
+        sys.path.insert(0, str(ROOT / "tools"))
+        from safetensors_source import SafetensorsSource
+
+        work = Path(tempfile.mkdtemp(prefix="sharded-py-noidx-"))
+        sharded = self.sharded(work)
+        (sharded / "model.safetensors.index.json").unlink()
+        with self.assertRaises(SystemExit) as raised:
+            SafetensorsSource(sharded)
+        self.assertIn("refusing", str(raised.exception))
+
+    def testTheInstallBuilderUsesEveryShard(self):
+        """An install built from the sharded checkpoint must hold every tensor in the spec, not
+        the ones that happened to live in the first shard."""
+        sys.path.insert(0, str(ROOT / "tools"))
+        import quantize
+
+        work = Path(tempfile.mkdtemp(prefix="sharded-install-"))
+        sharded = self.sharded(work)
+        spec = json.loads((FIXTURE / "spec.json").read_text())
+        policy_path = ROOT / "tools" / "quant_policy.json"
+        policy = json.loads(policy_path.read_text())
+        manifest = quantize.build_install(sharded, work / "install", spec, policy, str(policy_path))
+        # `tensors` is every tensor written, each with the precision it got; `skipped` names the
+        # ones kept above int4, which is a *subset* — adding them double-counts, which is how this
+        # assertion first failed.
+        self.assertEqual(len(manifest["tensors"]), len(spec["tensors"]), "every spec tensor must be written")
+        for entry in manifest["tensors"]:
+            self.assertIn(entry["quant"], {"int4-affine", "bf16", "fp32", "fp16"})
+
+        single = quantize.build_install(
+            FIXTURE, work / "install-single", spec, policy, str(policy_path)
+        )
+        self.assertEqual(
+            (work / "install" / "data.bin").read_bytes(), (work / "install-single" / "data.bin").read_bytes(),
+            "the payload must not depend on how the checkpoint was split",
+        )
+        self.assertEqual(len(single["tensors"]), len(spec["tensors"]))
 
 
 if __name__ == "__main__":

@@ -34,24 +34,7 @@ import ordered_qwen36 as q36  # noqa: E402
 import trace_format  # noqa: E402
 
 
-class SafetensorsSource:
-    """A layer-at-a-time reader: `tensor` for a whole tensor, `rows` for a row range."""
-
-    def __init__(self, snapshot: Path):
-        from safetensors import safe_open
-
-        candidates = sorted(snapshot.glob("model.safetensors*"))
-        if not candidates:
-            raise SystemExit(f"no safetensors file in {snapshot}")
-        self._path = candidates[0]
-        self._handle = safe_open(str(self._path), framework="pt")
-        self.names = set(self._handle.keys())
-
-    def tensor(self, name: str) -> np.ndarray:
-        return self._handle.get_tensor(name).float().numpy().astype(np.float32)
-
-    def rows(self, name: str, start: int, end: int) -> np.ndarray:
-        return self._handle.get_slice(name)[start:end].float().numpy().astype(np.float32)
+from safetensors_source import SafetensorsSource  # noqa: E402,F401
 
 
 def main(argv: list[str] | None = None) -> int:
