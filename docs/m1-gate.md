@@ -303,3 +303,31 @@ bank sizes in one process would share banks, so one process per setting is what 
 The parse is a separate function so it can be tested without a process: `"0"`, `"-3"`, `"many"` and `""`
 all fall back to 16, since a bank of zero would silently disable the cache the measurement exists to
 observe.
+
+## The slot bank's contract, measured
+
+M1's gate asks for a **measured** cache hit rate, and `D12` is open because the bank's size was never
+derived from a budget. Before a real-model sweep can be read, the mechanism underneath it has to be
+pinned — an instrument that has never been run is not an instrument. `ExpertSlotCacheTests` does that
+against a counting stub, so every number is deterministic and none of it needs a checkpoint:
+
+- **The brief asks for LRU**, so eviction order is a promise and is tested: touch 0, 1, 0, then 2, and
+  0 survives while 1 is evicted.
+- **The bank is bounded**: ten distinct experts through a bank of two leaves
+  `peakResidentExperts <= 2`, which is the figure the budget arithmetic multiplies by a per-expert
+  byte count.
+- **The hit rate is non-decreasing in the bank size**, or a swept curve could not be read.
+
+The curve for one skewed routing sequence (24 steps, 8 experts, top-k shaped) is:
+
+| capacity | hits |
+| --- | --- |
+| 1 | 2 / 48 |
+| 2 | 18 / 48 |
+| 4 | 26 / 48 |
+| 8 | 32 / 48 |
+
+**32 and not 48**, because eight experts times two projections is sixteen *compulsory* first misses —
+which is the number my first version of the test got wrong, not the engine. A fixture this small says
+nothing about the real model's routing, and it is not meant to: it says the mechanism honours its own
+contract, so that when the real sweep prints a curve, the curve means something.
