@@ -30,7 +30,7 @@ public struct ForwardResult {
         return requests == 0 ? 0 : Double(hits) / Double(requests)
     }
 
-    public var expertRowsRead: Int { expertMetrics.reduce(0) { $0 + $1.rowsRead } }
+    public var expertElementsRead: Int { expertMetrics.reduce(0) { $0 + $1.elementsRead } }
 }
 
 /// A model that can be run for a token sequence and asked to generate.

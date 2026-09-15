@@ -126,8 +126,14 @@ public struct ExpertProviderMetrics: Sendable, Equatable {
     public var hits: Int = 0
     /// Requests that had to go to the source — the SSD traffic, in other words.
     public var misses: Int = 0
-    /// Rows read from the source: the number that multiplies by the row bytes to give bytes.
-    public var rowsRead: Int = 0
+    /// **Elements** read from the source, in fp32. The unit is named because getting it wrong is
+    /// easy and invisible: this counted elements while the counting provider counted rows, and a
+    /// figure that is off by the row width still looks like a plausible number of bytes.
+    ///
+    /// The brief's currency is *bytes read per token*, which is this times the bytes per element
+    /// the file stores — two bytes for a bf16 shard, four for the fp32 in memory. The trace tool
+    /// reports both, because they differ by a factor of two and the SSD cares about the first.
+    public var elementsRead: Int = 0
     /// The largest number of expert slices resident at once, per projection.
     public var peakResidentExperts: Int = 0
 
@@ -186,7 +192,7 @@ public final class ExpertSlotCache: ExpertWeightProvider {
         let loaded = try load()
         slots[expert] = loaded
         order.append(expert)
-        metrics.rowsRead += loaded.count
+        metrics.elementsRead += loaded.count
         if order.count > capacity {
             let evicted = order.removeFirst()
             slots.removeValue(forKey: evicted)
@@ -209,7 +215,8 @@ public final class ExpertSlotCache: ExpertWeightProvider {
 public final class CountingExpertProvider: ExpertWeightProvider {
     private let upstream: any ExpertWeightProvider
     public private(set) var requested: [Int] = []
-    public private(set) var rowsRead: Int = 0
+    /// Elements read, to match `ExpertProviderMetrics.elementsRead`.
+    public private(set) var elementsRead: Int = 0
 
     public init(upstream: any ExpertWeightProvider) {
         self.upstream = upstream
@@ -218,13 +225,13 @@ public final class CountingExpertProvider: ExpertWeightProvider {
     public func gateUp(expert: Int, shape: MixtureShape) throws -> [Float] {
         requested.append(expert)
         let values = try upstream.gateUp(expert: expert, shape: shape)
-        rowsRead += values.count / max(shape.hiddenSize, 1)
+        elementsRead += values.count
         return values
     }
 
     public func down(expert: Int, shape: MixtureShape) throws -> [Float] {
         let values = try upstream.down(expert: expert, shape: shape)
-        rowsRead += values.count / max(shape.intermediate, 1)
+        elementsRead += values.count
         return values
     }
 }

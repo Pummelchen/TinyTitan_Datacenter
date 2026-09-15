@@ -92,8 +92,14 @@ if !result.expertMetrics.isEmpty {
     metrics["expert_requests"] = result.expertMetrics.reduce(0) { $0 + $1.requests }
     metrics["expert_hits"] = result.expertMetrics.reduce(0) { $0 + $1.hits }
     metrics["expert_misses"] = result.expertMetrics.reduce(0) { $0 + $1.misses }
-    metrics["expert_rows_read"] = result.expertRowsRead
+    metrics["expert_elements_read"] = result.expertElementsRead
+    // The file stores bf16 for the expert stacks, so the bytes the device read are half the
+    // elements; the fp32 figure is what the kernel had in hand. Both, because the brief's
+    // currency is bytes from the SSD and the two differ by a factor of two.
+    metrics["expert_bytes_from_ssd"] = result.expertElementsRead * 2
+    metrics["expert_bytes_in_memory"] = result.expertElementsRead * 4
     metrics["expert_hit_rate"] = result.expertHitRate
+    metrics["expert_distinct"] = Set(result.discrete.flatMap { $0.values }).count
     metrics["layers"] = result.expertMetrics.count
     let directory = output
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

@@ -150,9 +150,13 @@ final class ExpertProviderTests: XCTestCase {
             Set(counting.requested).count, shape.experts,
             "a top-\(shape.topK) of \(shape.experts) must not read them all"
         )
-        // Two projections per distinct expert, each one row of its stack.
-        let expectedRows = chosen.count * (2 * shape.intermediate + shape.hiddenSize)
-        XCTAssertEqual(counting.rowsRead, expectedRows)
+        // Two projections per distinct expert, each one row of its stack: the elements read are
+        // the gate/up slice plus the down slice of every chosen expert. Naming the unit matters —
+        // this counted rows in one counter and elements in another, and the two disagreed by the
+        // row width while both looked like plausible numbers.
+        let expectedElements = chosen.count * (2 * shape.intermediate * shape.hiddenSize
+            + shape.hiddenSize * shape.intermediate)
+        XCTAssertEqual(counting.elementsRead, expectedElements)
     }
 
     // MARK: - The cache, and the number it produces
@@ -171,7 +175,10 @@ final class ExpertProviderTests: XCTestCase {
         XCTAssertEqual(cache.metrics.hits, 1)
         XCTAssertEqual(cache.metrics.misses, 1)
         XCTAssertEqual(counting.requested, [0], "a hit must not touch the source")
-        XCTAssertEqual(cache.metrics.rowsRead, 2 * 16 * 32, "one expert's rows, once")
+        XCTAssertEqual(
+            cache.metrics.elementsRead, (2 * 16 * 32) + (32 * 16),
+            "one expert's gate/up and down slices, once, in elements"
+        )
 
         // Two more experts evict the least recently used, and the capacity is never exceeded.
         _ = try cache.gateUp(expert: 1, shape: shape)
@@ -245,7 +252,7 @@ final class ExpertProviderTests: XCTestCase {
         }
         XCTAssertEqual(requests, expected, "reads are proportional to the chosen experts, not to the stack")
         XCTAssertLessThan(requests, shape.experts * 2 * result.expertMetrics.count, "not the whole stack")
-        XCTAssertGreaterThan(result.expertRowsRead, 0)
+        XCTAssertGreaterThan(result.expertElementsRead, 0)
         XCTAssertTrue((0.0...1.0).contains(result.expertHitRate))
     }
 }

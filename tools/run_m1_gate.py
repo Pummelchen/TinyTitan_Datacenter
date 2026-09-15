@@ -78,12 +78,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-new-tokens", type=int, default=8)
     parser.add_argument("--configuration", default="release")
     parser.add_argument("--skip-generation", action="store_true", help="measure only correctness and traffic")
+    parser.add_argument(
+        "--only", default="", metavar="ID,ID",
+        help="run a subset of the frozen prompts; the contract side costs about ten times the engine's wall time",
+    )
     args = parser.parse_args(argv)
 
     prompt_bytes = args.prompts.read_bytes()
     prompt_set = json.loads(prompt_bytes)
     prompt_digest = hashlib.sha256(prompt_bytes).hexdigest()
     args.work.mkdir(parents=True, exist_ok=True)
+
+    if args.only:
+        wanted = {part.strip() for part in args.only.split(",") if part.strip()}
+        known = {prompt["id"] for prompt in prompt_set["prompts"]}
+        unknown = wanted - known
+        if unknown:
+            print(f"refusing: no such prompt(s) {sorted(unknown)}; the set has {sorted(known)}", file=sys.stderr)
+            return 2
+        prompt_set["prompts"] = [p for p in prompt_set["prompts"] if p["id"] in wanted]
+        print(f"      running a subset: {sorted(wanted)}")
 
     print(f"[1/5] the frozen prompt set: {len(prompt_set['prompts'])} prompts, sha256 {prompt_digest[:16]}…")
     for prompt in prompt_set["prompts"]:
@@ -163,7 +177,8 @@ def main(argv: list[str] | None = None) -> int:
             "peak_rss_bytes": peak_rss,
             "expert_requests": metrics.get("expert_requests"),
             "expert_hits": metrics.get("expert_hits"),
-            "expert_rows_read": metrics.get("expert_rows_read"),
+            "expert_elements_read": metrics.get("expert_elements_read"),
+            "expert_bytes_from_ssd": metrics.get("expert_bytes_from_ssd"),
             "expert_hit_rate": metrics.get("expert_hit_rate"),
         }
         report["results"].append(result)

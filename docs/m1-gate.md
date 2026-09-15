@@ -16,6 +16,36 @@ cache hit rate**. One command runs all three on one checkpoint and writes a repo
 | Cache | the engine's expert-traffic counters, written beside each trace in `metrics.json` |
 | Memory | each engine run's **peak resident set size**, from the platform's `/usr/bin/time -l`, because `DC-032`'s gate is a budget and a budget needs a number. It counts clean file-backed pages, so it is an upper bound on the process rather than a claim about private dirty memory |
 
+## THE GATE, on the real model: one prompt, all three parts
+
+`.venv/bin/python tools/run_m1_gate.py --snapshot <35B> --only capital --max-new-tokens 4`
+
+```
+capital      IDENTICAL   41.87 s  peak    4.16 GB  hit rate 0
+0.0191 tok/s mean over 4 steps
+GATE PASSED
+```
+
+| Part | Result |
+| --- | --- |
+| Correct output | **IDENTICAL** — 83 tensors and 40 discrete decisions against the contract, digests equal |
+| Peak memory | **4.16 GB** against ~4.5 GB of usable memory per node |
+| Cache hit rate | **0.0000** over 2240 requests |
+| Throughput | **0.0191 tok/s** — **52.2 s per token** |
+
+The throughput is the number to sit with. It is not a tuning result; it is what a faithful fp32
+CPU port with **no KV cache** costs: every generation step re-runs the whole sequence, so a
+step's cost grows with the sequence and the mean over four steps after a five-token prompt is
+52 s. At a hundred tokens of context that arithmetic is minutes per token. The brief's M0
+deferred the cache deliberately — "a cache is a second numeric path through attention and M0's
+job is to establish one correct path before there are two" — and that deferral has now been
+paid for honestly. **For M1 the KV cache is not an optimisation, it is the next piece of
+correctness-preserving work**, and it comes before Metal: a kernel is a constant factor, and
+this is a growth term.
+
+The expert traffic behind the token: 2240 requests, **3.52 G elements**, which is **7.05 GB read
+from the SSD** in bf16 and 14.1 GB held in fp32.
+
 ## First result on the real model — one prompt, M1's correctness claim holds
 
 `capital` (5 tokens) against the real 27 GB checkpoint, engine and contract:
