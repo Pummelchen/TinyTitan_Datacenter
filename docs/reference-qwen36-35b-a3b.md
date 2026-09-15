@@ -24,7 +24,7 @@ A sharded checkpoint whose index is missing is refused rather than half-read, wh
 | Repository | `Qwen/Qwen3.6-35B-A3B` (Apache-2.0) |
 | `model_type` | `qwen3_5_moe` — the text tower is `qwen3_5_moe_text` |
 | Tensors | 1045 in 26 shards, 67 GiB of bf16 weights |
-| Inventory | `tests/DatacenterIRTests/Fixtures/qwen36-35b-a3b-tensors.json`, read from the shard headers by `tools/make_qwen36_fixture.py` — no weights downloaded |
+| Inventory | `tests/DatacenterIRTests/Fixtures/qwen36-35b-a3b-tensors.json`, read from the shard headers by `tools/make_qwen36_fixture.py` — no weights downloaded. Once the shards arrived, the engine's own importer mapped the real file to **693 text tensors**, the same number the headers gave (1045 − 333 vision − 19 MTP) |
 
 ## Parameters, counted from the shapes
 
