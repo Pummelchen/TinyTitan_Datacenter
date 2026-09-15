@@ -23,6 +23,25 @@ licence, the repository scaffolding, the tooling and the reference contracts und
   repository is **MIT**, so check the obligations before reusing any of its code here
   (tracked as `DC-013`).
 
+## This node's hard limit — read before running anything
+
+**Never run GB-scale jobs here.** The machine is an 8 GB Mac mini (about 4.5 GB usable after
+macOS), and on 2026-09-16 it **panicked twice** while doing exactly that: the 35 B engine at
+~4.5 GB resident plus a 20 GB install build, concurrently. macOS grew swap to *13 swapfiles and
+LOW swap space*, the system stopped responding for 90 s, and the hardware watchdog panicked it
+(`watchdog timeout: no checkins from watchdogd in 90 seconds`). No bug in the engine caused
+either panic; the memory budget did.
+
+The rules that follow from it:
+
+- **Tiny-fixture work only.** `tests/DatacenterEngineTests/Fixtures/tiny-qwen36/` runs the same
+  code paths at megabytes instead of gigabytes — importer, mixture, cache, quantisation, gate.
+- **One heavy job at a time, never concurrent**, and never a heavy job alongside an engine run.
+- **Real-model runs need explicit human approval**, with `sysctl vm.swapusage` checked first.
+- The 93 GB under `.build/` is excluded from Spotlight with a `.metadata_never_index` marker, so
+  a reboot does not start re-indexing it — that re-indexing is itself sustained I/O on a machine
+  that has just panicked.
+
 ## Working rules
 
 1. **Follow the loop: code, test, audit, document, update the tracker.** A change is

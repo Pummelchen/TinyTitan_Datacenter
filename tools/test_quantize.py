@@ -179,6 +179,28 @@ class InstallTests(unittest.TestCase):
             np.testing.assert_array_equal(source.tensor("embed.weight"), exact)
             np.testing.assert_array_equal(source.rows("embed.weight", 1, 3), exact[1:3])
 
+    def test_chunked_quantization_is_byte_identical(self):
+        """The install builder reads a tensor a block of rows at a time, because a stacked expert
+        tensor is two gigabytes in fp32 against about four and a half usable on a node. Rows are
+        independent — every group lies inside one row — so the pieces concatenate exactly, and
+        this is the test that makes that a fact rather than an argument: a chunked install and a
+        whole-tensor one must produce the same bytes."""
+        import tempfile
+        from pathlib import Path as _Path
+
+        rng = np.random.default_rng(11)
+        weight = (rng.standard_normal((37, 96)) * 1.5).astype(np.float32)
+        whole = quantize.quantize_tensor(weight)
+        pieces = [
+            quantize.quantize_rows(weight[start:end], original_shape=list(weight.shape))
+            for start, end in ((0, 5), (5, 20), (20, 37))
+        ]
+        joined = quantize.concat_rows(pieces, list(weight.shape))
+        for key in ("packed", "scales", "zeros"):
+            self.assertEqual(whole[key], joined[key], f"{key} must not depend on the chunking")
+        for key in ("shape", "rows", "columns", "padded_columns", "group"):
+            self.assertEqual(whole[key], joined[key], key)
+
     def test_the_install_round_trips_through_its_reader(self):
         with tempfile.TemporaryDirectory() as directory:
             install = self.build(Path(directory))

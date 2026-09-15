@@ -35,6 +35,10 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 
 GROUP = 64
+# How much of a tensor to hold at once, in fp32 bytes. Sixty-four megabytes is an order of
+# magnitude below the node's budget and large enough that the per-block numpy work is not
+# dominated by overhead.
+ROW_CHUNK_BYTES = 64 * 1024 * 1024
 QMIN, QMAX = -8, 7
 
 
@@ -74,6 +78,30 @@ def quantize_tensor(weight: np.ndarray, group: int = GROUP) -> dict:
     weight = np.asarray(weight, dtype=np.float32)
     if weight.ndim < 2:
         raise ValueError(f"expected a weight with at least two dimensions, got shape {weight.shape}")
+    original_shape = list(weight.shape)
+    if weight.ndim != 2:
+        # 3-D stacks flatten their leading axis; 1-D tensors are one row of N columns. Both are
+        # what the readers assume, which is why `quantize_rows` only ever sees 2-D input.
+        weight = weight.reshape(-1, weight.shape[-1]) if weight.ndim > 1 else weight.reshape(1, -1)
+    return quantize_rows(weight, group=group, original_shape=original_shape)
+
+
+def quantize_rows(
+    weight: np.ndarray, *, group: int = GROUP, original_shape: list | None = None
+) -> dict:
+    """Quantize a **block of rows** and hand back the payload pieces.
+
+    The caller may concatenate pieces from several blocks, which is how the install builder stays
+    inside a node's memory: a stacked expert tensor is `[256, 1024, 2048]`, and one row of it is
+    four megabytes in fp32, so reading it whole is two gigabytes against about four and a half
+    usable. Rows are independent — every group lies inside one row — so the pieces concatenate
+    exactly, and `test_chunked_quantization_is_byte_identical` is what makes that a fact.
+    """
+    weight = np.asarray(weight, dtype=np.float32)
+    if weight.ndim != 2:
+        raise ValueError(f"quantize_rows wants 2-D rows, got shape {weight.shape}")
+    if original_shape is None:
+        original_shape = list(weight.shape)
     # A **stacked** expert tensor is `[experts, rows, columns]`, and quantizing it is quantizing
     # its rows: the leading dimension is flattened away and every group along the input
     # dimension still lies inside one expert's row, because a row belongs to exactly one expert.
@@ -126,6 +154,29 @@ def quantize_tensor(weight: np.ndarray, group: int = GROUP) -> dict:
         "packed": packed,
         "scales": scale.reshape(-1).astype(np.float32).tobytes(),
         "zeros": zero.reshape(-1).astype(np.int8).tobytes(),
+    }
+
+
+def concat_rows(pieces: list[dict], shape: list) -> dict:
+    """Join the pieces of a row-chunked quantisation into one entry.
+
+    The rows of a piece are contiguous and independent, so this is a concatenation of three byte
+    strings — and the result is what the whole-tensor path would have produced, which the test
+    asserts byte for byte rather than by reasoning.
+    """
+    if not pieces:
+        raise ValueError("no pieces to join")
+    first = pieces[0]
+    rows = sum(piece["rows"] for piece in pieces)
+    return {
+        "shape": list(shape),
+        "rows": rows,
+        "columns": first["columns"],
+        "padded_columns": first["padded_columns"],
+        "group": first["group"],
+        "packed": b"".join(piece["packed"] for piece in pieces),
+        "scales": b"".join(piece["scales"] for piece in pieces),
+        "zeros": b"".join(piece["zeros"] for piece in pieces),
     }
 
 
@@ -182,33 +233,31 @@ def decode_raw(payload: bytes, dtype: str, shape) -> np.ndarray:
     raise PolicyError(f"unknown stored dtype '{dtype}'")
 
 
-def write_install(
-    install: Path,
-    *,
-    source: dict,
-    spec: dict,
-    entries: list[dict],
-    policy_files: list[str],
-) -> dict:
-    """Write the install: a payload file plus a manifest whose header carries provenance.
+class InstallWriter:
+    """Writes an install one entry at a time, so the payload never has to fit in memory.
 
-    I6 asks the artifact to record where it came from, what was done to it and under which
-    policy. The header is not a comment — `verify_install` recomputes the payload digests, so
-    a tampered install fails to load rather than producing plausible numbers.
+    The 35 B install is about twenty gigabytes against four and a half of usable memory, and the
+    first attempt at building it accumulated every payload before writing — it was killed, and
+    the shell reported success because the exit code came from `tail`. Only the manifest stays
+    resident here, and the manifest is metadata.
     """
-    install.mkdir(parents=True, exist_ok=True)
-    blob = bytearray()
-    index = []
-    for entry in entries:
-        padding = (64 - len(blob) % 64) % 64
-        blob.extend(b"\0" * padding)
-        offset = len(blob)
-        if "raw" in entry:
-            payload = entry["raw"]
-        else:
-            payload = entry["packed"] + entry["scales"] + entry["zeros"]
-        blob.extend(payload)
-        index.append(
+
+    def __init__(self, install: Path) -> None:
+        install.mkdir(parents=True, exist_ok=True)
+        self.install = install
+        self._blob = open(install / "data.bin", "wb")
+        self._written = 0
+        self.index: list[dict] = []
+
+    def add(self, entry: dict) -> None:
+        padding = (64 - self._written % 64) % 64
+        self._blob.write(b"\0" * padding)
+        self._written += padding
+        offset = self._written
+        payload = entry["raw"] if "raw" in entry else entry["packed"] + entry["scales"] + entry["zeros"]
+        self._blob.write(payload)
+        self._written += len(payload)
+        self.index.append(
             {
                 "name": entry["name"],
                 "role": entry["role"],
@@ -216,8 +265,8 @@ def write_install(
                 "shape": entry["shape"],
                 "padded_columns": entry["padded_columns"],
                 "group": entry["group"],
-                # The precision a reader needs: the policy's own name for a kept tensor,
-                # or `int4` for a packed one.
+                # The precision a reader needs: the policy's own name for a kept tensor, or
+                # `int4` for a packed one.
                 "dtype": entry["quant"] if "raw" in entry else "int4",
                 "offset": offset,
                 "nbytes": len(payload),
@@ -225,20 +274,36 @@ def write_install(
             }
         )
 
-    manifest = {
-        "schema": 1,
-        "source": source,
-        "passes": ["quantize-group-affine-int4"],
-        "policy_files": policy_files,
-        "family": spec["family"],
-        # Self-describing: roles, shapes and the policies are in the artifact, so a reader
-        # needs nothing beside it (L1's spec file, carried rather than referenced).
-        "spec": spec,
-        "tensors": index,
-    }
-    (install / "data.bin").write_bytes(bytes(blob))
-    (install / "install.json").write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n")
-    return manifest
+    def finish(self, *, source: dict, spec: dict, policy_files: list[str]) -> dict:
+        self._blob.close()
+        manifest = {
+            "schema": 1,
+            "source": source,
+            "passes": ["quantize-group-affine-int4"],
+            "policy_files": policy_files,
+            "family": spec["family"],
+            # Self-describing: roles, shapes and the policies are in the artifact, so a reader
+            # needs nothing beside it (L1's spec file, carried rather than referenced).
+            "spec": spec,
+            "tensors": self.index,
+        }
+        (self.install / "install.json").write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n")
+        return manifest
+
+
+def write_install(
+    install: Path, *, source: dict, spec: dict, entries, policy_files: list[str]
+) -> dict:
+    """Write an install from an iterable of entries. A thin wrapper over `InstallWriter`.
+
+    Kept because the tests and the fixture generators call it, and because "write these entries"
+    is the shape a caller wants when the entries are small. The building path uses `InstallWriter`
+    directly, because for a 35 B model the entries are not small.
+    """
+    writer = InstallWriter(install)
+    for entry in entries:
+        writer.add(entry)
+    return writer.finish(source=source, spec=spec, policy_files=policy_files)
 
 
 def verify_install(install: Path) -> dict:
@@ -317,27 +382,65 @@ def build_install(snapshot: Path, install: Path, spec: dict, policy: dict, polic
 
     handle = SafetensorsSource(snapshot)
 
-    entries: list[dict] = []
+    writer = InstallWriter(install)
     skipped: list[str] = []
+
+
     for tensor in sorted(spec["tensors"], key=lambda t: t["name"]):
         role = tensor["role"]
         quant = policy_for(policy, role)
+        # Every tensor is read a block of rows at a time. A stacked expert tensor is two
+        # gigabytes in fp32 and this node has about four and a half usable, so reading it whole
+        # would put the install builder itself over the budget the install exists to fit into.
+        shape = list(tensor["shape"])
+        # One rule for every rank, and it is the same rule the readers use: the row count is the
+        # product of the leading dimensions and the column count is the last one. A **1-D** tensor
+        # — every norm, `A_log`, `dt_bias` — is therefore one row of N columns, not N rows of N.
+        # Getting that wrong made the payload 191 tensors' worth of inconsistent, and the reader
+        # would have decoded them into plausible weights.
+        rows = int(np.prod(shape[:-1])) if len(shape) > 0 else 1
+        columns = shape[-1] if shape else 1
+        # Chunking is by **leading-axis entries**, which is what the reader slices: a row of a
+        # 2-D tensor, or one expert of a stacked 3-D one. Each entry contributes `inner` payload
+        # rows of `columns` — and since an entry is never split, no quantisation group can
+        # straddle two experts.
+        leading = shape[0] if shape else 1
+        inner = int(np.prod(shape[1:-1])) if len(shape) > 2 else 1
+        per_chunk = max(1, ROW_CHUNK_BYTES // max(inner * columns * 4, 1))
+        # A rank-1 tensor is read whole. `rows` slices the *leading* axis, and for a rank-1 tensor
+        # that axis is its length rather than a row index — chunking it would hand back elements
+        # where rows are expected. They are tiny (a norm, `A_log`, `dt_bias`), so this costs
+        # nothing and removes a rule that was quietly wrong.
+        whole_1d = len(shape) == 1
+
         if quant != "int4-affine":
             # Kept, not dropped: an install is the whole model, or it is not an install.
             # These are the roles the policy holds at higher precision — norms, the
             # convolution, the per-head decay — and I3 is explicit that gating stays at
             # bf16 or above.
-            value = handle.tensor(tensor["name"])
-            raw = value.astype(np.float16).tobytes() if quant == "fp16" else None
-            if quant == "bf16":
-                # bf16 from a widened bf16 is exact: the low sixteen bits are already zero.
-                raw = (value.view(np.uint32) >> 16).astype(np.uint16).tobytes()
-            elif quant == "fp32":
-                raw = value.astype(np.float32).tobytes()
-            if raw is None:
-                raise PolicyError(f"role '{role}': precision '{quant}' is not one this pass can store")
+            pieces: list[bytes] = []
+            ranges = (
+                [(0, 1)] if whole_1d
+                else [(start, min(start + per_chunk, leading)) for start in range(0, leading, per_chunk)]
+            )
+            for start, end in ranges:
+                value = (
+                    handle.tensor(tensor["name"]).reshape(-1, columns)
+                    if whole_1d
+                    else handle.rows(tensor["name"], start, end).reshape(-1, columns)
+                )
+                if quant == "bf16":
+                    # bf16 from a widened bf16 is exact: the low sixteen bits are already zero.
+                    pieces.append((value.view(np.uint32) >> 16).astype(np.uint16).tobytes())
+                elif quant == "fp32":
+                    pieces.append(value.astype(np.float32).tobytes())
+                elif quant == "fp16":
+                    pieces.append(value.astype(np.float16).tobytes())
+                else:
+                    raise PolicyError(f"role '{role}': precision '{quant}' is not one this pass can store")
+            raw = b"".join(pieces)
             skipped.append(f"{tensor['name']} ({role}: {quant})")
-            entries.append(
+            writer.add(
                 {
                     "name": tensor["name"],
                     "role": role,
@@ -349,10 +452,21 @@ def build_install(snapshot: Path, install: Path, spec: dict, policy: dict, polic
                 }
             )
             continue
-        weight = handle.tensor(tensor["name"])
-        entry = quantize_tensor(weight)
+        piece_rows: list[dict] = []
+        ranges = (
+            [(0, 1)] if whole_1d
+            else [(start, min(start + per_chunk, leading)) for start in range(0, leading, per_chunk)]
+        )
+        for start, end in ranges:
+            block = (
+                handle.tensor(tensor["name"]).reshape(-1, columns)
+                if whole_1d
+                else handle.rows(tensor["name"], start, end).reshape(-1, columns)
+            )
+            piece_rows.append(quantize_rows(block, original_shape=shape))
+        entry = concat_rows(piece_rows, shape)
         entry.update({"name": tensor["name"], "role": role, "quant": quant})
-        entries.append(entry)
+        writer.add(entry)
 
     source = {
         "repo": spec["source"]["repo"],
@@ -360,7 +474,7 @@ def build_install(snapshot: Path, install: Path, spec: dict, policy: dict, polic
         "files": spec["source"]["files"],
         "spec_family": spec["family"],
     }
-    manifest = write_install(install, source=source, spec=spec, entries=entries, policy_files=[policy_file])
+    manifest = writer.finish(source=source, spec=spec, policy_files=[policy_file])
     manifest["skipped"] = skipped
     return manifest
 
