@@ -67,10 +67,14 @@ final class ModelCacheTests: XCTestCase {
         }
         print(String(format: "\n  cached replay vs chunked prefill: max |Δ| %.3e against scale %.3e (%.1e relative)",
                      worst, scale, worst / max(scale, 1e-30)))
-        XCTAssertLessThan(worst, max(1e-2, scale * 1e-2), "the replay must land on the same position")
-        // And it must be the *last* position rather than an earlier one: taking a different
-        // position would be a much larger error than the path difference.
-        XCTAssertGreaterThan(worst, 0, "a bit-identical result would mean D8 does not apply")
+        // **Exactly zero**, and that is not an accident: this prompt is nine positions and the
+        // chunked rule's chunk is sixty-four, so the whole prompt is one chunk and the chunked
+        // rule *is* the recurrence. `D8`'s divergence needs a second chunk — the Python contract
+        // measures 3.2e-07 relative for the recurrent rule against the chunked one over seventy
+        // positions, where the chunk boundary finally matters. So this test pins the boundary of
+        // the claim as well as the claim: inside one chunk, cached and uncached are the same
+        // bytes; across chunks they are the same recurrence to rounding.
+        XCTAssertEqual(worst, 0, "a prompt inside one chunk must replay bit for bit")
     }
 
     /// The router's decisions through the cached path, asserted separately from any number (I3).
@@ -112,6 +116,60 @@ final class ModelCacheTests: XCTestCase {
         XCTAssertEqual(
             agreed, total,
             "the same experts must be chosen; if one flips, that is a finding about the cache, not a tolerance"
+        )
+    }
+
+    /// The cached attention, against the sequence attention, bit for bit.
+    ///
+    /// This is the half of `D8` that is *not* allowed to differ: cached attention computes the
+    /// same sum over the same values in the same order, so any difference at all is a defect
+    /// rather than a numeric path. Written because the Gated DeltaNet decode step turned out to
+    /// be correct to 1.6e-06 relative on the same fixtures — far too small to explain the real
+    /// model's order-one logit divergence — which leaves this as the suspect.
+    func testCachedAttentionIsBitIdenticalToTheSequenceAttention() throws {
+        let forward = try Qwen3_5Forward(snapshot: try checkpoint())
+        let golden = try tokens()
+        let hiddenSize = forward.config.hiddenSize
+
+        let attentionBlocks = forward.spec.tensors.filter { $0.role == .attnQ }.map(\.block).sorted()
+        let block = try XCTUnwrap(attentionBlocks.first, "the fixture must have a full-attention layer")
+        let index = Int(block.split(separator: ".")[1])!
+        let layer = try forward.loadLayer(index)
+
+        // A short synthetic sequence, so the comparison does not depend on the prompt.
+        var hidden = [Float](repeating: 0, count: 5 * hiddenSize)
+        for position in 0..<hidden.count { hidden[position] = Float((position * 37) % 101) * 0.01 - 0.5 }
+        _ = golden
+
+        let length = 5
+        let tables = forward.ropeTables(positions: (0..<length).map(Double.init))
+        var mask = [Float](repeating: 0, count: length * length)
+        for row in 0..<length {
+            for column in 0..<length { mask[row * length + column] = column > row ? -Float.infinity : 0 }
+        }
+        let sequence = try forward.attention(
+            hidden, weights: layer.weights, length: length, tables: tables, mask: mask
+        )
+
+        var keys: [Float] = []
+        var values: [Float] = []
+        var stepped = [Float](repeating: 0, count: length * hiddenSize)
+        for position in 0..<length {
+            let one = Array(hidden[(position * hiddenSize)..<((position + 1) * hiddenSize)])
+            let stepTables = forward.ropeTables(positions: [Double(position)])
+            let step = try forward.attentionStep(
+                one, weights: layer.weights, tables: stepTables, keys: &keys, values: &values,
+                cachedLength: position
+            )
+            for offset in 0..<hiddenSize { stepped[position * hiddenSize + offset] = step[offset] }
+        }
+
+        var worst: Float = 0
+        for offset in 0..<sequence.count { worst = max(worst, abs(stepped[offset] - sequence[offset])) }
+        print(String(format: "\n  cached attention vs sequence attention: worst |Δ| %.3e", worst))
+        XCTAssertEqual(
+            worst, 0,
+            "cached attention is the same sum in the same order, so it must be bit-identical"
         )
     }
 

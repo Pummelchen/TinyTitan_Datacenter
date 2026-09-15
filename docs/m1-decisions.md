@@ -71,7 +71,35 @@ What is not yet wired: a prefill that leaves the states behind, and the attentio
 cache. The unit is verified before either, because the wiring is where a state can be threaded
 into the wrong layer or the wrong batch element and still produce plausible text.
 
-## The cache: implemented, measurable, and **not yet trusted**
+## The cache: the bug, and what it was
+
+The cached path diverged from the uncached one on the real model from the second token, while the
+reference's own two paths agreed on the fixture. The margins said it was a defect rather than a
+`D8` difference: **both paths were confident in different tokens**, which means their logits
+differed by more than the top-2 gap — of the order of one, not of rounding.
+
+Isolation, in the order the evidence arrived:
+
+| check | result |
+| --- | --- |
+| `GatedDeltaNet.decodeStep` vs the sequence path, fixture | **1.6e-06 relative** — rounding, not the cause |
+| cached attention vs sequence attention, fixture | **6.1e-03** — the defect, and the test that found it |
+| after the fix | **0.000e+00**, bit-identical |
+| real model, cached vs uncached, 4 steps | tokens **and** margins identical (`11751,11,264,3177`; `1.6400, 0.0972, 1.2532, 2.6414`) |
+
+**The bug:** `Ops.orderedMatmul` takes its weight as `[out, k]` — the layout of a
+`Linear.weight` — and `attentionStep` built both of its weight matrices as `[k, out]`. Every
+shape was right, every number was plausible, and the pairs being multiplied were the wrong ones.
+The sequence path was passing the key head *as stored* and the value head *transposed*, which is
+what gave the layout away.
+
+**And one measurement corrected a claim:** for a prompt inside one 64-position chunk the cached
+replay is **bit-identical** to the chunked prefill, because the chunked rule *is* the recurrence
+there. `D8`'s divergence needs a second chunk — 3.2e-07 relative over seventy positions. So the
+honest statement of `D8` is narrower than it first read: **within a chunk the paths coincide
+exactly; across chunks they agree to rounding.**
+
+## The cache: implemented and measured
 
 `sources/DatacenterEngine/ModelCache.swift` decodes one position per token against a per-layer
 state — the Gated DeltaNet's window and recurrence, and the full-attention layers' keys and
@@ -88,15 +116,7 @@ attention. `datacenter-generate --cached` measures it.
 | Tiny fixture: replay vs chunked prefill logits | **2.2e-03 relative** |
 | Reference, cached vs uncached greedy, same fixture | **identical** (8 steps) |
 
-**The last two rows are why the cache is not trusted yet.** On the tiny fixture my two paths
-produce the same tokens, and so do the reference's — but on the **real** model my cached and
-uncached paths agree on the first token and diverge from the second (`11751, 13, 561, 6511`
-against `11751, 11, 264, 3177`). That asymmetry is what makes it a suspected bug rather than a
-`D8` path difference: a numeric-path difference of the measured size usually leaves the argmax
-alone, which is precisely what the reference shows on the same fixture.
-
-So the state of this work is: **implemented, measured, and withheld from the gate** until the
-divergence is isolated. The experiment that will settle it is per-layer: cache and no-cache over
-the same prompt on the real model, comparing each layer's `hidden_out`, so the first layer that
-disagrees names the bug. Until then the cached path is an optimisation under investigation, and
-M1's gate continues to rest on the uncached path, which is bit-identical to the contract.
+The bug above was found and fixed, and after it the real model agrees on **tokens and margins**.
+The cache is therefore trustworthy as an optimisation. It remains a second numeric path by `D8`,
+so M1's gate continues to rest on the uncached path — which is bit-identical to the contract — and
+the cached path is checked against it, with the router's decisions compared exactly.

@@ -190,18 +190,23 @@ extension Qwen3_5Forward {
         let (cache, promptLogits) = try prepareCache(tokens: prompt)
         var generated: [Int] = []
         var seconds: [Double] = []
+        var margins: [Float] = []
         var logits = promptLogits
         var result: (tensors: [TraceWriter.Tensor], discrete: [TraceWriter.Discrete]) = ([], [])
 
         for _ in 0..<maxNewTokens {
             let next = Greedy.argmax(logits, offset: 0, width: vocabularySize)
             generated.append(next)
+            margins.append(Greedy.margin(logits, offset: 0, width: vocabularySize))
             let started = Date()
             result = try decodeOne(token: next, cache: cache, capturing: false)
             seconds.append(Date().timeIntervalSince(started))
             logits = try logitsOf(result.tensors)
         }
-        return Generation(prompt: prompt, generated: generated, secondsPerStep: seconds, captured: result.tensors)
+        return Generation(
+            prompt: prompt, generated: generated, secondsPerStep: seconds, captured: result.tensors,
+            margins: margins
+        )
     }
 
     func logitsOf(_ tensors: [TraceWriter.Tensor]) throws -> [Float] {

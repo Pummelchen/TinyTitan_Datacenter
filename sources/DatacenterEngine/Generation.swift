@@ -33,6 +33,28 @@ public enum Greedy {
         }
         return bestIndex - offset
     }
+
+    /// The gap between the best and the second-best logit.
+    ///
+    /// This is the number that separates the two ways a token can differ between two numeric
+    /// paths. A **marginal** choice — a margin of a few ULP — was never really decided, and a
+    /// path that differs in the last bit is entitled to move it; that is I3's warning made
+    /// concrete. A large margin that flips is a defect, because no rounding explains it.
+    public static func margin(_ values: [Float], offset: Int, width: Int) -> Float {
+        precondition(offset >= 0 && width > 0 && offset + width <= values.count, "margin window out of range")
+        var best = values[offset]
+        var second: Float = -Float.infinity
+        for index in 1..<width {
+            let value = values[offset + index]
+            if value > best {
+                second = best
+                best = value
+            } else if value > second {
+                second = value
+            }
+        }
+        return best - second
+    }
 }
 
 public struct Generation {
@@ -40,6 +62,13 @@ public struct Generation {
     public let generated: [Int]
     /// Seconds per forward pass, one per step, for the record rather than for a claim.
     public let secondsPerStep: [Double]
+    /// The **margin** between the two highest logits at each step, one per generated token.
+    ///
+    /// A marginal argmax flip and a bug look identical from the token ids alone, and they mean
+    /// opposite things: the first is what I3 warns about — a numeric-path difference moving a
+    /// decision that was never decided — and the second is a defect. The margin is what tells
+    /// them apart. It is recorded rather than judged, so a divergence can be read afterwards.
+    public let margins: [Float]
 
     public var tokens: [Int] { prompt + generated }
 
@@ -48,7 +77,11 @@ public struct Generation {
     /// element, not just by its token ids.
     public let captured: [TraceWriter.Tensor]
 
-    public init(prompt: [Int], generated: [Int], secondsPerStep: [Double], captured: [TraceWriter.Tensor]) {
+    public init(
+        prompt: [Int], generated: [Int], secondsPerStep: [Double], captured: [TraceWriter.Tensor],
+        margins: [Float] = []
+    ) {
+        self.margins = margins
         self.prompt = prompt
         self.generated = generated
         self.secondsPerStep = secondsPerStep

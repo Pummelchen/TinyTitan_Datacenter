@@ -82,6 +82,10 @@ do {
     let slowest = generation.secondsPerStep.max() ?? 0
     print("generated: \(generation.generated.map(String.init).joined(separator: ","))")
     print("mode: \(cached ? "cached decode" : "full sequence each step")")
+    // The margins, step by step: a marginal flip is not a defect and a large-margin disagreement
+    // is, and the token ids alone cannot tell them apart.
+    let margins = generation.margins.map { String(format: "%.4f", $0) }.joined(separator: ", ")
+    print("top-2 margins: \(margins)")
     print(
         "wrote \(output.path): \(generation.captured.count) tensors, digest \(manifest.digest.prefix(16))…, "
             + String(format: "%.1f s over %d step(s), slowest %.1f s", total, generation.secondsPerStep.count, slowest)

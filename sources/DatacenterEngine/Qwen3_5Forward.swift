@@ -489,25 +489,30 @@ public struct Qwen3_5Forward: ForwardPass {
             var queryHead = [Float](repeating: 0, count: headDim)
             for index in 0..<headDim { queryHead[index] = query[head * headDim + index] }
 
-            // `[headDim, width]`, so the ordered matmul produces one score per cached position.
-            var transposedKeys = [Float](repeating: 0, count: headDim * width)
+            // `Ops.orderedMatmul` takes `w` as `[out, k]` — the layout of a `Linear.weight` — so
+            // the scores' weight is `[cached positions, headDim]`, which is the key head *as
+            // stored*. Building it the other way round multiplies the wrong pairs and still
+            // returns numbers of the right shape; this is the bug the bit-identity test caught.
+            var keyRows = [Float](repeating: 0, count: width * headDim)
             for position in 0..<width {
                 for index in 0..<headDim {
-                    transposedKeys[index * width + position] = keys[(position * kvHeads + kvHead) * headDim + index]
+                    keyRows[position * headDim + index] = keys[(position * kvHeads + kvHead) * headDim + index]
                 }
             }
-            var scores = Ops.orderedMatmul(x: queryHead, w: transposedKeys, rows: 1, k: headDim, out: width)
+            var scores = Ops.orderedMatmul(x: queryHead, w: keyRows, rows: 1, k: headDim, out: width)
             for index in 0..<scores.count { scores[index] = scores[index] * scaling }
             let attention = Ops.softmax(x: scores, rows: 1, width: width)
 
-            var transposedValues = [Float](repeating: 0, count: width * headDim)
-            for position in 0..<width {
-                for index in 0..<headDim {
-                    transposedValues[position * headDim + index] =
+            // And here `out` is the head dimension and `k` is the cached positions, so the weight
+            // is `[headDim, width]` — the transpose, exactly as the sequence path builds it.
+            var valueRows = [Float](repeating: 0, count: headDim * width)
+            for index in 0..<headDim {
+                for position in 0..<width {
+                    valueRows[index * width + position] =
                         values[(position * kvHeads + kvHead) * headDim + index]
                 }
             }
-            let mixed = Ops.orderedMatmul(x: attention, w: transposedValues, rows: 1, k: width, out: headDim)
+            let mixed = Ops.orderedMatmul(x: attention, w: valueRows, rows: 1, k: width, out: headDim)
             for index in 0..<headDim { mixer[head * headDim + index] = mixed[index] }
         }
 

@@ -70,6 +70,7 @@ extension ForwardPass {
         var seconds: [Double] = []
 
         var captured = try forward(tokens: tokens)
+        var margins: [Float] = []
         for _ in 0..<maxNewTokens {
             guard let logits = captured.last, logits.name == "logits" else {
                 throw GenerationError.noLogits
@@ -78,13 +79,17 @@ extension ForwardPass {
             let offset = (tokens.count - 1) * width
             let next = Greedy.argmax(logits.values, offset: offset, width: width)
             generated.append(next)
+            margins.append(Greedy.margin(logits.values, offset: offset, width: width))
             tokens.append(next)
 
             let started = Date()
             captured = try forward(tokens: tokens)
             seconds.append(Date().timeIntervalSince(started))
         }
-        return Generation(prompt: prompt, generated: generated, secondsPerStep: seconds, captured: captured)
+        return Generation(
+            prompt: prompt, generated: generated, secondsPerStep: seconds, captured: captured,
+            margins: margins
+        )
     }
 }
 
