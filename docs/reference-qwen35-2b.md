@@ -144,6 +144,39 @@ Two facts, both easy to get wrong:
 QK-norm is unchanged from `qwen3`: applied to the per-head `[tokens, heads, head_dim]`
 view, on the head dim only, and to query and key but not value (`:791`–`:792`).
 
+## The backbone RMSNorm is weight-offset — and the same file contains the other kind
+
+`Qwen3_5RMSNorm:841` is **not** the ordinary `weight * normalised`:
+
+```python
+self.weight = nn.Parameter(torch.zeros(dim))     # zeros, not ones
+...
+output = self._norm(x.float())                   # x * rsqrt(mean(x^2) + eps)
+output = output * (1.0 + self.weight.float())    # (1 + weight), not weight
+return output.type_as(x)                         # cast last
+```
+
+A zero weight is therefore the **identity** norm, and a checkpoint's stored values are
+**offsets from one**. Two independent confirmations:
+
+- the model's own module, on a fresh initialisation, returns a non-zero output with an
+  all-zero weight;
+- the real checkpoint's `layers.0.input_layernorm.weight` is centred near **zero** — mean
+  `0.0956`, min `-0.2051`, max `1.0859` — which is what an offset looks like. A plain
+  convention would be centred near `1.0` and positive.
+
+Three norms live in this family and they do **not** share a convention:
+
+| Norm | Convention |
+| --- | --- |
+| `Qwen3_5RMSNorm` (backbone: `input_layernorm`, `post_attention_layernorm`, `q_norm`, `k_norm`, final `norm`) | `(1 + weight)`, parameter initialised to **zeros** |
+| `Qwen3_5RMSNormGated` (inside the Gated DeltaNet) | `weight`, parameter initialised to **ones** |
+| `Qwen3RMSNorm` (the `qwen3` family) | `weight`, parameter initialised to **ones** |
+
+Assuming the families agreed here produced a **5 % error at layer 0** — the kind of
+difference that would have survived every shape check. It was caught by comparing against
+the reference module rather than by reading the two implementations side by side.
+
 ## The Gated DeltaNet layer, transcribed (`Qwen3_5GatedDeltaNet.forward:550`)
 
 | Step | What happens | Line |

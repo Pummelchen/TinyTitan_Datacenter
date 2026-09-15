@@ -124,3 +124,174 @@ def gated_delta_net_layer(hidden: np.ndarray, weights: dict, config) -> np.ndarr
     )
     normalized = normalized.reshape(batch, length, value_dim)
     return ordered_matmul(normalized, weights["out_proj"])
+
+
+# --------------------------------------------------------------------------------------
+# The full-attention layer, the decoder layer and the text model.
+# --------------------------------------------------------------------------------------
+
+
+def rope_tables(config, positions: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The text RoPE tables, width `int(head_dim * partial_rotary_factor)`.
+
+    `Qwen3_5TextRotaryEmbedding:164` builds `inv_freq` over `dim = int(head_dim ×
+    partial_rotary_factor)` — 64 of 256 for this checkpoint — and
+    `recomposition_frequencies:204` doubles it. The multimodal grid recomposition is a
+    no-op for text-only input: `Qwen3_5TextModel.forward:1260` expands one grid into four
+    identical ones, so the interleaved copy between grids copies identical values.
+    """
+    head_dim = config.head_dim
+    factor = 1.0
+    parameters = getattr(config, "rope_parameters", None) or {}
+    factor = parameters.get("partial_rotary_factor", 1.0)
+    base = parameters.get("rope_theta", 10_000.0)
+    dim = int(head_dim * factor)
+
+    exponents = f32(np.arange(0, dim, 2, dtype=np.float32) / np.float32(dim))
+    inverse = f32(np.float32(1.0) / f32(np.power(np.float32(base), exponents)))
+    angles = np.outer(np.float64(positions), np.float64(inverse))
+    doubled = np.concatenate([angles, angles], axis=-1)
+    return f32(np.cos(doubled)), f32(np.sin(doubled))
+
+
+def apply_rope_partial(x: np.ndarray, cos: np.ndarray, sin: np.ndarray) -> np.ndarray:
+    """`apply_rotary_pos_emb:674`, which is **partial** by construction.
+
+    The first `rotary_dim` channels rotate with rotate-half *within themselves* and the
+    rest pass through untouched. `x` is `[T, heads, head_dim]`.
+    """
+    x = f32(x)
+    rotary = cos.shape[-1]
+    half = rotary // 2
+    rotating, passing = x[..., :rotary], x[..., rotary:]
+    rotated = np.concatenate([-rotating[..., half:], rotating[..., :half]], axis=-1)
+    embedded = f32(f32(rotating * cos[:, None, :]) + f32(rotated * sin[:, None, :]))
+    return np.concatenate([embedded, passing], axis=-1)
+
+
+def full_attention_layer(hidden: np.ndarray, weights: dict, config, cos: np.ndarray, sin: np.ndarray,
+                         mask: np.ndarray) -> np.ndarray:
+    """`Qwen3_5Attention.forward:776`, including the output gate that is unique to it."""
+    hidden = f32(hidden)
+    tokens = hidden.shape[0]
+    heads = config.num_attention_heads
+    kv_heads = config.num_key_value_heads
+    head_dim = config.head_dim
+    eps = config.rms_norm_eps
+    scaling = np.float32(head_dim**-0.5)
+
+    # The projection is viewed as [tokens, heads, 2*head_dim] and halved along the last
+    # axis: the gate sits *inside* each head, not in a second bank after all queries.
+    projected = ordered_matmul(hidden, weights["q_proj"]).reshape(tokens, heads, head_dim * 2)
+    query, gate = projected[..., :head_dim], projected[..., head_dim:]
+
+    key = ordered_matmul(hidden, weights["k_proj"]).reshape(tokens, kv_heads, head_dim)
+    value = ordered_matmul(hidden, weights["v_proj"]).reshape(tokens, kv_heads, head_dim)
+
+    query = rms_norm(query, weights["q_norm"], eps)
+    key = rms_norm(key, weights["k_norm"], eps)
+    query = apply_rope_partial(query, cos, sin)
+    key = apply_rope_partial(key, cos, sin)
+
+    groups = heads // kv_heads
+    key = np.repeat(key, groups, axis=1)
+    value = np.repeat(value, groups, axis=1)
+
+    mixer = np.zeros((tokens, heads, head_dim), dtype=np.float32)
+    for head in range(heads):
+        scores = f32(ordered_matmul(query[:, head, :], key[:, head, :]) * scaling)
+        scores = f32(scores + mask)
+        attention = softmax(scores)
+        mixer[:, head, :] = ordered_matmul(attention, f32(value[:, head, :].T))
+
+    mixer = mixer.reshape(tokens, heads * head_dim)
+    mixer = f32(mixer * sigmoid(gate.reshape(tokens, heads * head_dim)))
+    return ordered_matmul(mixer, weights["o_proj"])
+
+
+def softmax(x: np.ndarray) -> np.ndarray:
+    """Max-subtracted, ordered sum, fp32 — the reference softmaxes in fp32 here too."""
+    x = f32(x)
+    shifted = f32(x - x.max(axis=-1, keepdims=True))
+    exponentials = exp32(shifted)
+    total = ordered_sum(exponentials, axis=-1)
+    return f32(exponentials / total[..., None])
+
+
+def decoder_layer(hidden: np.ndarray, weights: dict, config, layer_index: int,
+                  cos: np.ndarray, sin: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """`Qwen3_5DecoderLayer.forward:874`: residual, mixer, residual, feed-forward."""
+    hidden = f32(hidden)
+    residual = hidden
+    normed = rms_norm(hidden, weights["input_layernorm"], config.rms_norm_eps)
+    if config.layer_types[layer_index] == "full_attention":
+        mixed = full_attention_layer(normed, weights["self_attn"], config, cos, sin, mask)
+    else:
+        # The Gated DeltaNet layer keeps the reference module's `[batch, sequence, hidden]`
+        # shape -- it was checked against that module directly -- so the unbatched model
+        # forward adds and drops the batch axis here rather than duplicating the layer.
+        mixed = gated_delta_net_layer(normed[None], weights["linear_attn"], config)[0]
+    hidden = f32(residual + mixed)
+
+    residual = hidden
+    normed = rms_norm(hidden, weights["post_attention_layernorm"], config.rms_norm_eps)
+    gated = f32(silu(ordered_matmul(normed, weights["mlp"]["gate_proj"]))
+                * ordered_matmul(normed, weights["mlp"]["up_proj"]))
+    hidden = f32(residual + ordered_matmul(gated, weights["mlp"]["down_proj"]))
+    return hidden
+
+
+def rms_norm(x: np.ndarray, weight: np.ndarray, eps: float) -> np.ndarray:
+    """The backbone RMSNorm — and this family's is **weight-offset**.
+
+    `Qwen3_5RMSNorm:841` initialises its parameter to **zeros** and multiplies by
+    `(1.0 + weight)`, not by `weight`:
+
+        output = x * rsqrt(mean(x^2) + eps)
+        output = output * (1.0 + weight)
+
+    so a zero weight is the identity and a checkpoint's stored values are offsets from
+    one. The `qwen3` family's norm is the ordinary `weight * normalised`, and the GDN's
+    own `Qwen3_5RMSNormGated` in the same file is *also* the ordinary kind — three norms,
+    two conventions, which is exactly why this was found by comparing against the module
+    rather than by assuming the family was consistent with itself.
+
+    The reference also casts last: `output * (1 + weight)` in fp32, and only then to the
+    model dtype.
+    """
+    x = f32(x)
+    variance = f32(ordered_sum(f32(x * x), axis=-1) / np.float32(x.shape[-1]))
+    inverse = f32(np.float32(1.0) / np.sqrt(f32(variance + np.float32(eps))))
+    return f32(f32(np.float32(1.0) + weight) * f32(x * inverse[..., None]))
+
+
+def text_model_forward(weights: dict, config, tokens, capture: dict | None = None) -> np.ndarray:
+    """The text tower end to end, returning the logits.
+
+    `weights` is `{"embed_tokens", "norm", "layers": [...]}` with each layer holding the
+    role-keyed arrays the importer maps to.
+    """
+    tokens = list(tokens)
+    hidden = f32(weights["embed_tokens"][tokens])
+    if capture is not None:
+        capture["embed.out"] = hidden
+
+    cos, sin = rope_tables(config, np.arange(len(tokens), dtype=np.float64))
+    # Causal mask as an additive -inf matrix, applied to the scaled scores.
+    mask = np.triu(np.full((len(tokens), len(tokens)), -np.inf, dtype=np.float32), k=1)
+
+    for index, layer in enumerate(weights["layers"]):
+        if capture is not None:
+            capture[f"layer.{index:02d}.hidden_in"] = hidden
+        hidden = decoder_layer(hidden, layer, config, index, cos, sin, mask)
+        if capture is not None:
+            capture[f"layer.{index:02d}.hidden_out"] = hidden
+
+    hidden = rms_norm(hidden, weights["norm"], config.rms_norm_eps)
+    if capture is not None:
+        capture["final_norm.out"] = hidden
+    # The family is tied: the embedding matrix is the head.
+    logits = ordered_matmul(hidden, weights["embed_tokens"])
+    if capture is not None:
+        capture["logits"] = logits
+    return logits
