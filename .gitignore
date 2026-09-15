@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Xcode and Swift Package Manager
+.build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.moved-aside
+
+# Local wiki clone and scratch inspection — tooling, never part of the repository
+.wiki/
+.inspect/
+
+# Model installs and large artifacts: never committed
+models/
+*.gturbo
+
+# Local configuration and secrets
+.env
+.env.*
+*.local

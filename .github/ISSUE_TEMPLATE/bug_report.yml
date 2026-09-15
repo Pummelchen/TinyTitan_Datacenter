@@ -1,0 +1,49 @@
+name: Bug report
+description: Something is wrong — in the documentation, the plan, the tooling, or (later) the runtime.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This project is in **design phase**: there is no code yet, so most reports are
+        about the documentation, the plan or the wiki. Please search the existing
+        issues and the wiki before filing.
+  - type: textarea
+    id: what
+    attributes:
+      label: What is wrong
+      description: The problem, as concretely as you can state it.
+    validations:
+      required: true
+  - type: input
+    id: where
+    attributes:
+      label: Where
+      description: The file, page or section, and the commit if you have it.
+      placeholder: "README.md §Why — commit abc1234"
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+      description: Why the current state is wrong — a contradiction, a broken link, a claim that does not hold.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Commands and their output, links, or the measurement that shows the problem. "It does not work" is not evidence.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched the existing issues and the wiki, and this is not already reported.
+          required: true
+        - label: I have not included credentials, host addresses or model weights here.
+          required: true

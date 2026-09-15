@@ -1,0 +1,38 @@
+name: Markdown links
+
+# The only gate that can run before any code exists, and the one this project
+# needs most while the documentation is the product. Offline by design: external
+# URLs are skipped, so a flaky host cannot fail the build.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - converted_to_draft
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: markdown-links-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  links:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Test the link gate itself
+        run: python3 -m unittest discover -s tools -v
+      - name: Check Markdown links
+        run: python3 tools/check_markdown_links.py --verbose

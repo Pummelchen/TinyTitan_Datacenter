@@ -1,4 +1,4 @@
-<img width="1254" height="1254" alt="TinyTitanDatacenter" src="https://github.com/user-attachments/assets/d7c6f173-6dcb-4085-a42e-ceb423658b51" />
+<img width="1254" height="1254" alt="TinyTitanDatacenter" src="TinyTitanDatacenter.png" />
 
 
 
@@ -10,7 +10,7 @@
 [![Contact](https://img.shields.io/badge/Contact-0xa0b1%40gmail.com-blue?style=flat-square&logo=gmail&logoColor=white)](mailto:0xa0b1@gmail.com)
 
 
-A distributed inference engine for large MoE language models on clusters of Macs Minis/Studio's over LAN/SFP/QSFP and Thunderbold.
+A distributed inference engine for large MoE language models on clusters of Macs Minis/Studio's over LAN/SFP/QSFP and Thunderbolt.
 
 **Status: design phase. Nothing here runs yet.**
 
@@ -24,8 +24,9 @@ scaled to allow an unlimited count of Mac nodes (same model type).
 
 ## Why
 
-Single-node SSD streaming already works (see NVMAI/TinyTitan) and gets ~4-6 tok/s on
-a 180B-class MoE. The obvious next step — splitting layers across machines — doesn't
+Single-node SSD streaming already works in the sister project
+[TinyTitan](https://github.com/Pummelchen/TinyTitan) and gets ~4-6 tok/s on a
+180B-class MoE. The obvious next step — splitting layers across machines — doesn't
 help: with one sequence in flight only one node is ever busy, so bytes-read-per-token
 is unchanged.
 

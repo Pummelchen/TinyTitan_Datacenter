@@ -1,0 +1,59 @@
+name: Feature request
+description: Propose a capability, a measurement, or a change to the plan.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The plan is gated phase by phase — see the
+        [Roadmap](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Roadmap) and the
+        [Project Tracker](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Project-Tracker).
+        A proposal is much easier to place when it names the phase it belongs to.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What is missing or wrong today, and who it costs what. A proposal without a problem is a solution looking for one.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: The change, and how it would be verified.
+    validations:
+      required: true
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Which phase does this belong to?
+      description: Leave empty if it is genuinely cross-cutting.
+      multiple: false
+      options:
+        - P0 — Foundation
+        - P1 — M0, dense model on one node
+        - P2 — M1, single node, 4-bit, SSD-streamed
+        - P3 — M2, two nodes, expert-parallel
+        - P4 — M3, four nodes
+        - P5 — M4, DeepSeek-V4.1-Flash
+        - P6 — M5, Qwen3.8-Flash-Next
+        - Cross-cutting
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Including doing nothing, and why that is worse.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched the existing issues, the wiki and the tracker, and this is not already there.
+          required: true
+        - label: I have not included credentials, host addresses or model weights here.
+          required: true

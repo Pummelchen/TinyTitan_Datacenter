@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Design discussions and questions
+    url: https://github.com/Pummelchen/TinyTitan_Datacenter/discussions
+    about: Open-ended design questions, ideas and measurements belong in Discussions, not in the issue tracker.
+  - name: Report a security issue privately
+    url: https://github.com/Pummelchen/TinyTitan_Datacenter/security/advisories/new
+    about: Never open a public issue for a suspected vulnerability — see SECURITY.md.
+  - name: The sister project, TinyTitan
+    url: https://github.com/Pummelchen/TinyTitan/issues
+    about: Defects in the single-node runtime, the installer or the install format belong upstream, in TinyTitan.
