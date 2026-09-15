@@ -135,6 +135,13 @@ public struct InstallFile: WeightSource {
         return true
     }
 
+    /// The entry's payload exactly as stored, for a caller that wants to decode it itself — the
+    /// Metal kernels, or a test comparing two decoders on the same bytes. Checked like any other
+    /// read, and counted.
+    func rawPayload(named name: String) throws -> Data {
+        try payload(try entry(name))
+    }
+
     public func entry(_ name: String) throws -> Entry {
         guard let entry = entries[name] else { throw Error.unknownTensor(name) }
         return entry
