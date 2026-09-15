@@ -151,6 +151,32 @@ stale number and the prediction cannot be confused for one another.
 
 ### Not measured
 
+### The spec carries the checkpoint's geometry, field by field
+
+Verified against the artifact rather than asserted: every geometry field in
+[`Qwen/Qwen3.6-35B-A3B`'s `config.json`](https://huggingface.co/Qwen/Qwen3.6-35B-A3B/raw/main/config.json)
+appears in the real install's `spec.config` with the same value, and **no field is silently
+defaulted** — which is the failure that matters, because a default looks exactly like agreement.
+
+| checkpoint | install `spec.config` | value |
+| --- | --- | --- |
+| `hidden_size` | `hiddenSize` | 2048 |
+| `head_dim` | `headDim` | 256 |
+| `num_attention_heads` / `num_key_value_heads` | `numAttentionHeads` / `numKeyValueHeads` | 16 / 2 |
+| `num_hidden_layers` | `numLayers` | 40 |
+| `num_experts` / `num_experts_per_tok` | `numExperts` / `numExpertsPerToken` | 256 / 8 |
+| `moe_intermediate_size` | `moeIntermediateSize` | 512 |
+| `vocab_size` | `vocabSize` | 248320 |
+| `rms_norm_eps` | `rmsNormEps` | 1e-06 |
+| `rope_parameters.partial_rotary_factor` | `partialRotaryFactor` | 0.25 |
+| `rope_parameters.rope_theta` | `ropeTheta` | 1e7 |
+| `full_attention_interval` | `fullAttentionInterval` | 4 |
+| `linear_num_key_heads` / `linear_num_value_heads` | `linearKeyHeads` / `linearValueHeads` | 16 / 32 |
+
+`tools/test_fixture_spec_matches_config.py` holds that correspondence as a check with tests, and reads
+the config at **top level, under `text_config`, and under `rope_parameters`** — because all three
+nestings are in play and two of them have already fooled a hand-written lookup this session.
+
 > **A withdrawn claim, kept visible.** An earlier revision of this page listed "the MoE fixture does not
 > exercise partial RoPE" here. That was **wrong**: `Fixtures/tiny-qwen36/config.json` has carried
 > `"partial_rotary_factor": 0.5` and `"rope_theta": 10000000.0` all along, and `spec.json` carries
