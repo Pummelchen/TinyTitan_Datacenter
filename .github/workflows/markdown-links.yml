@@ -38,3 +38,21 @@ jobs:
         run: python3 tools/check_markdown_links.py --verbose
       - name: Check Markdown tables
         run: python3 tools/check_markdown_tables.py
+      - name: Check the wiki's tables too
+        run: |
+          # The wiki is a separate repository and is gitignored here, so the step above cannot see
+          # it -- and it is where the tracker lives, so a misaligned row there is the one that
+          # matters most. It is public, so the clone needs no credential.
+          #
+          # If the clone fails, the wiki is reported NOT CHECKED rather than passing quietly: a
+          # check that cannot run must never look like a check that succeeded.
+          #
+          # The link gate is deliberately NOT run here. Wiki pages link to each other by page name
+          # (`[Roadmap](Roadmap)`), which is not a path this repository's checker can resolve, so
+          # running it would report every wiki link as broken.
+          if git clone --depth 1 --quiet \
+               "https://github.com/${GITHUB_REPOSITORY}.wiki.git" /tmp/wiki; then
+            python3 tools/check_markdown_tables.py /tmp/wiki/*.md
+          else
+            echo "::warning::the wiki could not be cloned; its tables were NOT CHECKED"
+          fi
