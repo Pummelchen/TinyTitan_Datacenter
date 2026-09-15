@@ -29,9 +29,19 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
+      - name: Select the newest Xcode on the image
+        # The manifest asks for swift-tools-version 6.4. Runner images ship more than
+        # one Xcode and default to an older one, so the newest installed toolchain is
+        # selected explicitly rather than assumed — and the list is printed, because
+        # "the image has 6.3.3" is the whole diagnosis if this ever fails again.
+        run: |
+          ls -d /Applications/Xcode*.app 2>/dev/null || true
+          newest=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$newest" ]; then
+            echo "selecting $newest"
+            sudo xcode-select -s "$newest"
+          fi
       - name: Toolchain
-        # Printed deliberately: the manifest asks for swift-tools-version 6.4, and if
-        # the image ships something older this line is the whole diagnosis.
         run: |
           swift --version
           xcodebuild -version
