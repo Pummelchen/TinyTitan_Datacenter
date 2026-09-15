@@ -28,9 +28,9 @@ public enum MetalUnpack {
     public static var isAvailable: Bool { MTLCreateSystemDefaultDevice() != nil }
 
     private struct Pipeline {
-        let device: MTLDevice
-        let queue: MTLCommandQueue
-        let state: MTLComputePipelineState
+        let device: any MTLDevice
+        let queue: any MTLCommandQueue
+        let state: any MTLComputePipelineState
     }
 
     private static let pipeline: Result<Pipeline, Error> = {
@@ -70,7 +70,7 @@ public enum MetalUnpack {
             in: (layout.codeBytes + layout.scaleBytes)..<(layout.codeBytes + layout.scaleBytes + layout.rows * layout.groups)
         )
 
-        func buffer(_ bytes: Data, _ label: String) throws -> MTLBuffer {
+        func buffer(_ bytes: Data, _ label: String) throws -> any MTLBuffer {
             guard let buffer = pipeline.device.makeBuffer(bytes: [UInt8](bytes), length: max(bytes.count, 1), options: .storageModeShared) else {
                 throw Error.commandFailed("could not make the \(label) buffer")
             }

@@ -13,12 +13,14 @@ import PackageDescription
 /// Declared once and applied to **every** target, so a target added later cannot quietly opt out.
 /// Measured on this toolchain with `swift test`, which is the only command that compiles the test
 /// targets too: the tree is clean of diagnostics, and each of these four costs what is recorded
-/// beside it in `docs/swift-language-standard.md`. `MemberImportVisibility` cost **one import in
-/// one test file**, counted by iterating the build rather than estimated. `ExistentialAny` costs
-/// fourteen warnings and belongs to its own commit.
+/// beside it in `docs/swift-language-standard.md`. `MemberImportVisibility` cost **one import in one
+/// test file** and `ExistentialAny` cost **four `any` keywords**, both counted by iterating the
+/// build rather than estimated — and both counts were wrong the first time, for the same reason:
+/// an incremental build does not re-emit warnings.
 let shardLanguageStandard: [SwiftSetting] = [
     .enableUpcomingFeature("InferIsolatedConformances"),
     .enableUpcomingFeature("ImmutableWeakCaptures"),
+    .enableUpcomingFeature("ExistentialAny"),
     .enableUpcomingFeature("MemberImportVisibility"),
     .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
 ]

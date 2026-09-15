@@ -13,7 +13,7 @@ reading release notes.
 | Language mode | **6**, which is the tools-version default — strict concurrency and the graduated 6.0–6.3 features are already errors, not warnings |
 | Diagnostics on a clean tree | **0** warnings, **0** errors, measured with `swift test` |
 
-## Enforced: the four that are still upcoming, declared once
+## Enforced: the five that are still upcoming, declared once
 
 `Package.swift` declares `shardLanguageStandard` and applies it to **all six targets**, so a target
 added later cannot quietly opt out:
@@ -21,6 +21,7 @@ added later cannot quietly opt out:
 ```swift
 .enableUpcomingFeature("InferIsolatedConformances")
 .enableUpcomingFeature("ImmutableWeakCaptures")
+.enableUpcomingFeature("ExistentialAny")
 .enableUpcomingFeature("MemberImportVisibility")
 .enableUpcomingFeature("NonisolatedNonsendingByDefault")
 ```
@@ -34,6 +35,7 @@ recorded here, and the two that were not free were paid rather than waved throug
 | `ImmutableWeakCaptures` | 0 diagnostics |
 | `NonisolatedNonsendingByDefault` | 0 diagnostics |
 | `MemberImportVisibility` | **one import, in one test file** — `Qwen3_5ForwardTests.swift` needed `import DatacenterIR` |
+| `ExistentialAny` | **four `any` keywords**, all in one file, the Metal kernel |
 
 `MemberImportVisibility` is worth its own paragraph because it was briefly declared free on a
 measurement that was wrong, then declared expensive on a pass that was interrupted. Neither was a
@@ -41,12 +43,22 @@ number. The count above came from iterating `swift test` under the flag and addi
 imports the compiler named — one round, one file, then exit 0. **A feature that is not free is not
 the same as a feature that is expensive**, and both claims need the loop run to the end.
 
-## Deliberately not enabled: `ExistentialAny`
+## A correction that matters more than the feature
 
-Measured cost: **fourteen warnings**. It requires `any` on every existential, which is worth doing
-and is not free — it is a mechanical pass across the engine's protocol types, and doing it in the
-same change as the four above would bury both. It stays off until it is its own commit with its own
-count, which is the same rule the rest of this file follows.
+`ExistentialAny` was recorded here as costing **fourteen warnings** and was left for its own pass.
+That number was wrong. The real count is **four** — four `any` keywords, in one file — and it is
+enabled.
+
+The mistake was not arithmetic. It was that **an incremental build does not re-emit warnings**: the
+fourteen came from a `swift build` whose output happened to include unrelated diagnostics, and every
+measurement after it was taken against a warm build that printed nothing at all, which read as a
+clean tree. A diagnostic count is only meaningful after touching the sources, so the method below
+now does that first — and the same trap will hide a regression from anyone who reads a quiet build
+as a clean one.
+
+Worth noting for the next feature too: this is the second time a cost in this register was wrong in
+the same direction — first overstated (`MemberImportVisibility` at "expensive", actually one import),
+then understated (a quiet build read as zero). Both were guesses wearing numbers.
 
 ## Graduated, and therefore already enforced by the language mode
 
@@ -61,6 +73,7 @@ The sister project's list of retired names — `ConciseMagicFile`, `ForwardTrail
 ```bash
 # `swift test`, not `swift build`: the test targets carry the same swiftSettings, and a feature
 # that only troubles them is invisible to `swift build`. That mistake is why this section exists.
+touch sources/DatacenterEngine/*.swift sources/DatacenterIR/*.swift   # or the build re-emits nothing
 swift test --no-parallel > /tmp/log 2>&1; echo $?          # baseline, must be 0
 for f in ExistentialAny InferIsolatedConformances ImmutableWeakCaptures \
          MemberImportVisibility NonisolatedNonsendingByDefault; do
