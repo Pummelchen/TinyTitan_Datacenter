@@ -10,7 +10,7 @@
 [![Contact](https://img.shields.io/badge/Contact-0xa0b1%40gmail.com-blue?style=flat-square&logo=gmail&logoColor=white)](mailto:0xa0b1@gmail.com)
 
 
-A distributed inference engine for large MoE language models on clusters of Macs Minis/Studios over LAN/SFP/QSFP and Thunderbold.
+A distributed inference engine for large MoE language models on clusters of Macs Minis/Studio's over LAN/SFP/QSFP and Thunderbold.
 
 **Status: design phase. Nothing here runs yet.**
 
