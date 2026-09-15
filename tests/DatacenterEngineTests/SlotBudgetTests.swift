@@ -72,6 +72,19 @@ final class SlotBudgetTests: XCTestCase {
         )
     }
 
+    /// `D12` should be decided from a measurement, so the instrument has to exist and be honest.
+    func testTheSlotCountCanBeSweptForMeasurement() {
+        XCTAssertEqual(Qwen3_5Forward.slotsFrom(environment: [:]), 16, "the historical literal, unchanged")
+        XCTAssertEqual(Qwen3_5Forward.slotsFrom(environment: ["SHARD_EXPERT_SLOTS": "2"]), 2)
+        XCTAssertEqual(Qwen3_5Forward.slotsFrom(environment: ["SHARD_EXPERT_SLOTS": "64"]), 64)
+        for bad in ["0", "-3", "many", ""] {
+            XCTAssertEqual(
+                Qwen3_5Forward.slotsFrom(environment: ["SHARD_EXPERT_SLOTS": bad]), 16,
+                "\(bad) is not a slot count; refusing it is the point, because a bank of zero would silently disable the cache this exists to measure"
+            )
+        }
+    }
+
     /// What a budget would actually allow, so the decision has its answer attached.
     func testWhatATotalBudgetWouldAllow() {
         let model = RealModel()

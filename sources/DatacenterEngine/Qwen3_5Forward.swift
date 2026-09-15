@@ -114,7 +114,28 @@ public struct Qwen3_5Forward: ForwardPass {
     /// measurement rather than from this comment. It is a `let` because Swift 6's strict
     /// concurrency rejects mutable global state, and it should become a field of the IR's
     /// policy when there is a measurement to put in it.
-    public static let expertSlotsPerLayer = 16
+    /// How many experts one layer's slot bank may hold. Overridable for **measurement**.
+    ///
+    /// `D12` is open: the brief asks for per-layer LRU slot banks and does not say how large, and this
+    /// literal was never derived from a budget — 16 slots is 201 MB per layer and **8.05 GB across 40
+    /// layers**, against roughly 4.5 GB usable, which `SlotBudgetTests` reports as an expected failure.
+    ///
+    /// Rather than decide it, the run should *measure* it: the honest answer needs a cache hit rate at
+    /// more than one size, and a sweep is how the gap between "how often does routing repeat" and "how
+    /// much RAM is there" gets a number attached. `SHARD_EXPERT_SLOTS=<n>` sets it for one process, so
+    /// a measurement is a series of runs rather than a rebuild.
+    /// Swift 6 forbids a mutable global, and it is right to: a value that can change under a running
+    /// forward is a race. Read once, so a sweep is one process per setting — which is how a
+    /// measurement should work anyway, since two bank sizes in one process would share banks.
+    public static let expertSlotsPerLayer = slotsFrom(environment: ProcessInfo.processInfo.environment)
+
+    /// The parse, separated so it can be tested without a process.
+    static func slotsFrom(environment: [String: String]) -> Int {
+        guard let raw = environment["SHARD_EXPERT_SLOTS"], let slots = Int(raw), slots >= 1 else {
+            return 16
+        }
+        return slots
+    }
 
     /// The feed-forward half of a decoder layer. The reference branches inside its decoder
     /// layer between `Qwen3_5MLP` and `Qwen3_5SparseMoeBlock`, and so does this.

@@ -282,3 +282,24 @@ brief found both satisfied, with the evidence rather than the intent:
 
 Sharding policy is **not** audited here because it does not exist yet: it is M2's work, and the brief
 puts it there.
+
+## Measuring the cache hit rate: the sweep instrument
+
+M1's gate asks for "a measured cache hit rate", and `D12` is open because the brief asks for per-layer
+LRU slot banks without saying how large. The literal was `16`, which `SlotBudgetTests` reports as an
+expected failure: 201 MB per layer, **8.05 GB across 40 layers** against roughly 4.5 GB usable.
+
+Rather than guess a size, the run should **measure** it — the honest answer needs a hit rate at more
+than one size, and the gap between "how often does routing repeat" and "how much RAM is there" needs a
+number between the two. `SHARD_EXPERT_SLOTS=<n>` sets the bank for one process:
+
+```bash
+SHARD_EXPERT_SLOTS=2  datacenter-trace ...   # 40 x 2 x 12.58 MB = 1.0 GB, inside the budget
+SHARD_EXPERT_SLOTS=16 datacenter-trace ...   # the historical literal, 8.05 GB, does not fit
+```
+
+Read **once per process** as a `static let`, because Swift 6 forbids a mutable global — and because two
+bank sizes in one process would share banks, so one process per setting is what a sweep wants anyway.
+The parse is a separate function so it can be tested without a process: `"0"`, `"-3"`, `"many"` and `""`
+all fall back to 16, since a bank of zero would silently disable the cache the measurement exists to
+observe.
