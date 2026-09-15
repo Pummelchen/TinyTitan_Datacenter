@@ -74,6 +74,50 @@ contract, which is exactly what a test asserts.
 333 + 19 + 693 = 1045, the whole checkpoint. Both groups are in the file and neither is in M1. As with `qwen3_5`, the exclusion is a named
 prefix with a reason and the tests assert that every tensor is either mapped or excluded.
 
+## This family's attention and Gated DeltaNet are `qwen3_5`'s arithmetic — verified
+
+"Matches by name and shape" is not "matches by arithmetic", and reading two 2100-line modules
+side by side is not a method. `tools/compare_reference_modules.py` parses both modules, renames
+`Qwen3_5Moe` onto `Qwen3_5`, and compares every top-level entity's unparsed body line by line:
+
+```
+$ .venv/bin/python tools/compare_reference_modules.py \
+    .../qwen3_5/modeling_qwen3_5.py .../qwen3_5_moe/modeling_qwen3_5_moe.py \
+    --rename Qwen3_5Moe=Qwen3_5 --allow-differ <reviewed>
+OK — 25 entities share their arithmetic, 7 reviewed difference(s)
+```
+
+**Identical** — the same arithmetic, byte for byte after renaming:
+
+| | |
+| --- | --- |
+| `Qwen3_5GatedDeltaNet` | the whole layer, conv and gated norm included |
+| `Qwen3_5Attention` | including the per-head `[query \| gate]` split |
+| `Qwen3_5RMSNormGated`, `Qwen3_5TextRotaryEmbedding` | |
+| `torch_chunk_gated_delta_rule`, `torch_recurrent_gated_delta_rule`, `l2norm` | the rule itself |
+| `causal_conv1d_fn`, `causal_conv1d_update`, `apply_mask_to_padding_states` | |
+| `apply_rotary_pos_emb`, `rotate_half`, `eager_attention_forward`, `repeat_kv` | |
+
+**The seven differences, all reviewed:**
+
+| Entity | Difference |
+| --- | --- |
+| `Qwen3_5DecoderLayer` | `Qwen3_5MLP(config, intermediate_size)` becomes `Qwen3_5SparseMoeBlock(config)`, plus two lines unpacking the mixture's tuple. The residual structure is unchanged. |
+| `Qwen3_5RMSNorm` | **a decorator**: `@use_kernel_forward_from_hub('RMSNormZeroCentered')` is present in `qwen3_5` and absent in `qwen3_5_moe`. The body is identical. |
+| `Qwen3_5ForCausalLM`, `Qwen3_5ForConditionalGeneration`, `Qwen3_5PreTrainedModel` | the wrapper classes: the mixture's parameter names, and the multimodal entry point |
+| `Qwen3_5ModelOutputWithPast`, `Qwen3_5CausalLMOutputWithPast` | output dataclasses |
+
+The norm's decorator is worth a second look: **`RMSNormZeroCentered`** is the reference's own
+name for the convention M0b found the hard way (a 5 % error at layer 0 from assuming
+`weight` rather than `(1 + weight)`). Two independent routes to the same fact, which is what
+makes it trustworthy.
+
+The consequence for M1: **the M0b kernels are reusable without modification.** The Gated
+DeltaNet, the attention including the output gate, the RoPE, the conv, `l2norm` and the
+chunked rule are the same code in both families, so M1's kernel work is the mixture — the
+router, the expert stack and the shared expert — and the streaming around it, not a second
+implementation of the attention.
+
 ## The mixture of experts, transcribed (`Qwen3_5MoeSparseMoeBlock:903`)
 
 Read from `transformers` v5.17.0 `models/qwen3_5_moe/modeling_qwen3_5_moe.py`.
@@ -145,9 +189,4 @@ mixer, residual, `post_attention_layernorm`, mixture.
 
 - the `attention_mask` path: what the reference does at padded positions in a batch, which
   M1's single-sequence runs do not exercise but M2's might;
-- whether the Gated DeltaNet and attention blocks in *this* module differ in any arithmetic
-  from `qwen3_5`'s beyond the names — the shapes and the class names match, and "matches by
-  name and shape" is not "matches by arithmetic". The transcription above covers the mixture
-  only, and the two attention families must be compared line by line before M1's kernels
-  are trusted;
 - the MTP head, which is M5's feature.

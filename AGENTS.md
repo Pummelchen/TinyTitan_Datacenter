@@ -153,6 +153,15 @@ python3 tools/make_qwen35_fixture.py \
 .venv/bin/python tools/measure_quantization.py \
     --snapshot .build/hf-cache/models--Qwen--Qwen3.5-2B/snapshots/<revision> --spec .build/spec-2b.json
 
+# Does one reference family do the same arithmetic as another, or merely have the same
+# names and shapes? Parses both modules, renames one onto the other, and compares every
+# top-level entity. Exits non-zero on a difference not listed in --allow-differ, so a
+# transformers upgrade cannot quietly change the arithmetic under us.
+.venv/bin/python tools/compare_reference_modules.py \
+    .venv/lib/python3.14/site-packages/transformers/models/qwen3_5/modeling_qwen3_5.py \
+    .venv/lib/python3.14/site-packages/transformers/models/qwen3_5_moe/modeling_qwen3_5_moe.py \
+    --rename Qwen3_5Moe=Qwen3_5 --allow-differ Qwen3_5DecoderLayer,Qwen3_5ForCausalLM,Qwen3_5ForConditionalGeneration,Qwen3_5PreTrainedModel,Qwen3_5RMSNorm,Qwen3_5ModelOutputWithPast,Qwen3_5CausalLMOutputWithPast
+
 # M1's validation model: read the inventory from the shard headers and map it.
 # No weights are downloaded — the index lists the names and each shard's header the shapes.
 .venv/bin/python tools/make_qwen36_fixture.py Qwen/Qwen3.6-35B-A3B
