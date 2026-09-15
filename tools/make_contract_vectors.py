@@ -160,6 +160,55 @@ def main() -> None:
         "weights": {name: vector(value) for name, value in gdn_weights.items()},
     }
 
+    # The case the 2 B model never exercised: **more value heads than key heads**, as
+    # `qwen3_5_moe` has (16 to 32). The reference repeat-interleaves the query and key heads
+    # up to the value head count before the delta rule, and a symmetric configuration cannot
+    # tell whether that step is there.
+    import types
+
+    asymmetric = types.SimpleNamespace(
+        hidden_size=hidden_size,
+        linear_num_key_heads=2,
+        linear_num_value_heads=4,
+        linear_key_head_dim=8,
+        linear_value_head_dim=8,
+        linear_conv_kernel_dim=4,
+        rms_norm_eps=1e-6,
+        hidden_act="silu",
+    )
+    a_key_dim = asymmetric.linear_num_key_heads * asymmetric.linear_key_head_dim
+    a_value_dim = asymmetric.linear_num_value_heads * asymmetric.linear_value_head_dim
+    a_conv_dim = 2 * a_key_dim + a_value_dim
+    a_weights = {
+        "in_proj_qkv": ref.f32(rng.standard_normal((a_conv_dim, hidden_size)) * 0.4),
+        "in_proj_z": ref.f32(rng.standard_normal((a_value_dim, hidden_size)) * 0.4),
+        "in_proj_b": ref.f32(rng.standard_normal((asymmetric.linear_num_value_heads, hidden_size)) * 0.4),
+        "in_proj_a": ref.f32(rng.standard_normal((asymmetric.linear_num_value_heads, hidden_size)) * 0.4),
+        "conv1d": ref.f32(rng.standard_normal((a_conv_dim, 1, 4)) * 0.4),
+        "A_log": ref.f32(rng.standard_normal(asymmetric.linear_num_value_heads)),
+        "dt_bias": ref.f32(rng.standard_normal(asymmetric.linear_num_value_heads) * 0.2),
+        "norm": ref.f32(rng.standard_normal(asymmetric.linear_value_head_dim) * 0.2 + 1.0),
+        "out_proj": ref.f32(rng.standard_normal((hidden_size, a_value_dim)) * 0.4),
+    }
+    a_positions = 9
+    a_hidden = ref.f32(rng.standard_normal((1, a_positions, hidden_size)) * 0.7)
+    a_out = q35.gated_delta_net_layer(a_hidden, a_weights, asymmetric)
+    payload["gdn_asymmetric"] = {
+        "config": {
+            "hidden_size": hidden_size,
+            "num_key_heads": asymmetric.linear_num_key_heads,
+            "num_value_heads": asymmetric.linear_num_value_heads,
+            "key_head_dim": asymmetric.linear_key_head_dim,
+            "value_head_dim": asymmetric.linear_value_head_dim,
+            "conv_kernel": asymmetric.linear_conv_kernel_dim,
+            "eps": asymmetric.rms_norm_eps,
+            "positions": a_positions,
+        },
+        "hidden": vector(a_hidden),
+        "out": vector(a_out),
+        "weights": {name: vector(value) for name, value in a_weights.items()},
+    }
+
     payload["gdn"] = {
         "config": {
             "hidden_size": hidden_size,

@@ -86,6 +86,33 @@ final class GatedDeltaNetTests: XCTestCase {
         assertSameBits(run(single), single.out, "gdn")
     }
 
+    /// **More value heads than key heads** — grouped-query style, and the case the 2 B model
+    /// never exercised because it has sixteen of each. `Qwen3_5MoeGatedDeltaNet.forward:645`
+    /// repeat-interleaves the query and key heads up to the value head count before the rule
+    /// runs; without that step the per-head slice indexes past the end of the key and pairs
+    /// the wrong heads, which produces plausible numbers and a wrong model.
+    ///
+    /// This vector pins the *order* of the expansion as well as its existence: the contract
+    /// expands consecutively (`[k0, k0, k1, k1]`), and an interleaved reading (`[k0, k1, k0,
+    /// k1]`) pairs different heads and gives different bits, so a hand-written ordering test
+    /// would say no more than this comparison already does.
+    func testAsymmetricHeadsMatchTheContract() throws {
+        let url = try XCTUnwrap(
+            Bundle.module.url(forResource: "contract-vectors", withExtension: "json", subdirectory: "Fixtures")
+        )
+        struct Fixture: Decodable { var gdn_asymmetric: Case }
+        let asymmetric = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url)).gdn_asymmetric
+        XCTAssertGreaterThan(
+            asymmetric.config.num_value_heads, asymmetric.config.num_key_heads,
+            "the case is pointless unless the head counts differ"
+        )
+        XCTAssertEqual(
+            asymmetric.config.num_value_heads % asymmetric.config.num_key_heads, 0,
+            "the reference repeats an integer number of times"
+        )
+        assertSameBits(run(asymmetric), asymmetric.out, "gdn_asymmetric")
+    }
+
     func testMultipleChunksMatchTheContract() throws {
         let (_, multi) = try fixture()
         XCTAssertGreaterThan(multi.config.positions, GatedDeltaNet.chunkSize, "the case must need a second chunk")

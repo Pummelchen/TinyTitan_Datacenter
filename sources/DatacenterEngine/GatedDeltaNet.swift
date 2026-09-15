@@ -378,8 +378,29 @@ public enum GatedDeltaNet {
         let valueDim = shape.valueDim
         let convDim = shape.convDim
         let heads = shape.valueHeads
+        let keyHeads = shape.keyHeads
         let headK = shape.keyHeadDim
         let headV = shape.valueHeadDim
+
+        // `Qwen3_5MoeGatedDeltaNet.forward:645` — grouped-query style:
+        //
+        //     if self.num_v_heads // self.num_k_heads > 1:
+        //         query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
+        //         key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
+        //
+        // More value heads than key heads means each key head serves several value heads, and
+        // the query and key heads have to be repeated consecutively before the rule runs. The
+        // MoE family has sixteen key heads to thirty-two value heads; with the counts equal
+        // this is the identity, which is why the 2 B model never exercised it. Without it the
+        // per-head slice below indexes past the end of the key and pairs the wrong heads.
+        let headRepeats = max(heads / max(keyHeads, 1), 1)
+        // The reference does not check this: a value head count that is not a multiple would
+        // silently repeat the wrong number of times there.
+        precondition(
+            keyHeads * headRepeats == heads,
+            "the value head count must be a multiple of the key head count"
+        )
+        let expandedKeyDim = heads * headK
 
         var output = [Float](repeating: 0, count: batch * length * shape.hiddenSize)
 
@@ -419,8 +440,8 @@ public enum GatedDeltaNet {
         )
 
         for index in 0..<batch {
-            var query = [Float](repeating: 0, count: length * keyDim)
-            var key = [Float](repeating: 0, count: length * keyDim)
+            var query = [Float](repeating: 0, count: length * expandedKeyDim)
+            var key = [Float](repeating: 0, count: length * expandedKeyDim)
             var value = [Float](repeating: 0, count: length * valueDim)
             // Per position *and* per head: the reference computes `beta` and `g` for every
             // value head, and each head is its own recurrence. Writing these as one value
@@ -431,9 +452,16 @@ public enum GatedDeltaNet {
 
             for position in 0..<length {
                 let row = (index * length + position) * convDim
-                for component in 0..<keyDim {
-                    query[position * keyDim + component] = mixed[row + component]
-                    key[position * keyDim + component] = mixed[row + keyDim + component]
+                // The conv output is still laid out with one block per *key* head; the
+                // repeat happens on the way in, exactly where the reference does it.
+                for head in 0..<keyHeads {
+                    for repeatIndex in 0..<headRepeats {
+                        let target = position * expandedKeyDim + (head * headRepeats + repeatIndex) * headK
+                        for component in 0..<headK {
+                            query[target + component] = mixed[row + head * headK + component]
+                            key[target + component] = mixed[row + keyDim + head * headK + component]
+                        }
+                    }
                 }
                 for component in 0..<valueDim {
                     value[position * valueDim + component] = mixed[row + 2 * keyDim + component]
@@ -455,8 +483,8 @@ public enum GatedDeltaNet {
                 var headValue = [Float](repeating: 0, count: length * headV)
                 for position in 0..<length {
                     for component in 0..<headK {
-                        headQuery[position * headK + component] = query[position * keyDim + head * headK + component]
-                        headKey[position * headK + component] = key[position * keyDim + head * headK + component]
+                        headQuery[position * headK + component] = query[position * expandedKeyDim + head * headK + component]
+                        headKey[position * headK + component] = key[position * expandedKeyDim + head * headK + component]
                     }
                     for component in 0..<headV {
                         headValue[position * headV + component] = value[position * valueDim + head * headV + component]

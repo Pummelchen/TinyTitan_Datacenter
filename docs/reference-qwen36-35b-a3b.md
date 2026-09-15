@@ -148,10 +148,12 @@ Two bugs came out of that single asymmetry, both of which the 2 B model could no
    ```
 
    Each key head serves `32 / 16 = 2` value heads, and without the repeat the delta rule pairs
-   the wrong heads. The contract now does it; **the Swift `GatedDeltaNet` still does not** and
-   is filed as `DC-038` rather than patched silently — its recurrence is flat over all heads,
-   which is valid because the heads are block-diagonal, but the flat vectors have to be
-   expanded first.
+   the wrong heads. The contract did it first; the Swift `GatedDeltaNet` now does too, checked
+   bit-for-bit against an **asymmetric golden vector** (two key heads to four value heads) and
+   with a precondition the reference lacks — a value head count that is not a multiple would
+   silently repeat the wrong number of times there. The vector also pins the order of the
+   expansion: consecutive, as `repeat_interleave` produces, since an interleaved reading pairs
+   different heads and gives different bits.
 
 Both were found by a tiny configuration with **sixteen key heads to thirty-two value heads**,
 copied from the real model, rather than the symmetric one the 2 B tests use. That is the
