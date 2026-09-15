@@ -10,6 +10,7 @@ Skipped without numpy, like the other venv-run tests.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import os
