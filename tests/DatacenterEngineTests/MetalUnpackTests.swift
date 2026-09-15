@@ -123,3 +123,44 @@ final class MetalUnpackTests: XCTestCase {
         ))
     }
 }
+
+extension MetalUnpackTests {
+    /// The diagnostic `DC-087` asks for: which shapes disagree, and where. No assertions — it
+    /// prints, because the first question about a GPU/CPU difference is which case shows it, and
+    /// the answer so far is narrow enough to be worth keeping visible.
+    ///
+    /// Current finding: of twenty-four shapes, **one** disagrees — `columns = 64, group = 1,
+    /// rows = 2` — and the first differing index is 117 (row 1, column 53, group 117), where the
+    /// GPU produced bits `0`. Single-row versions of the same shape are identical, as are shapes
+    /// with many groups per row and multiple rows at coarser groups, so neither "many groups" nor
+    /// "many rows" is the trigger on its own.
+    func testWhichShapesDisagreeDiagnostic() throws {
+        try XCTSkipUnless(MetalUnpack.isAvailable, "no Metal device")
+        for columns in [4, 16, 64] {
+            for group in [1, 4, 8, 64] {
+                for rows in [1, 2] {
+                    let padded = columns + (group - columns % group) % group
+                    let entry = try entry(rows: rows, columns: columns, padded: padded, group: group)
+                    let body = payload(rows: rows, padded: padded, group: group)
+                    let scalar = try InstallFile.dequantizeInt4Scalar(body, entry: entry)
+                    let gpu = try MetalUnpack.unpack(payload: body, entry: entry)
+                    var first = -1
+                    for index in 0..<min(scalar.count, gpu.count)
+                    where scalar[index].bitPattern != gpu[index].bitPattern {
+                        first = index
+                        break
+                    }
+                    let groupsPerRow = padded / group
+                    let detail: String
+                    if first >= 0 {
+                        let row = first / columns, column = first % columns
+                        detail = "first=\(first) row=\(row) col=\(column) groupIndex=\(row * groupsPerRow + column / group) cpu=\(scalar[first].bitPattern) gpu=\(gpu[first].bitPattern)"
+                    } else {
+                        detail = "identical (\(scalar.count) values)"
+                    }
+                    print("DIAG columns=\(columns) group=\(group) rows=\(rows) padded=\(padded) groupsPerRow=\(groupsPerRow) -> \(detail)")
+                }
+            }
+        }
+    }
+}
