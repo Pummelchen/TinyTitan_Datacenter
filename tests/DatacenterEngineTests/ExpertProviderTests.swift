@@ -175,10 +175,10 @@ final class ExpertProviderTests: XCTestCase {
         XCTAssertEqual(cache.metrics.hits, 1)
         XCTAssertEqual(cache.metrics.misses, 1)
         XCTAssertEqual(counting.requested, [0], "a hit must not touch the source")
-        XCTAssertEqual(
-            cache.metrics.elementsRead, (2 * 16 * 32) + (32 * 16),
-            "one expert's gate/up and down slices, once, in elements"
-        )
+        // Only the gate/up slice has been asked for at this point: the down projection comes
+        // later in the test, so counting it here is the kind of off-by-one-slice that a
+        // mislabelled unit makes easy to miss.
+        XCTAssertEqual(cache.metrics.elementsRead, 2 * 16 * 32, "one expert's gate/up slice, once, in elements")
 
         // Two more experts evict the least recently used, and the capacity is never exceeded.
         _ = try cache.gateUp(expert: 1, shape: shape)
