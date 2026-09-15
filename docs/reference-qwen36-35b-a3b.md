@@ -253,11 +253,23 @@ digest covers them.
 it carries this family's asymmetries — two key heads to four value heads, an untied head, a
 shared expert — so the paths the 2 B model never took are the paths it exercises.
 
-**What does not yet work on the real model**: the forward materialises a whole layer's experts
-at once, which is 3.2 GB in fp32 and 1.6 GB even in bf16, against about 4.5 GB of usable memory
-per node. The engine therefore runs the tiny checkpoint and not the 67 GB one, and closing that
-gap — streaming the *chosen* experts — is `DC-032`. The `gdn_asymmetric` and `moe` vector groups
-exist for the same reason at the kernel level.
+**The experts are read by index, not as a stack** (`DC-032`). A layer's experts are 805 M
+parameters — 3.2 GB in fp32, 1.6 GB in bf16, against about 4.5 GB of usable memory per node —
+so the kernel asks an `ExpertWeightProvider` for the experts the router chose and never sees the
+stack. Because the checkpoint's leading axis is the expert, one expert is exactly **one row** of
+the stacked tensor, so a fetch is a single row range: `StackedExpertProvider` reads it,
+`ExpertSlotCache` bounds how many stay resident and counts the hits, and `CountingExpertProvider`
+measures the traffic. The kernel asks in **ascending expert index**, which is the contract's
+accumulation order and D4's ring order — the read order *is* the reduction order, and a cache
+that reordered reads for the disk's benefit would change the arithmetic.
+
+Measured on the tiny checkpoint: a nine-token prompt reads `distinct chosen experts × 2`
+slices per layer and nothing else, and caches of 1, 2 and 8 slots produce **bit-identical**
+output to the array path. What is *not* measured yet is the real model: the 67 GB checkpoint has
+not been fetched, so the throughput baseline and the hit rate M1's gate asks for are still open
+(`DC-034`).
+
+The `gdn_asymmetric` and `moe` vector groups exist for the same reason at the kernel level.
 
 ## Still to extract — do not guess these
 

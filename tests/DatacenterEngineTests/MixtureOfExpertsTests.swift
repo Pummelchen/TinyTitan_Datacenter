@@ -61,8 +61,8 @@ final class MixtureOfExpertsTests: XCTestCase {
         )
     }
 
-    private func run(_ testCase: Case) -> (output: [Float], indices: [[Int]], weights: [[Float]]) {
-        MixtureOfExperts.block(
+    private func run(_ testCase: Case) throws -> (output: [Float], indices: [[Int]], weights: [[Float]]) {
+        try MixtureOfExperts.block(
             hidden: testCase.hidden.floats, tokens: testCase.config.tokens,
             weights: weights(testCase.weights), shape: shape(testCase.config)
         )
@@ -85,13 +85,13 @@ final class MixtureOfExpertsTests: XCTestCase {
 
     func testTheBlockMatchesTheContractBitForBit() throws {
         let testCase = try fixture()
-        let result = run(testCase)
+        let result = try run(testCase)
         assertSameBits(result.output, testCase.out, "moe.out")
     }
 
     func testTheTopKWeightsMatchTheContract() throws {
         let testCase = try fixture()
-        let result = run(testCase)
+        let result = try run(testCase)
         let flattened = result.weights.flatMap { $0 }
         assertSameBits(flattened, testCase.top_k_weights, "moe.top_k_weights")
     }
@@ -99,7 +99,7 @@ final class MixtureOfExpertsTests: XCTestCase {
     /// I3, as its own assertion: the same experts, in the same order.
     func testTheTopKIndexSetMatchesTheContractExactly() throws {
         let testCase = try fixture()
-        let result = run(testCase)
+        let result = try run(testCase)
         let flattened = result.indices.flatMap { $0 }
         XCTAssertEqual(flattened, testCase.indices.values, "the chosen experts must be the same set, in the same order")
     }
@@ -141,7 +141,7 @@ final class MixtureOfExpertsTests: XCTestCase {
     /// The routed weights are renormalised over the chosen experts, unconditionally.
     func testTheTopKWeightsSumToOne() throws {
         let testCase = try fixture()
-        let result = run(testCase)
+        let result = try run(testCase)
         for row in result.weights {
             XCTAssertEqual(row.reduce(0, +), 1.0, accuracy: 1e-5)
         }
@@ -149,7 +149,7 @@ final class MixtureOfExpertsTests: XCTestCase {
 
     /// The shared expert is added rather than ranked: with a router that sends every token to
     /// no expert at all, the block's output is still the gated shared expert's.
-    func testTheSharedExpertIsAddedNotRanked() {
+    func testTheSharedExpertIsAddedNotRanked() throws {
         let tokens = 2
         let shape = MixtureShape(hiddenSize: 2, experts: 2, topK: 1, intermediate: 2, sharedIntermediate: 2)
         let zeros = [Float](repeating: 0, count: 2 * 2)
@@ -160,7 +160,7 @@ final class MixtureOfExpertsTests: XCTestCase {
             sharedDown: [1, 0, 0, 1], sharedScalarGate: [0, 0]
         )
         let hidden: [Float] = [1, 1, 2, 2]
-        let (output, _, _) = MixtureOfExperts.block(hidden: hidden, tokens: tokens, weights: weights, shape: shape)
+        let (output, _, _) = try MixtureOfExperts.block(hidden: hidden, tokens: tokens, weights: weights, shape: shape)
         // sigmoid(0) = 0.5 on the shared expert's output; the routed half is zero because the
         // experts are zero.
         XCTAssertEqual(output.count, tokens * shape.hiddenSize)

@@ -22,26 +22,39 @@ public struct MixtureShape: Sendable, Equatable {
 /// The experts are **stacked**, which is the checkpoint's own layout: one tensor per
 /// projection holding every expert, with gate and up fused. An importer maps names to roles
 /// and does not reshape, so this is the layout the kernel reads (L2).
-public struct MixtureWeights: Sendable {
+public struct MixtureWeights {
     public let router: [Float]            // [experts, hidden]
-    public let gateUp: [Float]            // [experts, 2*intermediate, hidden], gate first
-    public let down: [Float]              // [experts, hidden, intermediate]
     public let sharedGate: [Float]        // [sharedIntermediate, hidden]
     public let sharedUp: [Float]          // [sharedIntermediate, hidden]
     public let sharedDown: [Float]        // [hidden, sharedIntermediate]
     public let sharedScalarGate: [Float]  // [1, hidden]
+    /// Where the routed experts come from. The kernel asks for the ones the router chose and
+    /// never sees the stack, which is what keeps a 35 B layer's 3.2 GB of experts out of
+    /// memory (`DC-032`).
+    public let experts: any ExpertWeightProvider
 
+    /// The stacked layout already in memory: what the tiny checkpoints and the golden vectors
+    /// use. It goes through the *same* kernel as the streaming path, so the two cannot drift.
     public init(
         router: [Float], gateUp: [Float], down: [Float], sharedGate: [Float], sharedUp: [Float],
         sharedDown: [Float], sharedScalarGate: [Float]
     ) {
+        self.init(
+            router: router, sharedGate: sharedGate, sharedUp: sharedUp, sharedDown: sharedDown,
+            sharedScalarGate: sharedScalarGate, experts: ArrayExpertProvider(gateUp: gateUp, down: down)
+        )
+    }
+
+    public init(
+        router: [Float], sharedGate: [Float], sharedUp: [Float], sharedDown: [Float],
+        sharedScalarGate: [Float], experts: any ExpertWeightProvider
+    ) {
         self.router = router
-        self.gateUp = gateUp
-        self.down = down
         self.sharedGate = sharedGate
         self.sharedUp = sharedUp
         self.sharedDown = sharedDown
         self.sharedScalarGate = sharedScalarGate
+        self.experts = experts
     }
 }
 
@@ -98,11 +111,14 @@ public enum MixtureOfExperts {
 
     /// The routed experts, accumulated in ascending expert index.
     ///
-    /// `gateUp` is `[experts, 2·intermediate, hidden]` with the **gate in the first half**.
+    /// The experts are **asked for by index** and read through the provider, so this one
+    /// implementation serves both the array-backed path and the SSD-streaming one. That is
+    /// deliberate: two implementations would be two chances to accumulate in a different
+    /// order, and the order is the thing the contract pins.
     public static func experts(
-        hidden: [Float], tokens: Int, gateUp: [Float], down: [Float],
+        hidden: [Float], tokens: Int, provider: any ExpertWeightProvider,
         indices: [[Int]], weights: [[Float]], shape: MixtureShape
-    ) -> [Float] {
+    ) throws -> [Float] {
         let hiddenSize = shape.hiddenSize
         let intermediate = shape.intermediate
         var output = [Float](repeating: 0, count: tokens * hiddenSize)
@@ -118,6 +134,8 @@ public enum MixtureOfExperts {
 
         for expert in pairs.keys.sorted() {
             let assignments = pairs[expert]!
+            let gateUp = try provider.gateUp(expert: expert, shape: shape)
+            let down = try provider.down(expert: expert, shape: shape)
             var current = [Float](repeating: 0, count: assignments.count * hiddenSize)
             for (position, assignment) in assignments.enumerated() {
                 for index in 0..<hiddenSize {
@@ -125,8 +143,7 @@ public enum MixtureOfExperts {
                 }
             }
             let fused = Ops.orderedMatmul(
-                x: current, w: Array(gateUp[(expert * 2 * intermediate * hiddenSize)..<((expert + 1) * 2 * intermediate * hiddenSize)]),
-                rows: assignments.count, k: hiddenSize, out: 2 * intermediate
+                x: current, w: gateUp, rows: assignments.count, k: hiddenSize, out: 2 * intermediate
             )
             var activated = [Float](repeating: 0, count: assignments.count * intermediate)
             for row in 0..<assignments.count {
@@ -136,9 +153,8 @@ public enum MixtureOfExperts {
                     activated[row * intermediate + index] = Ops.silu(gate) * up
                 }
             }
-            let expertDown = Array(down[(expert * hiddenSize * intermediate)..<((expert + 1) * hiddenSize * intermediate)])
             let projected = Ops.orderedMatmul(
-                x: activated, w: expertDown, rows: assignments.count, k: intermediate, out: hiddenSize
+                x: activated, w: down, rows: assignments.count, k: intermediate, out: hiddenSize
             )
             for (position, assignment) in assignments.enumerated() {
                 let scale = weights[assignment.token][assignment.rank]
@@ -157,7 +173,7 @@ public enum MixtureOfExperts {
     /// its gate is a sigmoid of a projection of the hidden state.
     public static func block(
         hidden: [Float], tokens: Int, weights: MixtureWeights, shape: MixtureShape
-    ) -> (output: [Float], indices: [[Int]], weights: [[Float]]) {
+    ) throws -> (output: [Float], indices: [[Int]], weights: [[Float]]) {
         let hiddenSize = shape.hiddenSize
         let shared = Ops.orderedMatmul(
             x: {
@@ -176,8 +192,8 @@ public enum MixtureOfExperts {
         let (_, indices, chosen) = router(
             hidden: hidden, tokens: tokens, weights: weights.router, experts: shape.experts, topK: shape.topK
         )
-        let routed = experts(
-            hidden: hidden, tokens: tokens, gateUp: weights.gateUp, down: weights.down,
+        let routed = try experts(
+            hidden: hidden, tokens: tokens, provider: weights.experts,
             indices: indices, weights: chosen, shape: shape
         )
         let scalar = Ops.orderedMatmul(

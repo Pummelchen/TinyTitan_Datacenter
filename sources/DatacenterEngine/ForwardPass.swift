@@ -8,11 +8,29 @@ import Foundation
 public struct ForwardResult {
     public let tensors: [TraceWriter.Tensor]
     public let discrete: [TraceWriter.Discrete]
+    /// One entry per mixture layer: what its expert reads actually cost. M1's gate asks for a
+    /// measured cache hit rate, and a number that is not returned by the forward pass is a
+    /// number nobody can reproduce.
+    public let expertMetrics: [ExpertProviderMetrics]
 
-    public init(tensors: [TraceWriter.Tensor], discrete: [TraceWriter.Discrete] = []) {
+    public init(
+        tensors: [TraceWriter.Tensor], discrete: [TraceWriter.Discrete] = [],
+        expertMetrics: [ExpertProviderMetrics] = []
+    ) {
         self.tensors = tensors
         self.discrete = discrete
+        self.expertMetrics = expertMetrics
     }
+
+    /// Expert-slice reads served from memory over all mixture layers, or zero when there were
+    /// no requests — a `0/0` rate would be a claim, not a measurement.
+    public var expertHitRate: Double {
+        let requests = expertMetrics.reduce(0) { $0 + $1.requests }
+        let hits = expertMetrics.reduce(0) { $0 + $1.hits }
+        return requests == 0 ? 0 : Double(hits) / Double(requests)
+    }
+
+    public var expertRowsRead: Int { expertMetrics.reduce(0) { $0 + $1.rowsRead } }
 }
 
 /// A model that can be run for a token sequence and asked to generate.

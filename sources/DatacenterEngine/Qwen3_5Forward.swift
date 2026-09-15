@@ -115,11 +115,22 @@ public struct Qwen3_5Forward: ForwardPass {
         self.headName = namesByBlock["head"]?[.outputHead] ?? embedding
     }
 
+    /// How many expert slices a layer's cache may hold.
+    ///
+    /// A token asks for its `topK` experts and several of a prompt's positions usually ask for
+    /// the same ones, so a slot bank somewhat larger than `topK` serves those repeats without
+    /// touching the source. This is a **starting** value: the hit rate it produces is what
+    /// `DC-032` measures and what the M1 gate reports, and it should be chosen from that
+    /// measurement rather than from this comment. It is a `let` because Swift 6's strict
+    /// concurrency rejects mutable global state, and it should become a field of the IR's
+    /// policy when there is a measurement to put in it.
+    public static let expertSlotsPerLayer = 16
+
     /// The feed-forward half of a decoder layer. The reference branches inside its decoder
     /// layer between `Qwen3_5MLP` and `Qwen3_5SparseMoeBlock`, and so does this.
     private enum FeedForward {
         case dense(gate: [Float], up: [Float], down: [Float])
-        case mixture(MixtureWeights)
+        case mixture(MixtureWeights, provider: ExpertSlotCache)
     }
 
     /// The mixture's geometry, from the IR.
@@ -147,16 +158,24 @@ public struct Qwen3_5Forward: ForwardPass {
         // a block carrying a router is a mixture.
         let feedForward: FeedForward
         if byRole[.routerLogits] != nil {
+            guard let gateUpName = byRole[.expertGateUpStack], let downName = byRole[.expertDownStack] else {
+                throw Error.missingTensor(block: block, role: .expertGateUpStack)
+            }
+            // The experts are **not** loaded here. A stacked `[experts, 2·inter, hidden]` for
+            // this model is 3.2 GB in fp32, so the layer keeps a provider that reads one
+            // expert's row range on demand and a bounded cache in front of it.
+            let stacked = StackedExpertProvider(source: source, gateUpName: gateUpName, downName: downName)
+            let cache = ExpertSlotCache(upstream: stacked, capacity: Self.expertSlotsPerLayer)
             feedForward = .mixture(
                 MixtureWeights(
                     router: try load(.routerLogits),
-                    gateUp: try load(.expertGateUpStack),
-                    down: try load(.expertDownStack),
                     sharedGate: try load(.sharedExpertGate),
                     sharedUp: try load(.sharedExpertUp),
                     sharedDown: try load(.sharedExpertDown),
-                    sharedScalarGate: try load(.sharedExpertGateScalar)
-                )
+                    sharedScalarGate: try load(.sharedExpertGateScalar),
+                    experts: cache
+                ),
+                provider: cache
             )
         } else {
             let gate = try load(.mlpGate)
@@ -247,6 +266,7 @@ public struct Qwen3_5Forward: ForwardPass {
         let hiddenSize = config.hiddenSize
         var captured: [TraceWriter.Tensor] = []
         var discrete: [TraceWriter.Discrete] = []
+        var expertMetrics: [ExpertProviderMetrics] = []
 
         var hidden = [Float](repeating: 0, count: length * hiddenSize)
         for (row, token) in tokens.enumerated() {
@@ -307,11 +327,14 @@ public struct Qwen3_5Forward: ForwardPass {
                 )
                 hidden = add(residual, downProjected)
 
-            case .mixture(let weights):
+            case .mixture(let weights, let provider):
                 let shape = try mixtureShape()
-                let (routed, indices, _) = MixtureOfExperts.block(
+                let (routed, indices, _) = try MixtureOfExperts.block(
                     hidden: postNormed, tokens: length, weights: weights, shape: shape
                 )
+                // Kept so the caller can report a measured hit rate rather than an assurance.
+                // M1's gate asks for the number, and the number is not visible from outside.
+                expertMetrics.append(provider.metrics)
                 hidden = add(residual, routed)
                 // The router's decision, recorded as its own kind of thing rather than as a
                 // tensor: I3 asserts it apart from any tolerance, and the trace's digest
@@ -350,7 +373,7 @@ public struct Qwen3_5Forward: ForwardPass {
         captured.append(
             TraceWriter.Tensor(name: "logits", shape: [length, config.vocabSize], values: logits)
         )
-        return ForwardResult(tensors: captured, discrete: discrete)
+        return ForwardResult(tensors: captured, discrete: discrete, expertMetrics: expertMetrics)
     }
 
     private func attention(
