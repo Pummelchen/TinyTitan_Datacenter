@@ -520,7 +520,10 @@ class InstallSource:
         return self.tensor(name)[start:end]
 
 
-def build_install(snapshot: Path, install: Path, spec: dict, policy: dict, policy_file: str) -> dict:
+def build_install(
+    snapshot: Path, install: Path, spec: dict, policy: dict, policy_file: str,
+    repo: str | None = None, revision: str | None = None,
+) -> dict:
     """The pass itself: every tensor in the spec, quantized or copied per the policy.
 
     The source is shard-aware. Taking the first shard — which this did — builds an install that
@@ -622,8 +625,12 @@ def build_install(snapshot: Path, install: Path, spec: dict, policy: dict, polic
     # `I6`: digest the source files here rather than trusting the spec, which carries an empty map.
     # The spec describes the *model*; the build is what read the bytes.
     source = {
-        "repo": spec["source"]["repo"],
-        "revision": spec["source"]["revision"],
+        # `I6` wants the source repo **and commit**, and a build knows neither: the snapshot is a
+        # directory of shards. So they are inputs (`--repo`, `--revision`) and, when not given, they
+        # are recorded as **null** — not as a placeholder. `revision` used to say `"local"`, which
+        # reads like an answer and is not one, and one field was carrying both meanings.
+        "repo": repo or spec["source"].get("repo"),
+        "revision": revision,
         "files": digest_snapshot(snapshot),
         "spec_family": spec["family"],
     }
@@ -663,6 +670,9 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("install", type=Path)
     build.add_argument("--spec", type=Path, required=True)
     build.add_argument("--policy", type=Path, default=Path(__file__).parent / "quant_policy.json")
+    # Provenance the build cannot infer: the source repository and the commit it was taken at.
+    build.add_argument("--repo", default=None, help="source repository, recorded in the artifact (I6)")
+    build.add_argument("--revision", default=None, help="source commit, recorded in the artifact (I6)")
     verify = sub.add_parser("verify", help="recompute the payload digests")
     verify.add_argument("install", type=Path)
     args = parser.parse_args(argv)
@@ -674,7 +684,10 @@ def main(argv: list[str] | None = None) -> int:
 
     spec = json.loads(args.spec.read_text())
     policy = load_policy(args.policy)
-    manifest = build_install(args.snapshot, args.install, spec, policy, str(args.policy))
+    manifest = build_install(
+        args.snapshot, args.install, spec, policy, str(args.policy),
+        repo=args.repo, revision=args.revision,
+    )
 
     total = sum(e["shape"][0] * e["padded_columns"] for e in manifest["tensors"])
     packed = sum(e["nbytes"] for e in manifest["tensors"])

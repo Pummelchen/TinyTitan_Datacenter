@@ -12,7 +12,7 @@
    "model.safetensors": "e9a9150e0d9c7da6e02e7e2d88fd2dbbb36fcd9e865d55eb1f0415189948af2c"
   },
   "repo": "tiny-qwen36",
-  "revision": "local",
+  "revision": null,
   "spec_family": "qwen3_5_moe"
  },
  "spec": {

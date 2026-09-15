@@ -59,6 +59,23 @@ class QuantizeTests(unittest.TestCase):
                 f"{name}: the install must record the digests of its own source files",
             )
 
+    def test_no_install_records_the_local_placeholder(self):
+        """`I6` and `DC-098`: `"local"` reads like an answer and is not one.
+
+        A build cannot know the commit it was taken at, so the honest record is `null` plus a
+        `--revision` input — not a word that looks like provenance. This is a property over every
+        committed install, so a regeneration cannot restore the placeholder without failing a test.
+        """
+        root = Path(__file__).resolve().parent.parent / "tests/DatacenterEngineTests/Fixtures"
+        found = sorted(root.glob("*/install/install.json"))
+        self.assertTrue(found, "the fixtures have installs to check")
+        for manifest in found:
+            revision = json.loads(manifest.read_text())["source"].get("revision")
+            self.assertNotEqual(
+                revision, "local",
+                f"{manifest.parent.parent.name}: revision must be a commit, or null, not a placeholder",
+            )
+
     def test_the_source_file_digests_are_real(self):
         """`I6` and `DC-098`: the artifact must be able to name the weights it came from.
 
