@@ -253,6 +253,53 @@ class InstallTests(unittest.TestCase):
             finally:
                 source.close()
 
+    def test_the_slab_digests_recompute_from_the_payload(self):
+        """`DC-088`'s proven half: the writer's per-slab digests are correct.
+
+        A slab is one leading-axis entry — one expert of a stacked tensor — and its bytes sit in
+        three ranges of the section-major payload. The reader's transcription of this is where a
+        bug was found, so the *definition* is worth pinning independently: recompute every slab's
+        digest straight from `data.bin` and require it to equal the manifest's. When that passes,
+        any disagreement is on the reading side, which is exactly what it turned out to be.
+        """
+        import hashlib
+        import json as _json
+        import shutil
+        import tempfile
+        from pathlib import Path as _Path
+
+        fixture = _Path("tests/DatacenterEngineTests/Fixtures/tiny-qwen36")
+        spec = _json.loads((fixture / "spec.json").read_text())
+        policy = _json.loads(_Path("tools/quant_policy.json").read_text())
+        with tempfile.TemporaryDirectory() as directory:
+            target = _Path(directory) / "install"
+            manifest = quantize.build_install(fixture, target, spec, policy, "tools/quant_policy.json")
+            blob = (target / "data.bin").read_bytes()
+            checked = 0
+            for entry in manifest["tensors"]:
+                slabs = entry.get("slab_sha256")
+                if not slabs:
+                    continue
+                rows = 1
+                for dimension in entry["shape"][:-1]:
+                    rows *= dimension
+                inner = rows // entry["shape"][0]
+                groups_per_row = entry["padded_columns"] // entry["group"]
+                codes_per_row = entry["padded_columns"] // 2
+                codes_bytes = rows * codes_per_row
+                scales_bytes = rows * groups_per_row * 4
+                for slab in range(entry["shape"][0]):
+                    first = slab * inner
+                    hasher = hashlib.sha256()
+                    hasher.update(blob[entry["offset"] + first * codes_per_row:entry["offset"] + (first + inner) * codes_per_row])
+                    at = entry["offset"] + codes_bytes + first * groups_per_row * 4
+                    hasher.update(blob[at:at + inner * groups_per_row * 4])
+                    at = entry["offset"] + codes_bytes + scales_bytes + first * groups_per_row
+                    hasher.update(blob[at:at + inner * groups_per_row])
+                    self.assertEqual(hasher.hexdigest(), slabs[slab], f"{entry['name']} slab {slab}")
+                    checked += 1
+            self.assertGreater(checked, 0, "the fixture must produce slab digests")
+
     def test_the_install_round_trips_through_its_reader(self):
         with tempfile.TemporaryDirectory() as directory:
             install = self.build(Path(directory))
