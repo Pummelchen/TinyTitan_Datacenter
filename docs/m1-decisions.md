@@ -84,6 +84,45 @@ fall from ~9.3 s to ~0.6 s per token. That, plus the 21.5 G-value → 0.67 G-val
 it, is the basis of the "most of an order of magnitude" prediction. **Nothing about the real model
 has been re-measured, and it needs the operator's approval to be.**
 
+## D10 — What a Metal kernel may do to the bits, and the fast-math trap
+
+**The decision, before any kernel is written.** `D9` established that the contract is a rounding
+sequence, so a kernel is admissible only if it reproduces that sequence. Generalised for the GPU:
+
+> **One accumulator per output, `k` ascending.** A kernel may parallelise across outputs, across
+> rows, across layers — but not across `k`, and it may not reassociate.
+
+That constraint is narrower than it sounds and it does **not** exclude the GPU. A one-thread-per-output
+kernel satisfies it trivially, and so does a shared-memory **tiled** kernel: a tile contributes a
+contiguous run of `k` values, so as long as each output's accumulator takes the tiles in order and
+the values inside a tile in order, the sequence is the scalar one. What is excluded is split-K and
+any reassociation — which is what a fast GEMM does *because* it is fast.
+
+**The trap, and it is a real one.** Metal compiles shaders with **fast math enabled by default**,
+and fast math is precisely the licence to reassociate and to contract `a * b + c` into an FMA. A
+kernel that looks identical to the Swift one, with identical source arithmetic, can therefore
+produce different bits by default. Every kernel must be compiled with `fastMathEnabled = false`, and
+every kernel must be **checked against the scalar op bit for bit**, not merely against a tolerance —
+which is the same discipline `D9` used to rule BLAS out.
+
+**Measured on the development node (Apple M2):**
+
+| | |
+| --- | --- |
+| `MTLCreateSystemDefaultDevice()` | returns an **Apple M2**, `hasUnifiedMemory = true` |
+| runtime-compiled MSL from a source string | **compiles** (`library.functionNames == ["unpack4"]`) |
+
+**Consequence for CI, and it is a gate rule rather than a detail.** The GitHub `macos-26` runner has
+no GPU, so `MTLCreateSystemDefaultDevice()` returns nil there. Every Metal test must therefore
+**skip** when there is no device — the same shape as the Swift-6.4 skip in `DC-036`, which has
+already been bitten twice by a toolchain difference between CI and the farm. This is that lesson
+applied before it costs anything.
+
+**The first kernel is the unpack**, and for the reason `D9` gives: it is element-wise, its only
+floating-point operation is one multiply, and it has no summation at all, so the accumulation rule
+does not even apply to it. It is the Metal kernel least able to argue with the contract, which makes
+it the right one to prove the toolchain, the test harness and the fast-math discipline on.
+
 ## D8 — The chunked Gated DeltaNet rule is authoritative, and a cache is a second numeric path
 
 **Decided:** the cache's decode arithmetic is built so that it agrees with the **chunked** rule,
