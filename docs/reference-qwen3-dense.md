@@ -1,8 +1,13 @@
-# M0 reference contract — Qwen3 dense (`qwen3`)
+# Reference contract — Qwen3 dense (`qwen3`), the M0a harness-validation model
 
 **Status:** verified against the reference implementation, 2026-09-15. Nothing here is
 implemented yet, and nothing here is inferred — every statement carries the file and line
 it came from.
+
+This was written as the M0 contract and kept its value when `D1` chose Qwen3.5-2B instead:
+it is now the contract for **M0a**, the conventional model used to prove the capture and
+diff harness before the Gated DeltaNet architecture is attempted. The M0 model's contract
+is [`reference-qwen35-2b.md`](reference-qwen35-2b.md).
 
 The brief forbids guessing at norm placement, epsilon values or RoPE application order,
 because a plausible guess produces output that looks fine and is wrong. This file exists

@@ -84,9 +84,10 @@ uv pip install --python .venv/bin/python -r tools/requirements-coreml.txt
 uv pip install --python .venv/bin/python -r tools/requirements-reference.txt
 ```
 
-Reference material for the current milestone lives in `docs/` — start with
-`docs/m0-reference-contract.md`, which records the model revision and the exact
-dtype boundaries of every op. Kernel comments cite it rather than restating it.
+Reference material for the current milestone lives in `docs/`: `m0-decisions.md` records
+the resolved `D1`–`D7` decisions and the reasoning behind them, and the two
+`reference-*.md` contracts record each model family's exact dtype boundaries and op order,
+by file and line. Kernel comments cite those contracts rather than restating them.
 
 Once code exists, the release gate is the sister project's model: a warning-free
 release build, the lint gates, the full test suite, and byte-identical golden

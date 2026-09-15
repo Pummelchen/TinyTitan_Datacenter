@@ -10,7 +10,7 @@
 [![Contact](https://img.shields.io/badge/Contact-0xa0b1%40gmail.com-blue?style=flat-square&logo=gmail&logoColor=white)](mailto:0xa0b1@gmail.com)
 
 
-A distributed inference engine for large MoE language models on clusters of Macs Minis/Studio's over LAN/SFP/QSFP and Thunderbolt.
+A distributed inference engine for large MoE language models on clusters of Mac minis and Mac Studios over LAN/SFP/QSFP and Thunderbolt.
 
 **Status: design phase. Nothing here runs yet.**
 
@@ -30,7 +30,7 @@ Single-node SSD streaming already works in the sister project
 help: with one sequence in flight only one node is ever busy, so bytes-read-per-token
 is unchanged.
 
-Shard uses **expert parallelism** instead. Every node holds the dense backbone
+TinyTitan Datacenter uses **expert parallelism** instead. Every node holds the dense backbone
 replicated and a disjoint 1/N slice of the routed experts. All nodes work on the same
 token simultaneously and all-reduce the MoE output.
 
@@ -71,8 +71,10 @@ check still looks green.
 
 ## Target models
 
-DeepSeek-V4.1 Editions
-Qwen 3.8/4.0 Editions
+In order: **Qwen3.6-35B-A3B** (the validation model), **DeepSeek-V4-Flash** and
+**Qwen3.8-Flash-Next**. M0 uses the dense Qwen3.5-2B. The verified configuration of each —
+with the checkpoint revision every figure came from — is on the wiki's
+[Target models](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Target-Models) page.
 
 Both frontier families are converging on the same shape — fine-grained MoE, shared
 expert, compressed or sparse hybrid attention, constant-size recurrent state, MTP
