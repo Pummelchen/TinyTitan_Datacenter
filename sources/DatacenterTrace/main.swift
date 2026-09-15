@@ -83,6 +83,24 @@ var writer = TraceWriter(
     model: ["id": modelID, "revision": revision, "compute": "fp32", "contract": "ordered_reference.py"]
 )
 writer.discrete = result.discrete
+// The expert traffic is written *beside* the trace rather than into its manifest: the manifest
+// carries the digest, and a counter that changes between two runs of the same prompt would
+// change the digest and make I1's comparison impossible. Evidence and identity are different
+// things and belong in different files.
+if !result.expertMetrics.isEmpty {
+    var metrics: [String: Any] = [:]
+    metrics["expert_requests"] = result.expertMetrics.reduce(0) { $0 + $1.requests }
+    metrics["expert_hits"] = result.expertMetrics.reduce(0) { $0 + $1.hits }
+    metrics["expert_misses"] = result.expertMetrics.reduce(0) { $0 + $1.misses }
+    metrics["expert_rows_read"] = result.expertRowsRead
+    metrics["expert_hit_rate"] = result.expertHitRate
+    metrics["layers"] = result.expertMetrics.count
+    let directory = output
+    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    if let data = try? JSONSerialization.data(withJSONObject: metrics, options: [.prettyPrinted, .sortedKeys]) {
+        try? data.write(to: directory.appendingPathComponent("metrics.json"))
+    }
+}
 do {
     let manifest = try writer.write(
         to: output,

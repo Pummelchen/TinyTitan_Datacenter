@@ -165,6 +165,13 @@ python3 tools/make_qwen35_fixture.py \
 # the shards. Do not invent token ids in the meantime.
 .venv/bin/python -c "from huggingface_hub import hf_hub_download; [hf_hub_download('Qwen/Qwen3.6-35B-A3B', n, cache_dir='.build/hf-cache') for n in ('tokenizer_config.json','vocab.json','merges.txt','tokenizer.json')]"
 
+# THE M1 GATE: correct output, a recorded tok/s baseline, and a measured cache hit rate, as
+# one command on one checkpoint. Verified against the tiny fixture, so it is not untested code
+# waiting for the 67 GB model. Writes .build/m1-gate/report.json, exits non-zero on failure.
+.venv/bin/python tools/run_m1_gate.py \
+    --snapshot .build/hf-cache/models--Qwen--Qwen3.6-35B-A3B/snapshots/<rev> \
+    --model Qwen/Qwen3.6-35B-A3B --revision <sha>
+
 # M1c: what 4-bit experts cost the mixture, measured rather than asserted. Builds a real
 # install from the tiny checkpoint and checks that the router's decisions survive exactly
 # (I3) and that the numbers stay bounded. Needs the venv.
