@@ -261,3 +261,24 @@ The **contract** half for the four new prompts. Its cost is ~10× the engine's, 
 five-token prompt extrapolates to roughly **five hours** for the five-prompt set — which is not a
 reasonable thing to do to a node that other work depends on. So M1's byte-identity claim remains
 proven on **one prompt of five**, and the other four are now known to *run* rather than to *match*.
+
+## I4 and L2 audited: covered, and the shared policy is not rot
+
+Auditing "quantization and sharding policy are data, not code" and the importer layer against the
+brief found both satisfied, with the evidence rather than the intent:
+
+- **A role absent from `quant_policy.json` stops the install**, which `AGENTS.md` states as a trap and
+  which is tested **four times** (`assertRaises(quantize.PolicyError)` in `test_quantize.py`).
+- **The policy carries its own rationale** — a `why` block justifying each role against an invariant:
+  routers stay bf16 for I3, the routed experts are "92.9 % of this model's parameters", the shared
+  expert's error is not amortised because it is active on every token, and the Gated DeltaNet's decay
+  is exponentiated so a 4-bit error there is not a small one. That is I4 done as data *with a reason*.
+- **Both directions of coverage now have a test.** The real install's 27 roles all have policy entries;
+  the three entries no MoE tensor uses (`mlp.down`, `mlp.gate`, `mlp.up`) appear in the **dense**
+  fixture, which is the shared policy format working as I4 intends rather than dead weight. The test
+  asserts the union across fixtures, so rot in either direction fails it.
+- **The importers are 144–235 lines**, comfortably under L2's 500–800 ceiling: `Qwen3Importer` 144,
+  `Qwen3_5MoEImporter` 223, `Qwen3_5Importer` 235.
+
+Sharding policy is **not** audited here because it does not exist yet: it is M2's work, and the brief
+puts it there.

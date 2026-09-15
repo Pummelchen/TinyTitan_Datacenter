@@ -59,6 +59,32 @@ class QuantizeTests(unittest.TestCase):
                 f"{name}: the install must record the digests of its own source files",
             )
 
+    def test_the_policy_covers_every_role_the_fixtures_use_and_nothing_more(self):
+        """`I4`: policy is data, so it can drift from the model in two directions.
+
+        A role a fixture uses but the policy omits **stops a build** by design, which is correct and
+        tested. The other direction is quieter: a policy entry no family uses is rot that reads like
+        configuration. Checked against the fixtures rather than the real install, because the policy is
+        deliberately **shared** across families — `mlp.down`, `mlp.gate` and `mlp.up` appear in the
+        dense fixture and in no MoE tensor, which is the shared format working, not dead weight. The
+        union is what has to match.
+        """
+        policy = json.loads((Path(__file__).resolve().parent / "quant_policy.json").read_text())["quant"]
+        root = Path(__file__).resolve().parent.parent / "tests/DatacenterEngineTests/Fixtures"
+        used: set[str] = set()
+        for manifest in sorted(root.glob("*/install/install.json")):
+            roles = {tensor["role"] for tensor in json.loads(manifest.read_text())["tensors"]}
+            used |= roles
+            self.assertEqual(
+                roles - set(policy), set(),
+                f"{manifest.parent.parent.name}: these roles would stop a build: {sorted(roles - set(policy))}",
+            )
+        self.assertEqual(
+            set(policy) - used, set(),
+            f"policy entries no fixture uses, which is rot that reads like configuration: "
+            f"{sorted(set(policy) - used)}",
+        )
+
     def test_no_install_records_the_local_placeholder(self):
         """`I6` and `DC-098`: `"local"` reads like an answer and is not one.
 
