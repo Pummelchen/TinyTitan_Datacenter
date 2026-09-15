@@ -43,6 +43,22 @@ numpy_required = unittest.skipUnless(HAVE_MODULE, "numpy and the pass are needed
 
 @numpy_required
 class QuantizeTests(unittest.TestCase):
+    def test_the_committed_fixtures_record_their_source_digests(self):
+        """`DC-098`: an install that cannot name its source weights is not provenance.
+
+        The committed fixtures carried `files: {}`. This asserts they carry the real sha256 of their
+        own `model.safetensors`, computed here independently — so a regeneration that loses the field
+        fails a test instead of quietly restoring the gap.
+        """
+        for name in ("tiny-qwen35", "tiny-qwen36"):
+            fixture = Path(__file__).resolve().parent.parent / f"tests/DatacenterEngineTests/Fixtures/{name}"
+            manifest = json.loads((fixture / "install" / "install.json").read_text())
+            self.assertEqual(
+                manifest["source"]["files"],
+                quantize.digest_snapshot(fixture),
+                f"{name}: the install must record the digests of its own source files",
+            )
+
     def test_the_source_file_digests_are_real(self):
         """`I6` and `DC-098`: the artifact must be able to name the weights it came from.
 

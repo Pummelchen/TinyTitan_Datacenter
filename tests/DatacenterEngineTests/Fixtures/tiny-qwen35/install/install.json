@@ -8,7 +8,9 @@
  ],
  "schema": 1,
  "source": {
-  "files": {},
+  "files": {
+   "model.safetensors": "614d55fdc1b57d9e1f5499919ff6d2a6a9a3f546b40159bce768c2a04682a1c1"
+  },
   "repo": "tiny-qwen35",
   "revision": "local",
   "spec_family": "qwen3_5"
