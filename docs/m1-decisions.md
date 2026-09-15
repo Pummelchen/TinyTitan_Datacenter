@@ -553,3 +553,36 @@ instead of quietly left behind.
 
 This is open, and it is the operator's call because it trades RAM against hit rate on a node whose RAM
 limit has already caused two panics.
+
+## D13 — 16 KB alignment is deferred with `O_DIRECT`, and the measurement says why
+
+The brief's L3 requires experts repacked "contiguous as [gate|up|down], **16 KB aligned**", and the
+brief's runtime rule names the read path as `F_NOCACHE` / **`O_DIRECT`**. Those two sentences are one
+requirement: **`O_DIRECT` is what needs 16 KB alignment**, because it requires the buffer, the length
+and the file offset all to be aligned to the device's block size. `F_NOCACHE` + `pread` does not: it
+bypasses the page cache and reads at any offset.
+
+This engine uses `F_NOCACHE` + `pread` (`UncachedFile.swift`), and `O_DIRECT` appears **exactly once**
+in the repository — in a comment quoting the brief. So the alignment requirement is currently
+unnecessary, and it is deferred *with the read path* rather than dropped.
+
+**Measured on the real 20 GB install, 693 tensors, `install.json`:**
+
+| alignment | offsets that fail it |
+| --- | --- |
+| 2 bytes | 0 |
+| **64 bytes** | **0** |
+| 512 bytes | 375 |
+| 4096 bytes | 667 |
+| **16384 bytes** | **688** |
+
+So the layout is **64-byte aligned**, which is what `SIMD4<Float>` loads and a `pread` want, and the
+gaps between consecutive tensors run 128, 512, 1024, 4096, 8192 and 65536 bytes. That is by design, not
+by accident: the writer packs tensors to a small alignment and the reader loads unaligned words
+explicitly (`loadUnaligned`), which is why the bit-exactness work never had to care.
+
+**The revisit condition is a single measurement**: if the read path moves to `O_DIRECT` — for instance
+if `F_NOCACHE` turns out not to bypass the cache on a future macOS, which is exactly what the 20 GB
+page-cache incident would look like — then the install must be rewritten with 16 KB alignment and every
+trace regenerated, because the offsets change. Writing that down is what keeps the requirement from
+being quietly forgotten.
