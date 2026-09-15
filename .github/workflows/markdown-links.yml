@@ -36,3 +36,5 @@ jobs:
         run: python3 -m unittest discover -s tools -v
       - name: Check Markdown links
         run: python3 tools/check_markdown_links.py --verbose
+      - name: Check Markdown tables
+        run: python3 tools/check_markdown_tables.py
