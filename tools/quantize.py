@@ -254,12 +254,58 @@ class InstallWriter:
         self._written = 0
         self.index: list[dict] = []
 
+    @staticmethod
+    def slab_digests(entry: dict, payload: bytes) -> list[str] | None:
+        """A digest per **leading-axis slab**, so a reader can check the part it reads.
+
+        The entry digest forces a reader to hash the whole payload before it can trust any of it,
+        and for a stacked expert tensor that is 537 MB per layer per process — measured at about
+        thirty seconds across the 35 B model's eighty expert tensors. The payload is section-major
+        (every row's codes, then every row's scales, then every row's zeros), so one slab's bytes sit
+        in three ranges; the digest covers those three ranges in that fixed order, which is the part
+        that has to be written down rather than inferred.
+
+        Returns `None` for a layout with a single slab, where the entry digest is already the
+        cheapest possible check.
+        """
+        shape = entry["shape"]
+        if len(shape) < 2:
+            return None
+        rows = 1
+        for dimension in shape[:-1]:
+            rows *= dimension
+        slabs = shape[0]
+        inner = rows // slabs if slabs else 0
+        if inner <= 0 or slabs <= 1:
+            return None
+        padded = entry["padded_columns"]
+        if entry["quant"] != "int4-affine":
+            return None
+        groups_per_row = padded // entry["group"]
+        codes_per_row = padded // 2
+        codes_bytes = rows * codes_per_row
+        scales_bytes = rows * groups_per_row * 4
+        digests: list[str] = []
+        for slab in range(slabs):
+            first = slab * inner
+            hasher = hashlib.sha256()
+            hasher.update(payload[first * codes_per_row:(first + inner) * codes_per_row])
+            offset = codes_bytes + first * groups_per_row * 4
+            hasher.update(payload[offset:offset + inner * groups_per_row * 4])
+            offset = codes_bytes + scales_bytes + first * groups_per_row
+            hasher.update(payload[offset:offset + inner * groups_per_row])
+            digests.append(hasher.hexdigest())
+        return digests
+
     def add(self, entry: dict) -> None:
         padding = (64 - self._written % 64) % 64
         self._blob.write(b"\0" * padding)
         self._written += padding
         offset = self._written
         payload = entry["raw"] if "raw" in entry else entry["packed"] + entry["scales"] + entry["zeros"]
+        # Optional in the format: a schema-1 reader ignores it, and a reader that knows it can check
+        # one slab instead of a whole tensor.
+        slabs = self.slab_digests(entry, payload)
         self._blob.write(payload)
         self._written += len(payload)
         self.index.append(
@@ -276,6 +322,7 @@ class InstallWriter:
                 "offset": offset,
                 "nbytes": len(payload),
                 "sha256": hashlib.sha256(payload).hexdigest(),
+                **({"slab_sha256": slabs} if slabs else {}),
             }
         )
 

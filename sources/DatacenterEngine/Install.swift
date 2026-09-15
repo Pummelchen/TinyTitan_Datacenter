@@ -44,6 +44,9 @@ public struct InstallFile: WeightSource {
         public var quant: String
         public var shape: [Int]
         public var padded_columns: Int
+        /// A digest per **leading-axis slab**, when the install was written with them. Optional, so
+        /// a schema-1 install still loads and is checked the expensive way.
+        public var slab_sha256: [String]?
         public var group: Int
         public var dtype: String
         public var offset: Int
@@ -219,6 +222,7 @@ public struct InstallFile: WeightSource {
         let zeros = try readCounted(
             offset: entry.offset + codesBytes + scalesBytes + first * groupsPerRow, byteCount: payloadRows * groupsPerRow
         )
+        guard try digestMatches(entry) else { throw Error.digestMismatch(entry.name) }
         return try Self.dequantizeInt4(codes + scales + zeros, entry: entry, rowCount: payloadRows)
     }
 
