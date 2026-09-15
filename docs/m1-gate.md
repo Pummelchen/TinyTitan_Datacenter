@@ -164,3 +164,45 @@ because the process peaks at 4.16 GB against about 4.5 GB usable. The watchdog i
 floor is enforced, and the run is a few minutes. **M1's gate is therefore open, with its
 correctness claim holding on one prompt of five and its throughput claim retired pending that
 measurement.**
+
+## Run on all five prompts, 2026-09-16: it works, and I1 holds on the real model
+
+The operator approved one real-model run with the instruction to test **that it works rather than
+for benchmark statistics**, because every node in the farm is doing coding work. So this section
+reports correctness, and the timings below are explicitly **not** a baseline.
+
+| prompt | tokens | result | seconds, under load |
+| --- | --- | --- | --- |
+| `capital` | 5 | trace written, exit 0 | 33 |
+| `arithmetic` | 33 | trace written, exit 0 | 85 |
+| `code` | 40 | trace written, exit 0 | 109 |
+| `repeat` | 60 | trace written, exit 0 | 119 |
+| `long` | 67 | trace written, exit 0 | 138 |
+
+Those seconds are wall-clock on a machine running other work. They are recorded because they exist,
+**not** as a throughput figure, and the difference matters: `capital` took 45.6 s in the recorded run
+and 33 s here, which is *not* a speedup claim — the earlier figure was taken on an idle machine and
+these were not.
+
+### I1 verified on the real model
+
+`capital` and `long` were each run **twice**, and both pairs of traces are **byte-identical**,
+`data.bin` and `manifest.json` alike. That is `I1` — identical input, identical output bytes — tested
+directly on the real 35B checkpoint rather than argued from the design.
+
+### And the strongest result of the session
+
+`capital`'s canonical digest is **`b8c976c5e7ba8816e8322a41137b568790b7ca08d081483fc392c8ae1401b8f3`**,
+which is the value recorded in the first gate run — the trace that was **bit-identical to the
+contract**. So the engine still produces the contract's exact bytes after all of it: the `int4` row
+read decoding one expert instead of a whole stack, the matmul vectorised across outputs, the unpack
+vectorised and widened to eight codes per load, and five upcoming language features. Each of those
+was proven bit-identical in isolation; this is the composition of them all, on the real model,
+against the digest on record.
+
+### Still unmeasured, and why
+
+The **contract** half for the four new prompts. Its cost is ~10× the engine's, and 461.8 s for a
+five-token prompt extrapolates to roughly **five hours** for the five-prompt set — which is not a
+reasonable thing to do to a node that other work depends on. So M1's byte-identity claim remains
+proven on **one prompt of five**, and the other four are now known to *run* rather than to *match*.
