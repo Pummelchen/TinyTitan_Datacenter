@@ -45,10 +45,14 @@ The rules that follow from it:
 **A 5 GB disk floor is enforced, not promised.** Two tools, both standard-library only:
 
 ```bash
-# The monitor. Polls free space; below the floor it writes .build/DISK_STOP and terminates the
-# heavy jobs that are running (the engine, the contract, the install builder) — SIGTERM, then
-# SIGKILL. It never terminates itself or the agent harness.
-python3 tools/disk_watchdog.py --threshold-gb 5 --interval 5
+# The monitor. Polls free space; three readings in a row below the floor and it writes
+# .build/DISK_STOP and terminates the running heavy jobs (the engine, the contract, the install
+# builder) — SIGTERM, then SIGKILL. It never terminates itself or the agent harness.
+#
+# The three-reading rule is not decoration. The first version acted on one reading of 4.67 GB
+# that was 17.55 GB six seconds later, because APFS "purgeable" space appears and disappears as
+# the system reclaims caches, and it killed a read-only verification that had done nothing wrong.
+python3 tools/disk_watchdog.py --threshold-gb 5 --interval 5 --consecutive 3
 
 # The preflight guard. quantize.py, the contract CLIs and run_m1_gate.py call require_headroom()
 # before they touch a model, so nothing heavy starts below the floor either — and a stop marker

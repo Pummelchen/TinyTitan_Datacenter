@@ -114,6 +114,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--threshold-gb", type=float, default=5.0, help="stop below this many GB free")
     parser.add_argument("--interval", type=float, default=5.0, help="seconds between checks")
     parser.add_argument("--grace", type=float, default=5.0, help="seconds between SIGTERM and SIGKILL")
+    parser.add_argument(
+        "--consecutive", type=int, default=3,
+        help="how many readings in a row must be below the floor before acting",
+    )
     parser.add_argument("--marker", type=Path, default=DEFAULT_MARKER)
     parser.add_argument("--watch", type=Path, default=ROOT, help="filesystem to watch")
     parser.add_argument("--once", action="store_true", help="check once and exit (for tests)")
@@ -123,26 +127,45 @@ def main(argv: list[str] | None = None) -> int:
     mine = {os.getpid(), os.getppid()}
     print(
         f"disk watchdog: watching {args.watch} for {args.threshold_gb} GB free, "
-        f"every {args.interval}s, marker {args.marker}",
+        f"every {args.interval}s, {args.consecutive} readings before acting, marker {args.marker}",
         flush=True,
     )
 
+    # Free space on APFS is not a smooth number: "purgeable" space appears and disappears as the
+    # system reclaims caches and snapshots, and this watchdog's own first version acted on a
+    # single reading of 4.67 GB that was 17.55 GB six seconds later — killing a read-only verify
+    # that had done nothing wrong. A floor worth enforcing is worth confirming first.
+    strikes = 0
     while True:
         available = free_gb(args.watch)
         if available < args.threshold_gb:
+            strikes += 1
+            if strikes < args.consecutive:
+                print(
+                    f"{time.strftime('%Y-%m-%d %H:%M:%S')} {available:.2f} GB free (strike "
+                    f"{strikes}/{args.consecutive}); waiting for the next reading",
+                    flush=True,
+                )
+                if args.once:
+                    return 0
+                time.sleep(args.interval)
+                continue
             running = heavy_processes(mine)
-            actions = stop_them(running, args.grace)
-            message = (
+            # The marker is written **before** the jobs are stopped, and that order is the point:
+            # a heavy job that started in the window between the two would find the marker absent
+            # and run while the disk is still short. Writing it first makes the refusal immediate.
+            header = (
                 f"{time.strftime('%Y-%m-%d %H:%M:%S')} STOP: {available:.2f} GB free, below "
-                f"{args.threshold_gb} GB; stopped {len(running)} heavy job(s)\n"
+                f"{args.threshold_gb} GB; stopping {len(running)} heavy job(s)\n"
             )
-            for action in actions:
-                message += f"  {action}\n"
-            # The marker is written **before** anything else so that a new heavy job cannot start
-            # in the window between stopping the old ones and the next check.
+            args.marker.write_text(header)
+            actions = stop_them(running, args.grace)
+            message = header + "".join(f"  {action}\n" for action in actions)
             args.marker.write_text(message)
             print(message, flush=True)
-        elif args.marker.exists():
+        else:
+            strikes = 0
+        if available >= args.threshold_gb and args.marker.exists():
             print(
                 f"{time.strftime('%Y-%m-%d %H:%M:%S')} {available:.2f} GB free, above threshold; "
                 f"leaving {args.marker.name} in place until it is removed deliberately",
