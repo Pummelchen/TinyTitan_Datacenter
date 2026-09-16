@@ -1463,3 +1463,52 @@ is smaller, so the install path now declares **1.5 GB** and the checkpoint path 
 deliberate: the install figure is a measurement with a margin, and the checkpoint figure is a measurement
 nobody has repeated since streaming landed. Lowering it would be a guard weakened to match a guess, and
 re-measuring the checkpoint path is its own job.
+
+## D70 — DC-113 is int4-specific, and the contract's install reads are the slow half of M1's gate
+
+Two measurements this round, both narrowing rather than guessing.
+
+**DC-113 runs in 0.04 s, so it can be interrogated directly.** Pointing both sides at the tiny **checkpoint**
+instead of the tiny install gives
+
+```
+IDENTICAL — 7 tensor(s), 0 element(s), 2 discrete decision(s) checked (matching digests)
+```
+
+so the model code and the arithmetic agree, and the divergence lives in the quantised path. Pointing both at
+the tiny **install** reproduces it: `embed.out` and `layer.00.hidden_in` agree, `layer.00.hidden_out` differs
+by 18,676,984 ULP, and the router top-k follows (`layer.01.router.topk`, `[5, 0, 0, 3, 6, 2]` against
+`[1, 0, 6, 0, 3, 4]`). A difference that large with a *matching* input is structural, not rounding.
+
+Layer 0 is a **Gated DeltaNet** layer, and the tensors that carry its computation are exactly the ones the
+install pads: `in_proj_qkv` is 32 wide stored at 64, `in_proj_z` and `out_proj` are 32 wide stored at 64, and
+the expert stacks are 16 and 32 wide stored at 64 — with a **group size of 64**. So every one of them is a
+**partial group on a padded row**, which is the `DC-087` family, and it is a geometry the real model's tensors
+do not have: on the real install the two readers agree byte for byte (`D56`), which is why this could sit
+undiscovered. The engine's reader and the contract's reader are each verified against their own goldens, and
+the fixture is the only case that drives the padded path end to end. The next step is a bisection rather than a
+guess: build the tiny install with a policy that quantises **one role at a time** — a second each — find the
+tensor that first moves `hidden_out`, and compare the two readers' values for that tensor alone.
+
+**The other half of the round was a measurement that killed my own hypothesis.** M1's gate could not finish a
+**five-token** prompt in twenty-five minutes, so I suspected the recorded trap — `_materialise` accumulating a
+Python `list[float]` at twenty-four bytes per value. Measured on one real expert (1,048,576 values):
+
+| formulation | time |
+| --- | --- |
+| iterate the rows, build nothing | 0.320 s |
+| today: `list[float]` | 0.315 s |
+| candidate: preallocated fp32 array | 0.335 s |
+
+All three are the same, so allocation is not the cost and my hypothesis was wrong. The read rate is **12.4 MB/s
+at 16 KB per read and saturates at 17.7 MB/s at 2 MB per read**, so it is not syscall overhead either: it is the
+**per-row crossing into Python**, 2,048 of them per expert. `.fast`, `.relaxed` and `.safe` were not involved
+and neither is `F_NOCACHE`; the Swift path reaches ~1 GB/s on the same hardware (`D64`) because it never
+materialises rows one at a time. The fix is a bulk read in `install_reader` — `np.frombuffer` over one `pread`
+— and that is a **timing-phase** item, deliberately not done here, because the operator has deferred timing
+work and this is performance rather than correctness. It is `DC-114`.
+
+**What this means for M1's gate is a cost, not a verdict.** The gate is *functionally* able to run against an
+install now (`D69`); on this node it needs hours per prompt because the contract's read path is 80× off the
+engine's, and the engine's own trace is not the bottleneck. That is why the milestone's own gate remains a
+quiet-window, or bigger-node, item rather than something I can report as passed.
