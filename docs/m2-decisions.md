@@ -1,0 +1,82 @@
+# M2 decision records
+
+The single-node decisions are in `m0-decisions.md`, `m1-decisions.md` and `m0c-quantization.md`. These
+are the ones the cluster forces, and they are written **before** the code that depends on them, because
+each one is a contract two nodes have to agree on rather than a choice one node can make.
+
+## D17 — The deterministic reduction contract: reduce contributions, never per-node partials
+
+**The problem.** M2's gate is "2 nodes bit-identical to the 1-node baseline". Floating-point addition is
+not associative, so the moment the sum is split across nodes the low bits are at risk. Concretely, in
+fp32 at magnitude 2e7 the spacing is 2:
+
+```
+a = 2e7, b = 3, c = 3
+(a + b) + c = 20000008      the left-to-right sequence
+a + (b + c) = 20000006      a per-node partial summed at the end
+```
+
+Both are "the sum of the same three numbers". Only one of them is the sequence the single-node engine
+performs. That example is a test (`OrderedReductionTests`), not an illustration: if those two agreed,
+this contract would be unnecessary.
+
+**The decision.** The all-reduce carries **per-`(token, expert)` contributions** — the expert's `down`
+projection and the routing weight — and the reduction sums them in a canonical order:
+
+1. **Order key: token ascending, then expert id ascending.** This is exactly the sequence
+   `MixtureOfExperts.experts` performs today, so an N-node run replays the 1-node arithmetic instead of
+   approximating it.
+2. **The routing weight is applied before the addition** (`output += values[i] * scale`), the same
+   expression shape as the single-node site. A compiler that contracted one site into an FMA and not
+   the other would break bit-identity invisibly; both sites must round identically.
+3. **fp32 accumulation**, as the architecture requires.
+4. **No per-node pre-aggregation, ever.** A node that sums its own experts and ships the total has
+   already lost the property, and no downstream care can recover it.
+5. **No reduction for the dense backbone.** It is replicated and computed identically on every node, so
+   there is nothing to combine — which is why there is exactly **one all-reduce per MoE layer** and not
+   one per layer.
+
+**This is stronger than "a fixed ring order".** The brief asks for a fixed ring order rather than
+arrival order, and `docs/brief-response.md` notes the consequence: the ring membership would have to be
+pinned too, or two runs at the same N could disagree. Ordering by `(token, expert)` removes that
+requirement. Re-numbering the ring, replacing a node, or re-partitioning the experts cannot move a bit,
+because neither the ring nor the arrival order appears in the order key. What *must* be pinned is the
+**ownership map** — which node holds which experts — and that is a data artifact (`DC-011`), not a
+property of the network.
+
+**What it costs, stated honestly.** A pre-summed partial for one token is `hidden × 4 B` = 8 KB, which
+is where the architecture's "roughly 4 KB per layer" comes from. Per-contribution transport is up to
+`top-k × hidden × 4 B` = **64 KB per token per layer** at `hidden = 2048`, `top-k = 8`, and only the
+*other* node's terms need to cross, so ~half of that on a balanced pair. That is a real 8× on the
+synchronisation payload, paid deliberately: it is the price of I2, and it is still small enough that
+**latency per layer, not bandwidth, remains the design constraint** (`DC-051` measures it). If that
+measurement ever says otherwise, the escape hatch is an order-independent accumulator (exact
+fixed-point or a superaccumulator), which is more work and a different decision — not a return to
+per-node partials.
+
+**What it forbids, and why each matters.**
+
+- Pre-summing per node, for the reason above.
+- Summing in arrival order or ring order, which makes the result depend on the network's timing.
+- Reducing a **subset**: a run that summed seven of a token's eight experts would be quietly wrong and
+  numerically plausible. The reduction cannot distinguish "no contribution" from "a contribution of
+  zero", so absent terms must be an error at the transport layer (`DC-009`, `DC-043`), including the
+  node-failure path — a missing node is a failed run, never a smaller sum.
+- Trusting a wire value's shape: the width check in `OrderedReduction.accumulate` is a `precondition`
+  for a programming error, and untrusted input is the transport's job to validate before it gets there.
+
+**Where it lives and how it is held.** `sources/DatacenterEngine/OrderedReduction.swift` implements the
+contract as a pure function over `ExpertContribution`, so it can be tested without a cluster. Four
+tests hold it:
+
+| Test | What it pins |
+| --- | --- |
+| `testTheReductionReproducesTheSingleNodeSequenceBitForBit` | the reduction **is** the single-node sequence, compared bit pattern by bit pattern against an independently written reference |
+| `testPartitioningAndArrivalOrderDoNotMoveTheBits` | 1, 2, 4 and 8 partitions, each with its terms reversed and the partitions delivered in reverse order, produce identical bits |
+| `testPreSummedPartialsWouldNotBeBitIdenticalAndTheContractIs` | the trap is real (20000008 against 20000006) and the contract avoids it |
+| `testTheOrderKeyIsTokenThenExpert` | the order key itself, so a refactor cannot quietly change it |
+
+**What is not yet verified, and is the next step.** The tests use synthetic contributions. The claim
+that matters is against the **real fixture**: partition the fixture's experts across two providers,
+reduce, and compare bit-for-bit with the single-node forward. That is `DC-041`, and it is the harness
+M2's gate will run.
