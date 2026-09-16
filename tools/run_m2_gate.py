@@ -100,13 +100,18 @@ def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True, **kwargs)
 
 
-def stage_remote(remote: str, directory: str, install: Path, binary: Path, plan: Path) -> None:
-    """Copy what a node needs onto another machine: the binary, the fixture, the plan. Nothing else."""
+def stage_remote(
+    remote: str, directory: str, install: Path, binary: Path, plan: Path, remote_install: str | None
+) -> None:
+    """Copy what a node needs onto another machine: the binary and the plan, plus the fixture when the
+    remote has no install of its own.
+
+    A 20 GB install is not copied here — `--remote-install` names one that is already on the peer, which
+    is the difference between a functional test and a data migration.
+    """
     subprocess.run(["ssh", remote, f"mkdir -p {directory}"], check=True, cwd=ROOT)
-    subprocess.run(
-        ["scp", "-q", "-r", str(binary), str(install), str(plan), f"{remote}:{directory}/"],
-        check=True, cwd=ROOT,
-    )
+    sources = [str(binary), str(plan)] if remote_install else [str(binary), str(install), str(plan)]
+    subprocess.run(["scp", "-q", "-r", *sources, f"{remote}:{directory}/"], check=True, cwd=ROOT)
 
 
 def remote_address(host: str) -> str:
@@ -134,6 +139,11 @@ def main(argv: list[str] | None = None) -> int:
              "the fixture and the node binary are copied, and the trace is fetched back",
     )
     parser.add_argument("--remote-dir", default="m2-gate", help="where to stage files on the remote")
+    parser.add_argument(
+        "--remote-install", default=None,
+        help="an install already present on the remote (e.g. Downloads/m1-install); the fixture is not "
+             "copied in that case, which is what a 20 GB install needs",
+    )
     args = parser.parse_args(argv)
 
     if args.nodes != 2:
@@ -174,12 +184,15 @@ def main(argv: list[str] | None = None) -> int:
         # peers connect to it; with a remote peer the **remote** node listens, because this host is the
         # one that can reach the other machine's address — and only one of them may hold the role.
         if args.remote:
-            stage_remote(args.remote, args.remote_dir, args.install, binaries["node"], plan_path)
+            stage_remote(
+                args.remote, args.remote_dir, args.install, binaries["node"], plan_path, args.remote_install
+            )
             print(f"[3/4] two machines: node 1 listening on {args.remote}, node 0 connecting from here")
+            remote_install = args.remote_install or "./install"
             remote = subprocess.Popen(
                 [
                     "ssh", args.remote,
-                    f"cd {args.remote_dir} && ./datacenter-node ./install ./node-1 {args.tokens} "
+                    f"cd {args.remote_dir} && ./datacenter-node {remote_install} ./node-1 {args.tokens} "
                     f"./plan.json --node 1 --listen 0.0.0.0:0",
                 ],
                 cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -280,10 +293,11 @@ def main(argv: list[str] | None = None) -> int:
             pass  # outputs are evidence; they stay until the next run replaces them
 
     if failed:
-        print("M2 GATE (fixture scale) FAILED", file=sys.stderr)
+        print("M2 GATE FAILED", file=sys.stderr)
         return 1
     where = f"node 0 here and node 1 on {args.remote}" if args.remote else f"{args.nodes} processes on one host"
-    print(f"M2 GATE (fixture scale) PASSED: {where}, one plan, one trace")
+    what = args.remote_install or "the fixture"
+    print(f"M2 GATE PASSED: {where}, install {what}, one plan, one trace")
     return 0
 
 

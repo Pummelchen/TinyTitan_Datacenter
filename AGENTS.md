@@ -28,11 +28,11 @@ no Python contract reads an install (`DC-108`), `D12` is an open design question
 (`D19`), the shard plan as data (`D20`), bring-up (`D21`) and a transport that binds and connects
 (`D22`) are implemented and demonstrated — a two-node exchange driven by a **loaded plan file** is
 bit-identical to the single-node forward, over a socket pair **and over TCP**. The engine **runs
-sharded end to end across two machines**: `tools/run_m2_gate.py --remote node1@node1` stages a node on a
-peer and `trace_diff` reports IDENTICAL on both against the single-node trace — M2's gate as a functional
-test on the fixture. The farm's nodes are shared with other work, so cluster runs are functional rather
-than benchmarked until the timing phase, and the 35 B model across two nodes needs its 20 GB install
-staged on a peer. **M3–M5 have not started**.
+across two machines, on the real 35 B model**: a 256-expert plan over two contiguous halves, one node on
+a peer and one here, and `trace_diff` reports **83 tensors, 0 differing elements, 40 discrete decisions,
+matching digests `b0d382dbabf36df0…`** — the same digest as the single-node M1 baseline. The farm's nodes
+are shared with other work, so cluster runs are functional rather than benchmarked until the timing phase;
+a sharded generation CLI (`DC-109`) is what the tok/s gates will need. **M3–M5 have not started**.
 There are **no releases and no tags**. The design, the plan and the status live in the
 wiki; the measurements live in `docs/`.
 

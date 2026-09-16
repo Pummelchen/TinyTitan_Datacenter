@@ -394,7 +394,7 @@ reference:
 
 ```
 [3/4] two machines: node 1 listening on node1@node1, node 0 connecting from here
-      node 1 bound port 55252 on 100.66.125.48 (the farm's names take the VPN)
+      node 1 bound port 55252 on its LAN address (the farm's names take the VPN)
       node 1: BRINGUP ok: node 1 of 2, plan 25d34fe36d62d793…
       node 1: wrote /Users/node1/m2-gate/node-1: 7 tensors, 2 discrete, digest 58518422914cfe2b…
       node 0: BRINGUP ok: node 0 of 2, plan 25d34fe36d62d793…
@@ -424,3 +424,45 @@ roles invert when the peer is remote, and only one node may listen. The second c
 without `-r`, which `scp` reported as "not a regular file" — a trace is a directory. The third labelled
 output by process index rather than node id, so a passing run read as though node 0 had written node 1's
 file.
+
+## D26 — M2's gate, on the real 35 B model, across two machines
+
+The fixture proved the machinery; this is the gate. One node on `node3`, one on the development host, a
+256-expert plan over two contiguous halves, the real install on both, and the M1 baseline as the
+reference:
+
+```
+[1/4] plan: 256 experts over 2 nodes, contiguous
+[2/4] reference (one node): 83 tensors, 40 discrete, digest b0d382dbabf36df0…
+[3/4] node 1 (node3): BRINGUP ok, plan b561404b0cbbad71…, digest b0d382dbabf36df0…
+      node 0 (here):  BRINGUP ok, plan b561404b0cbbad71…, digest b0d382dbabf36df0…
+[4/4] node 0: IDENTICAL — 83 tensor(s), 0 element(s), 40 discrete decision(s) checked (matching digests)
+      node 1: IDENTICAL — 83 tensor(s), 0 element(s), 40 discrete decision(s) checked (matching digests)
+M2 GATE PASSED
+```
+
+**The digest is the M1 baseline's.** `b0d382dbabf36df0…` is what the single-node engine produced before
+any of this existed, and both machines produced it from half the experts each. I2 is not an argument any
+more; it is a measurement on the real model over a real link.
+
+**Why a trace and not a token list.** The trace carries the `logits`, so byte-identical logits make
+greedy generation *identical by construction* — a strictly stronger claim than comparing generated text,
+which the M1 gate also rests on. What is not yet built is a **sharded `datacenter-generate`**: the
+generation CLI opens a model without a shard context, so the tok/s gates M3 needs will require it
+(`DC-109`).
+
+**No timings are claimed here.** The run reported wall clocks (16.5 s for the single-node reference,
+13.2 s and 12.7 s for the two nodes), and they are recorded as *how long the functional test took*, not
+as throughput: the farm's nodes are shared, nothing was isolated, and the standing rule for this phase
+is functional tests rather than benchmarks. The ~111 MB/s the install transfer sustained over the LAN is
+likewise an observation about a copy, not a transport measurement — that is `DC-008`, on a quiet farm.
+
+**The install was staged once.** 21.7 GB to `node3`'s Downloads folder, which is the only data movement
+this needed: the development host already had the install, so one peer was enough for a two-node gate.
+Both nodes read only the tensors they touch, which is why a full install per node is still more than the
+design needs — a shard-repacked install is a later refinement, not a prerequisite.
+
+**One thing to fix and it is mine.** The first version of `D25` printed this node's peer address in its
+evidence block, and this repository is public: host names and addresses do not belong in it (R9). The
+line is scrubbed here. It remains in the history of the commit that introduced it, which is a force-push
+to remove and therefore the operator's decision rather than mine.
