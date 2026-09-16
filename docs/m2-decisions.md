@@ -276,3 +276,33 @@ real link, and belongs with the transport measurement (`DC-008`).
 directions (this node learns its peer, and the peer receives this node's declaration unchanged), and every
 disagreement above is refused with its own error before anything is computed. What is left for M2 is the
 socket that a real machine binds — `DC-008` for the implementation and measurement, `DC-045` for the gate.
+
+## D22 — The transport binds, listens and connects: a socket rather than a socket pair
+
+The socket pair carried the framing, the deadline and the exchange correctly, and it could not fail the way
+a socket fails: nothing bound, no port was ever busy, and no connection was ever refused. `TCPListener`
+and `TCPTransport.connect` put those paths in reach — IPv4 loopback, with the link itself left to
+`DC-008`'s measurement.
+
+**A blocking `connect` is not an option, and this is the kind of thing that only shows up on a real
+socket.** Connecting to a host that is not answering blocks for the kernel's own timeout, which is
+minutes: the run would look hung rather than refused, and the timeout policy would never apply. So the
+socket goes non-blocking for the connect, `poll` waits for writability under the policy's deadline, and
+`SO_ERROR` is asked for the answer — because `POLLOUT` also becomes ready when a connection *failed*.
+Then the socket goes back to blocking, so the read path behaves exactly as the pair's did.
+
+**Two diagnostics were wrong and are fixed.** A failed `connect` was reported as `cannotBind`, which
+names the wrong operation and would send someone looking at the listener. The `accept` and `connect`
+implementations also silently shadowed the global functions of the same name; Swift refused to compile
+rather than picking one, and they are now qualified.
+
+**Demonstrated.** Six tests: a listener asked for port `0` reports the port it got and carries a frame
+both ways; bring-up completes over TCP and the peer receives this node's declaration unchanged; a
+**contribution exchange over TCP is bit-identical to the single-node forward** on the fixture's real
+weights; an accept nobody answers times out on its deadline; connecting where nothing listens is refused;
+and a second listener on a busy port is refused.
+
+**What is still not exercised, and it is now a short list.** IPv6, the choice and measurement of the real
+link (`DC-008`'s other half), and two machines running a forward together (`DC-045`). The engine also does
+not yet *use* any of this: the exchange is exercised by tests, and the next piece is a forward that
+actually shards across it.
