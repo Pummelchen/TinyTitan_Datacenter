@@ -84,6 +84,9 @@ struct Sharded {
     let listener: TCPListener
     let node: Int
     let nodes: Int
+    /// The shard's all-reduce counters (`DC-081`), so a generation can be reported per node.
+    let ledger: ExchangeLedger
+    let planDigest: String
 }
 
 let sharded: Sharded?
@@ -119,7 +122,8 @@ if let planPath {
         )
         sharded = Sharded(
             forward: try Qwen3_5Forward(install: snapshot, shard: shard), listener: joined.listener,
-            node: shardNode, nodes: plan.nodes
+            node: shardNode, nodes: plan.nodes, ledger: shard.ledger,
+            planDigest: try plan.canonicalDigest()
         )
     } catch {
         fail("could not join the cluster: \(error)")
@@ -197,6 +201,36 @@ do {
         "wrote \(output.path): \(generation.captured.count) tensors, digest \(manifest.digest.prefix(16))…, "
             + String(format: "%.1f s over %d step(s), slowest %.1f s", total, generation.secondsPerStep.count, slowest)
     )
+    // `DC-081`: the same per-node metrics the forward CLI writes, so a sharded *generation* is visible per
+    // node too — which is what a throughput gate will read. The seconds below are raw observations of this
+    // run on this node; they are not a throughput claim, and `DC-053` is where that claim lives.
+    let exchange = sharded?.ledger.metrics ?? ExchangeMetrics()
+    let payloadMetrics = forward.payloadCacheMetrics
+    var metrics: [String: Any] = [
+        "node": sharded?.node ?? 0,
+        "nodes": sharded?.nodes ?? 1,
+        "generated_tokens": generation.generated.count,
+        "steps": generation.secondsPerStep.count,
+        "step_seconds": generation.secondsPerStep,
+        "step_seconds_total": total,
+        "step_seconds_slowest": slowest,
+        "exchange_reduces": exchange.reduces,
+        "exchange_terms_sent": exchange.termsSent,
+        "exchange_terms_received": exchange.termsReceived,
+        "exchange_bytes_sent": exchange.bytesSent,
+        "exchange_bytes_received": exchange.bytesReceived,
+        "exchange_seconds": exchange.seconds,
+        "dense_payload_bytes_read": payloadMetrics.bytesRead,
+        "dense_payload_cache_hits": payloadMetrics.hits,
+        "dense_payload_bytes_held": payloadMetrics.bytesHeld,
+    ]
+    if let sharded {
+        metrics["plan_digest"] = sharded.planDigest
+    }
+    metrics["install_bytes_read_total"] = forward.sourceBytesRead
+    if let data = try? JSONSerialization.data(withJSONObject: metrics, options: [.prettyPrinted, .sortedKeys]) {
+        try? data.write(to: output.appendingPathComponent("metrics.json"))
+    }
 } catch {
     fail("could not write the trace: \(error)")
 }

@@ -191,16 +191,17 @@ do {
 
 let started = Date()
 let bytesBeforeForward = forward.sourceBytesRead
+/// The shard's exchange counters, named so the metrics after the forward can report them (`DC-081`).
+var exchangeLedger: ExchangeLedger?
 let shardedForward: Qwen3_5Forward
 let result: ForwardResult
 do {
-    shardedForward = try Qwen3_5Forward(
-        install: install,
-        shard: ShardExecution(
-            node: node, ownership: ownership, peers: peers,
-            policy: ExchangePolicy(receiveTimeoutMilliseconds: timeoutMilliseconds, attempts: 3)
-        )
+    let shard = ShardExecution(
+        node: node, ownership: ownership, peers: peers,
+        policy: ExchangePolicy(receiveTimeoutMilliseconds: timeoutMilliseconds, attempts: 3)
     )
+    exchangeLedger = shard.ledger
+    shardedForward = try Qwen3_5Forward(install: install, shard: shard)
     result = try shardedForward.forwardWithDecisions(tokens: tokens)
 } catch {
     fail("forward failed: \(error)")
@@ -216,6 +217,8 @@ if !result.expertMetrics.isEmpty {
     // of this work because it assumes bf16 on disk and overstated a 4-bit install by ~3.5x, and it does
     // not belong back in the sharded one wearing a different name.
     let timing = shardedForward.sourceTiming
+    let exchange = exchangeLedger?.metrics ?? ExchangeMetrics()
+    let payload = forward.payloadCacheMetrics
     let metrics: [String: Any] = [
         "expert_requests": result.expertMetrics.reduce(0) { $0 + $1.requests },
         "expert_elements_read": result.expertElementsRead,
@@ -226,6 +229,16 @@ if !result.expertMetrics.isEmpty {
         "install_verified_bytes": timing.verifiedBytes,
         "install_read_seconds": timing.readSeconds,
         "install_unpack_seconds": timing.unpackSeconds,
+        // `DC-081`: what the cluster cost this node, and what the dense backbone's residency saved it.
+        "exchange_reduces": exchange.reduces,
+        "exchange_terms_sent": exchange.termsSent,
+        "exchange_terms_received": exchange.termsReceived,
+        "exchange_bytes_sent": exchange.bytesSent,
+        "exchange_bytes_received": exchange.bytesReceived,
+        "exchange_seconds": exchange.seconds,
+        "dense_payload_bytes_read": payload.bytesRead,
+        "dense_payload_cache_hits": payload.hits,
+        "dense_payload_bytes_held": payload.bytesHeld,
     ]
     try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
     if let data = try? JSONSerialization.data(withJSONObject: metrics, options: [.prettyPrinted, .sortedKeys]) {

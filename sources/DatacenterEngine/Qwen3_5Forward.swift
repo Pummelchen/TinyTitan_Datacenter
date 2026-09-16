@@ -369,7 +369,7 @@ public struct Qwen3_5Forward: ForwardPass {
         // One all-reduce per mixture layer, carrying terms rather than partial sums (`D17`).
         let reduced = try ShardExchange.allReduce(
             own: terms, peers: shard.peers, indices: indices, tokens: tokens,
-            hiddenSize: shape.hiddenSize, policy: shard.policy
+            hiddenSize: shape.hiddenSize, policy: shard.policy, ledger: shard.ledger
         )
         let parts = MixtureOfExperts.sharedPart(
             hidden: hidden, tokens: tokens, weights: weights, shape: shape

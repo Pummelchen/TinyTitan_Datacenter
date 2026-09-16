@@ -79,3 +79,57 @@ class PlanTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PerNodeReportTests(unittest.TestCase):
+    """`DC-081`: each node's own numbers, and NOT REPORTED when a node wrote none."""
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.original = harness.OUT
+        harness.OUT = self.root
+        self.addCleanup(lambda: setattr(harness, "OUT", self.original))
+
+    def test_a_node_without_metrics_is_reported_not_silently_zero(self) -> None:
+        import contextlib
+        import io
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            harness.report_per_node(range(2))
+        printed = output.getvalue()
+        self.assertIn("node 0: NOT REPORTED", printed)
+        self.assertIn("node 1: NOT REPORTED", printed)
+
+    def test_a_node_with_metrics_reports_what_it_measured(self) -> None:
+        import contextlib
+        import io
+        import json
+
+        directory = self.root / "node-0"
+        directory.mkdir(parents=True)
+        (directory / "metrics.json").write_text(
+            json.dumps(
+                {
+                    "expert_requests": 2218,
+                    "install_bytes_read_this_forward": 3_060_562_432,
+                    "dense_payload_bytes_read": 1_043_708_416,
+                    "dense_payload_cache_hits": 4277,
+                    "exchange_reduces": 40,
+                    "exchange_terms_sent": 120,
+                    "exchange_terms_received": 118,
+                    "exchange_seconds": 0.25,
+                }
+            )
+        )
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            harness.report_per_node([0])
+        printed = output.getvalue()
+        self.assertIn("2,218 request(s)", printed)
+        self.assertIn("1,043,708,416 B dense", printed)
+        self.assertIn("4,277 cache hit(s)", printed)
+        self.assertIn("120/118 terms", printed)
+        self.assertIn("0.250 s in the all-reduce", printed)

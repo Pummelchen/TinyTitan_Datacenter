@@ -67,6 +67,71 @@ extension ExpertContribution {
 /// - **A term that never arrives.** Fail the run. `OrderedReduction.isComplete` is checked before
 ///   anything is summed, because a reduction over seven of a token's eight experts produces a number
 ///   that looks like an answer and is not one.
+/// What the all-reduce cost, counted rather than inferred (`DC-081`).
+///
+/// A **class**, because `ShardExecution` is a struct and an exchange outlives one call — the same reason
+/// `ReadFile.ReadState` and the payload cache are classes. The counters include every attempt, not only the
+/// successful one: a retry that cost a round trip is part of what the run cost, and hiding it would make
+/// the instrument flatter than the truth.
+public final class ExchangeLedger: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _reduces = 0
+    private var _termsSent = 0
+    private var _termsReceived = 0
+    private var _bytesSent = 0
+    private var _bytesReceived = 0
+    private var _seconds = 0.0
+
+    public init() {}
+
+    func record(
+        termsSent: Int, termsReceived: Int, bytesSent: Int, bytesReceived: Int, seconds: Double
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        _reduces += 1
+        _termsSent += termsSent
+        _termsReceived += termsReceived
+        _bytesSent += bytesSent
+        _bytesReceived += bytesReceived
+        _seconds += seconds
+    }
+
+    public var metrics: ExchangeMetrics {
+        lock.lock()
+        defer { lock.unlock() }
+        return ExchangeMetrics(
+            reduces: _reduces, termsSent: _termsSent, termsReceived: _termsReceived,
+            bytesSent: _bytesSent, bytesReceived: _bytesReceived, seconds: _seconds
+        )
+    }
+}
+
+/// A snapshot of `ExchangeLedger`, on the `SourceTiming` pattern: a value the caller reports.
+public struct ExchangeMetrics: Sendable, Equatable {
+    public var reduces = 0
+    public var termsSent = 0
+    public var termsReceived = 0
+    public var bytesSent = 0
+    public var bytesReceived = 0
+    /// Wall seconds spent inside every all-reduce, **including retries and the time spent waiting for a
+    /// peer**. It is an observation, not a throughput claim: on a shared network it measures the farm as
+    /// much as the engine.
+    public var seconds = 0.0
+
+    public init(
+        reduces: Int = 0, termsSent: Int = 0, termsReceived: Int = 0, bytesSent: Int = 0,
+        bytesReceived: Int = 0, seconds: Double = 0.0
+    ) {
+        self.reduces = reduces
+        self.termsSent = termsSent
+        self.termsReceived = termsReceived
+        self.bytesSent = bytesSent
+        self.bytesReceived = bytesReceived
+        self.seconds = seconds
+    }
+}
+
 public enum ShardExchange {
     /// Merge terms from every node, collapsing retries and refusing contradictions.
     ///
@@ -102,8 +167,18 @@ public enum ShardExchange {
     @discardableResult
     public static func allReduce(
         own: [ExpertContribution], peers: [any ContributionTransport],
-        indices: [[Int]], tokens: Int, hiddenSize: Int, policy: ExchangePolicy = .default
+        indices: [[Int]], tokens: Int, hiddenSize: Int, policy: ExchangePolicy = .default,
+        ledger: ExchangeLedger? = nil
     ) throws -> [Float] {
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        var termsSent = 0, termsReceived = 0, bytesSent = 0, bytesReceived = 0
+        defer {
+            ledger?.record(
+                termsSent: termsSent, termsReceived: termsReceived, bytesSent: bytesSent,
+                bytesReceived: bytesReceived,
+                seconds: Double(DispatchTime.now().uptimeNanoseconds &- startedAt) / 1e9
+            )
+        }
         guard policy.attempts >= 1 else { throw ShardExchangeError.noAttempts }
         let frame = try ContributionWire.encode(own, tokens: tokens, hiddenSize: hiddenSize)
 
@@ -114,9 +189,15 @@ public enum ShardExchange {
                 // The policy is the caller's, and it has to reach the transport or it means nothing.
                 for peer in peers { peer.applyTimeout(milliseconds: policy.receiveTimeoutMilliseconds) }
                 for peer in peers { try peer.send(frame) }
+                // The same frame goes to every peer, so what left this node is that frame times the peers.
+                termsSent += own.count * peers.count
+                bytesSent += frame.count * peers.count
                 received = []
                 for peer in peers {
-                    let decoded = try ContributionWire.decode(try peer.receive())
+                    let answer = try peer.receive()
+                    bytesReceived += answer.count
+                    let decoded = try ContributionWire.decode(answer)
+                    termsReceived += decoded.contributions.count
                     // A frame is validated against itself in `decode`; this is the check only the
                     // receiver can make, and without it a peer's geometry reaches `accumulate`, whose
                     // width invariant is a precondition — a crash, from the network (`DC-083`).

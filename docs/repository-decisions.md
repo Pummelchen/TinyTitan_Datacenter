@@ -75,3 +75,39 @@ conditions that would change it (a port from an Apache-2.0 source, redistributed
 dependency), and `tools/check_provenance.py` checks offline what can be checked: that the file exists, that
 it still names the relationships it describes, and that no source file has acquired a third-party copyright
 header — the earliest visible symptom of code arriving without its obligations.
+
+## D37 — What the cluster cost, per node: the all-reduce is accounted for
+
+`DC-081` asked for per-node figures, an all-reduce time and a cache hit rate. The forward already reported
+expert traffic, payload bytes and cache hits (`D32`, `D33`); what was missing was what the *cluster* cost,
+and a way to see any of it **per node** rather than per process.
+
+`ExchangeLedger` counts what each all-reduce actually did — reduces, terms sent and received, bytes sent
+and received, and the wall seconds inside the exchange. It counts **every attempt**, not only the successful
+one, because a retry that cost a round trip is part of what the run cost. It is a class inside
+`ShardExecution`, which is a struct — the same shape as `ReadState` and the payload cache, and for the same
+reason.
+
+Each node writes its own `metrics.json`, and the gate harness prints them as a table. The two-node local run
+on the fixture, which is the deterministic one:
+
+```
+[4/5] per node, from each node's own metrics.json
+      node 0: 10 request(s), 30,208 B read, 0 B dense (0 cache hit(s)), 2 reduce(s) 7/5 terms, 0.000 s
+      node 1: 8 request(s), 27,840 B read, 0 B dense (0 cache hit(s)), 2 reduce(s) 5/7 terms, 0.000 s
+```
+
+**The table is self-checking, which is the property worth having**: node 0 sent seven terms and received
+five, node 1 sent five and received seven. An all-reduce that dropped or duplicated a peer's terms shows up
+here as an asymmetry, before any trace comparison.
+
+A sharded **generation** across two machines reports the same shape per node — 10 reduces, 10 terms each
+way, the dense payload read once (18,368 B) and served from cache 120 times — and its tokens and digests are
+still identical to the single-node reference, so this round's accounting changed no arithmetic.
+
+A node that wrote no metrics is reported **NOT REPORTED** rather than as zeroes, the same distinction the CI
+job makes about the wiki's tables.
+
+**What these numbers are not.** `step_seconds` and `exchange_seconds` are raw observations of one run on a
+shared farm. They are instrumentation, not a throughput claim: `DC-053` is where the ≥3× claim lives and it
+needs a quiet farm. Every number above is measured and labelled as an observation rather than a result.

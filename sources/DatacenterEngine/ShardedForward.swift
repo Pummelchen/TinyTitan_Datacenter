@@ -10,6 +10,9 @@ public struct ShardExecution {
     public let ownership: ExpertOwnership
     public let peers: [any ContributionTransport]
     public let policy: ExchangePolicy
+    /// What this node's all-reduces cost (`DC-081`). A class, so a `let` in this struct accumulates.
+    public let ledger = ExchangeLedger()
+    public var exchangeMetrics: ExchangeMetrics { ledger.metrics }
 
     public init(
         node: Int, ownership: ExpertOwnership, peers: [any ContributionTransport],

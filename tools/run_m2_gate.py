@@ -130,6 +130,30 @@ def remote_address(host: str) -> str:
 
 
 
+def report_per_node(nodes) -> None:
+    """Print what each node measured about itself, from the `metrics.json` it wrote.
+
+    A node that did not write one is **NOT REPORTED** rather than a zero — the same distinction the CI job
+    makes about the wiki's tables, and one this project keeps re-learning.
+    """
+    for node in nodes:
+        path = OUT / f"node-{node}" / "metrics.json"
+        if not path.exists():
+            print(f"      node {node}: NOT REPORTED (no metrics.json)")
+            continue
+        metrics = json.loads(path.read_text())
+        print(
+            f"      node {node}: {metrics.get('expert_requests', 0):,} request(s), "
+            f"{metrics.get('install_bytes_read_this_forward', 0):,} B read, "
+            f"{metrics.get('dense_payload_bytes_read', 0):,} B dense "
+            f"({metrics.get('dense_payload_cache_hits', 0):,} cache hit(s)), "
+            f"{metrics.get('exchange_reduces', 0):,} reduce(s) "
+            f"{metrics.get('exchange_terms_sent', 0):,}/"
+            f"{metrics.get('exchange_terms_received', 0):,} terms, "
+            f"{metrics.get('exchange_seconds', 0.0):.3f} s in the all-reduce"
+        )
+
+
 def run_mesh(args, binaries, plan_path: Path, reference: Path, plan: dict) -> int:
     """Run every node as its own process on its own machine, in a full mesh.
 
@@ -213,7 +237,10 @@ def run_mesh(args, binaries, plan_path: Path, reference: Path, plan: dict) -> in
         )
     print(f"      fetched {len(entries) - 1} trace(s)")
 
-    print("[4/4] trace_diff, every node against the reference")
+    print("[4/5] per node, from each node's own metrics.json")
+    report_per_node(range(len(entries)))
+
+    print("[5/5] trace_diff, every node against the reference")
     for node in range(len(entries)):
         diff = run(
             [
@@ -394,7 +421,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"      fetched node 1's trace from the other machine ({len(list(local.iterdir()))} files)")
 
         # The judge is the harness M0 built: byte-for-byte tensors and exact discrete decisions.
-        print("[4/4] trace_diff, every node against the reference")
+        print("[4/5] per node, from each node's own metrics.json")
+        report_per_node(range(2))
+
+        print("[5/5] trace_diff, every node against the reference")
         for node in range(args.nodes):
             diff = run(
                 [

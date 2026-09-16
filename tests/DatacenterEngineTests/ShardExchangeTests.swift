@@ -264,3 +264,74 @@ final class ShardExchangeTests: XCTestCase {
         }
     }
 }
+
+/// `DC-081`: the all-reduce reports what it cost, and the counters are what the run actually did.
+///
+/// Counted rather than inferred, like every other figure in this project: `elementsRead * 2` was removed
+/// from the single-node metrics because it assumed a layout instead of observing one, and a sharded run
+/// deserves the same treatment.
+extension ShardExchangeTests {
+    /// Carries a peer's failure out of the thread it ran on.
+    private final class Outcome: @unchecked Sendable {
+        var error: Swift.Error?
+    }
+
+    func testTheLedgerCountsWhatTheExchangeActuallyDid() throws {
+        let (left, right) = try SocketPair.make()
+        let ledger = ExchangeLedger()
+        let policy = ExchangePolicy(receiveTimeoutMilliseconds: 10_000, attempts: 1)
+        let mine = [ExpertContribution(token: 0, expert: 0, values: [1, 2], scale: 1)]
+        let theirs = [ExpertContribution(token: 0, expert: 1, values: [3, 4], scale: 1)]
+
+        nonisolated(unsafe) let peer = right
+        let finished = DispatchSemaphore(value: 0)
+        let failure = Outcome()
+        let thread = Thread {
+            defer { finished.signal() }
+            do {
+                _ = try ShardExchange.allReduce(
+                    own: theirs, peers: [peer], indices: [[0, 1]], tokens: 1, hiddenSize: 2,
+                    policy: policy
+                )
+            } catch {
+                failure.error = error
+            }
+        }
+        thread.start()
+        let reduced = try ShardExchange.allReduce(
+            own: mine, peers: [left], indices: [[0, 1]], tokens: 1, hiddenSize: 2,
+            policy: policy, ledger: ledger
+        )
+        XCTAssertEqual(finished.wait(timeout: .now() + 20), .success, "the peer did not finish")
+        if let error = failure.error { throw error }
+
+        // The reduction itself, so a ledger test cannot pass on a run that computed nothing.
+        XCTAssertEqual(reduced, [4, 6], "the two terms should sum to [1+3, 2+4]")
+
+        let metrics = ledger.metrics
+        XCTAssertEqual(metrics.reduces, 1, "one layer, one all-reduce")
+        XCTAssertEqual(metrics.termsSent, 1, "one term to one peer")
+        XCTAssertEqual(metrics.termsReceived, 1, "and one back")
+        XCTAssertGreaterThan(metrics.bytesSent, 0, "a frame went out")
+        XCTAssertEqual(
+            metrics.bytesSent, metrics.bytesReceived,
+            "one frame each way over one peer — asserted as a relation so a format change cannot make "
+                + "this test wrong about the format instead of about the accounting"
+        )
+        XCTAssertGreaterThanOrEqual(metrics.seconds, 0)
+        XCTAssertLessThan(metrics.seconds, 5.0, "a socket pair is not five seconds of work")
+    }
+
+    func testALedgerThatIsNeverUsedReportsZeroRatherThanNothing() throws {
+        let metrics = ExchangeLedger().metrics
+        XCTAssertEqual(metrics, ExchangeMetrics())
+        // A one-node plan, because the initialiser requires `nodes - 1` peers and is right to: the
+        // first version of this test built a two-node shard with no peers and tripped its precondition.
+        let alone = ShardExecution(
+            node: 0,
+            ownership: ExpertOwnership(plan: ShardPlan.generate(family: "tiny", experts: 4, nodes: 1)),
+            peers: []
+        )
+        XCTAssertEqual(alone.exchangeMetrics, ExchangeMetrics(), "a shard that has not run reports zeroes")
+    }
+}
