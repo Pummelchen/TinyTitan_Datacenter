@@ -112,6 +112,46 @@ public enum MetalMatmul {
         }
     }
 
+    /// Whether large matmuls run on the GPU. **Off by default**, and `SHARD_GPU_MATMUL=1` turns it on.
+    ///
+    /// The arithmetic is settled — `D61` measured it, and `MetalMatmulTests` asserts this kernel is
+    /// bit-identical to `Ops.orderedMatmul` over 288 shapes, the head's real shape and cache reuse — and the
+    /// real trace is `b0d382dbabf36df0…` either way. What is *not* settled is that it is ever faster, and the
+    /// measurement says it is not (`D63`): with the conditions alternated rather than run in sequence, every
+    /// phase that uses it is slower — `attn.core` 4.05 → 5.55 s, `mix.gateup` 1.17 → 1.62 s, `head` 1.74 →
+    /// 1.86 s — while `mix.read`, which no matmul touches, is unchanged, so the difference is the kernel and
+    /// not the machine.
+    ///
+    /// The cause is the access pattern, not the arithmetic: one thread per output keeps `k` in its inner
+    /// loop, so adjacent threads walk `w` rows **8 KB apart** — a warp touches thirty-two cache lines to use
+    /// four bytes of each. The CPU's vectorised path walks `k` contiguously inside one output and reuses `x`.
+    /// A threadgroup-tiled kernel would fix that, and tiling cannot change a result because it changes
+    /// *which thread* accumulates and not the order. Until that kernel exists, this one is opt-in: a kernel
+    /// that is slower is not a default.
+    public static let enabled = ProcessInfo.processInfo.environment["SHARD_GPU_MATMUL"] == "1"
+
+    /// Below this much work a dispatch costs more than it saves, which the unpack learned the expensive way
+    /// (`D59`): its first version was *slower* than the scalar path it replaced. The figure is deliberately
+    /// conservative — the CPU does about 1.4 G multiply-adds a second, so a dispatch's overhead is worth
+    /// roughly a hundred thousand of them, and this is ten times that. It is what leaves the DeltaNet's
+    /// per-head contractions and the decode path's one-row projections on the CPU without a list of special
+    /// cases: they are simply below the line.
+    public static let minimumWork = 1_000_000
+
+    /// `Ops.orderedMatmul`, or the GPU equivalent when one is available, asked for, and worth it.
+    ///
+    /// This is the *only* place the choice is made, which is why it lives beside the kernel rather than in
+    /// `Ops`: `Ops` **is** the definition of the contract and should not know about a device, and a second
+    /// chooser somewhere else would be a second answer to the same question.
+    public static func ordered(x: [Float], w: [Float], rows: Int, k: Int, out: Int) -> [Float] {
+        if enabled, isAvailable, rows * k * out >= minimumWork,
+            let product = try? matmul(x: x, w: w, rows: rows, k: k, out: out)
+        {
+            return product
+        }
+        return Ops.orderedMatmul(x: x, w: w, rows: rows, k: k, out: out)
+    }
+
     private static let shader = """
     #include <metal_stdlib>
     using namespace metal;

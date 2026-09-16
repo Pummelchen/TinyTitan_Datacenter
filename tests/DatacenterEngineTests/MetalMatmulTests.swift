@@ -72,6 +72,24 @@ final class MetalMatmulTests: XCTestCase {
         }
     }
 
+    /// The chooser must be indistinguishable from the op it chooses between. Under the default it is
+    /// `Ops.orderedMatmul` called directly — `MetalMatmul.enabled` is a `static let` read once, so the test
+    /// process cannot flip it — and with `SHARD_GPU_MATMUL=1` in the environment this same test exercises the
+    /// GPU branch instead. Either way the assertion is the only one that matters: the *result* is the same
+    /// bits, which is what makes a fallback safe rather than merely convenient.
+    func testTheChooserIsIndistinguishableFromTheOpItChooses() throws {
+        for (rows, k, out) in [(1, 3, 2), (5, 2048, 512), (2, 17, 4), (5, 2048, 8192)] {
+            let x = values(rows * k, seed: 0x3333)
+            let w = values(out * k, seed: 0x4444)
+            let chosen = MetalMatmul.ordered(x: x, w: w, rows: rows, k: k, out: out)
+            let expected = Ops.orderedMatmul(x: x, w: w, rows: rows, k: k, out: out)
+            XCTAssertEqual(
+                chosen.map(\.bitPattern), expected.map(\.bitPattern),
+                "rows \(rows) k \(k) out \(out): the chooser changed the answer"
+            )
+        }
+    }
+
     /// A degenerate shape is refused rather than answered: a silent zero for a mismatched buffer would look
     /// like a numerical result.
     func testShapesAreCheckedRatherThanTrusted() throws {

@@ -83,7 +83,7 @@ public enum MixtureOfExperts {
     public static func router(
         hidden: [Float], tokens: Int, weights: [Float], experts: Int, topK: Int
     ) -> (logits: [Float], indices: [[Int]], weights: [[Float]]) {
-        let logits = Ops.orderedMatmul(x: hidden, w: weights, rows: tokens, k: hidden.count / max(tokens, 1), out: experts)
+        let logits = MetalMatmul.ordered(x: hidden, w: weights, rows: tokens, k: hidden.count / max(tokens, 1), out: experts)
         let probabilities = Ops.softmax(x: logits, rows: tokens, width: experts)
 
         var indices: [[Int]] = []
@@ -165,7 +165,7 @@ public enum MixtureOfExperts {
                 }
             }
             profiler?.mark("mix.gather")
-            let fused = Ops.orderedMatmul(
+            let fused = MetalMatmul.ordered(
                 x: current, w: gateUp, rows: assignments.count, k: hiddenSize, out: 2 * intermediate
             )
             profiler?.mark("mix.gateup")
@@ -178,7 +178,7 @@ public enum MixtureOfExperts {
                 }
             }
             profiler?.mark("mix.act")
-            let projected = Ops.orderedMatmul(
+            let projected = MetalMatmul.ordered(
                 x: activated, w: down, rows: assignments.count, k: intermediate, out: hiddenSize
             )
             profiler?.mark("mix.down")
@@ -210,12 +210,12 @@ public enum MixtureOfExperts {
         hidden: [Float], tokens: Int, weights: MixtureWeights, shape: MixtureShape
     ) -> (shared: [Float], scalar: [Float]) {
         let hiddenSize = shape.hiddenSize
-        let shared = Ops.orderedMatmul(
+        let shared = MetalMatmul.ordered(
             x: {
-                let gate = Ops.orderedMatmul(
+                let gate = MetalMatmul.ordered(
                     x: hidden, w: weights.sharedGate, rows: tokens, k: hiddenSize, out: shape.sharedIntermediate
                 )
-                let up = Ops.orderedMatmul(
+                let up = MetalMatmul.ordered(
                     x: hidden, w: weights.sharedUp, rows: tokens, k: hiddenSize, out: shape.sharedIntermediate
                 )
                 var activated = [Float](repeating: 0, count: gate.count)
@@ -224,7 +224,7 @@ public enum MixtureOfExperts {
             }(),
             w: weights.sharedDown, rows: tokens, k: shape.sharedIntermediate, out: hiddenSize
         )
-        let scalar = Ops.orderedMatmul(
+        let scalar = MetalMatmul.ordered(
             x: hidden, w: weights.sharedScalarGate, rows: tokens, k: hiddenSize, out: 1
         )
         return (shared, scalar)

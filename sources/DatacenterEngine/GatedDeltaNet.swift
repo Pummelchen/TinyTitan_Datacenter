@@ -256,12 +256,12 @@ public enum GatedDeltaNet {
             let queryChunk = chunkSlice(q, width: keyDim)
             let valueBetaChunk = chunkSlice(valueBeta, width: valueDim)
 
-            var utSystem = Ops.orderedMatmul(
+            var utSystem = MetalMatmul.ordered(
                 x: keyBetaChunk, w: keyChunk, rows: chunkSize, k: keyDim, out: chunkSize
             )
             for index in 0..<utSystem.count { utSystem[index] = utSystem[index] * pairwise[index] }
 
-            var intra = Ops.orderedMatmul(
+            var intra = MetalMatmul.ordered(
                 x: queryChunk, w: keyChunk, rows: chunkSize, k: keyDim, out: chunkSize
             )
             for index in 0..<intra.count { intra[index] = intra[index] * pairwise[index] }
@@ -323,7 +323,7 @@ public enum GatedDeltaNet {
             let keyCum = slice(keyCumDecay, width: keyDim)
             let queryChunk = slice(queryRotated, width: keyDim)
 
-            let predicted = Ops.orderedMatmul(
+            let predicted = MetalMatmul.ordered(
                 x: keyCum, w: stateTransposed, rows: chunkSize, k: keyDim, out: valueDim
             )
             var vNew = [Float](repeating: 0, count: chunkSize * valueDim)
@@ -336,13 +336,13 @@ public enum GatedDeltaNet {
                 }
             }
 
-            let inter = Ops.orderedMatmul(
+            let inter = MetalMatmul.ordered(
                 x: queryChunk, w: stateTransposed, rows: chunkSize, k: keyDim, out: valueDim
             )
             let intraChunk = [Float](
                 intraChunkAttn[(chunk * chunkSize * chunkSize)..<((chunk + 1) * chunkSize * chunkSize)]
             )
-            let within = Ops.orderedMatmul(
+            let within = MetalMatmul.ordered(
                 x: intraChunk, w: vNewTransposed, rows: chunkSize, k: chunkSize, out: valueDim
             )
             for index in 0..<within.count {
@@ -357,7 +357,7 @@ public enum GatedDeltaNet {
                     keyTransposed[index * chunkSize + row] = keyRotatedChunk[row * keyDim + index]
                 }
             }
-            let update = Ops.orderedMatmul(
+            let update = MetalMatmul.ordered(
                 x: keyTransposed, w: vNewTransposed, rows: keyDim, k: chunkSize, out: valueDim
             )
             let decayFactor = chunkDecay[chunk]
@@ -419,7 +419,7 @@ public enum GatedDeltaNet {
         let window = kernel - 1
         let eps = shape.eps
 
-        let mixed = Ops.orderedMatmul(x: hidden, w: weights.inQKV, rows: 1, k: shape.hiddenSize, out: convDim)
+        let mixed = MetalMatmul.ordered(x: hidden, w: weights.inQKV, rows: 1, k: shape.hiddenSize, out: convDim)
 
         // The window, oldest first, then the new projection: the reference's `torch.cat`.
         var convolved = [Float](repeating: 0, count: convDim)
@@ -437,9 +437,9 @@ public enum GatedDeltaNet {
             for index in 0..<window { state.conv[channel * window + index] = samples[index + 1] }
         }
 
-        let z = Ops.orderedMatmul(x: hidden, w: weights.inZ, rows: 1, k: shape.hiddenSize, out: valueDim)
-        let b = Ops.orderedMatmul(x: hidden, w: weights.inB, rows: 1, k: shape.hiddenSize, out: heads)
-        let a = Ops.orderedMatmul(x: hidden, w: weights.inA, rows: 1, k: shape.hiddenSize, out: heads)
+        let z = MetalMatmul.ordered(x: hidden, w: weights.inZ, rows: 1, k: shape.hiddenSize, out: valueDim)
+        let b = MetalMatmul.ordered(x: hidden, w: weights.inB, rows: 1, k: shape.hiddenSize, out: heads)
+        let a = MetalMatmul.ordered(x: hidden, w: weights.inA, rows: 1, k: shape.hiddenSize, out: heads)
 
         // Per head, as everywhere: writing the gates once per position gives the last head's
         // values to all of them, which is wrong in a way that still produces plausible numbers.
@@ -511,7 +511,7 @@ public enum GatedDeltaNet {
         }
 
         let normalised = gatedRMSNorm(hidden: core, gate: z, weight: weights.norm, rows: heads, width: headV, eps: eps)
-        return Ops.orderedMatmul(x: normalised, w: weights.outProj, rows: 1, k: valueDim, out: shape.hiddenSize)
+        return MetalMatmul.ordered(x: normalised, w: weights.outProj, rows: 1, k: valueDim, out: shape.hiddenSize)
     }
 
     public static func layer(
@@ -550,7 +550,7 @@ public enum GatedDeltaNet {
 
         // The projection is computed for the whole batch, then the conv runs per sequence
         // because it is causal along the sequence axis.
-        var mixed = Ops.orderedMatmul(
+        var mixed = MetalMatmul.ordered(
             x: hidden, w: weights.inQKV, rows: batch * length, k: shape.hiddenSize, out: convDim
         )
         var convolved = [Float](repeating: 0, count: batch * length * convDim)
@@ -573,13 +573,13 @@ public enum GatedDeltaNet {
         }
         mixed = convolved
 
-        let z = Ops.orderedMatmul(
+        let z = MetalMatmul.ordered(
             x: hidden, w: weights.inZ, rows: batch * length, k: shape.hiddenSize, out: valueDim
         )
-        let b = Ops.orderedMatmul(
+        let b = MetalMatmul.ordered(
             x: hidden, w: weights.inB, rows: batch * length, k: shape.hiddenSize, out: heads
         )
-        let a = Ops.orderedMatmul(
+        let a = MetalMatmul.ordered(
             x: hidden, w: weights.inA, rows: batch * length, k: shape.hiddenSize, out: heads
         )
 
@@ -662,7 +662,7 @@ public enum GatedDeltaNet {
             )
             record?("gated_norm_out", normalised, [length * heads, headV])
 
-            let projected = Ops.orderedMatmul(
+            let projected = MetalMatmul.ordered(
                 x: normalised, w: weights.outProj, rows: length, k: valueDim, out: shape.hiddenSize
             )
             for index2 in 0..<projected.count {

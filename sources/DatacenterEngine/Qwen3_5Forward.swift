@@ -185,34 +185,6 @@ public struct Qwen3_5Forward: ForwardPass {
     /// and a profile cannot change under a running forward. `SHARD_PROFILE=1` turns it on.
     public static let profilingEnabled = ProcessInfo.processInfo.environment["SHARD_PROFILE"] == "1"
 
-    /// Whether large matmuls run on the GPU. On where there is a GPU; `SHARD_GPU_MATMUL=0` turns it off.
-    ///
-    /// The arithmetic is not a matter of trust: `D61` measured it, and `MetalMatmulTests` asserts the kernel
-    /// is bit-identical to `Ops.orderedMatmul` over a grid of 288 shapes — including output counts that are
-    /// not multiples of four, which exercise the CPU vector's tail — on the head's real shape, and across
-    /// buffer-cache reuse. A failure falls back to the scalar op rather than failing the forward, and because
-    /// the two are bit-identical that fallback cannot change a trace.
-    public static let gpuMatmulEnabled = ProcessInfo.processInfo.environment["SHARD_GPU_MATMUL"] != "0"
-
-    /// Below this much work a dispatch costs more than it saves, which the unpack learned the expensive way
-    /// (`D59`): its first version was *slower* than the scalar path it replaced. The figure is deliberately
-    /// conservative — the CPU does about 1.4 G multiply-adds a second, so a dispatch's overhead is worth
-    /// roughly a hundred thousand of them, and this is ten times that.
-    public static let gpuMatmulMinimumWork = 1_000_000
-
-    /// `Ops.orderedMatmul`, or the GPU equivalent when one is available, asked for, and worth it.
-    ///
-    /// The choice lives here rather than in `Ops` because `Ops` **is** the definition of the contract and
-    /// should not know about a device; this file is the wiring, which is what its own comment says.
-    static func matmul(x: [Float], w: [Float], rows: Int, k: Int, out: Int) -> [Float] {
-        if gpuMatmulEnabled, MetalMatmul.isAvailable, rows * k * out >= gpuMatmulMinimumWork,
-            let product = try? MetalMatmul.matmul(x: x, w: w, rows: rows, k: k, out: out)
-        {
-            return product
-        }
-        return Ops.orderedMatmul(x: x, w: w, rows: rows, k: k, out: out)
-    }
-
     /// Whether the trace records what is *inside* a decoder layer as well as at its boundaries.
     ///
     /// Off by default, and it has to be: the trace's digest covers the tensor list, so a trace with extra
@@ -493,17 +465,17 @@ public struct Qwen3_5Forward: ForwardPass {
             profiler?.mark("ff.norm")
             switch layer.feedForward {
             case .dense(let gate, let up, let down):
-                let projectedGate = Ops.orderedMatmul(
+                let projectedGate = MetalMatmul.ordered(
                     x: postNormed, w: gate, rows: length, k: hiddenSize, out: config.intermediateSize
                 )
-                let projectedUp = Ops.orderedMatmul(
+                let projectedUp = MetalMatmul.ordered(
                     x: postNormed, w: up, rows: length, k: hiddenSize, out: config.intermediateSize
                 )
                 var activated = [Float](repeating: 0, count: length * config.intermediateSize)
                 for position in 0..<activated.count {
                     activated[position] = Ops.silu(projectedGate[position]) * projectedUp[position]
                 }
-                let downProjected = Ops.orderedMatmul(
+                let downProjected = MetalMatmul.ordered(
                     x: activated, w: down, rows: length, k: config.intermediateSize, out: hiddenSize
                 )
                 if Self.tracingInternals {
@@ -556,7 +528,7 @@ public struct Qwen3_5Forward: ForwardPass {
         while row < config.vocabSize {
             let upper = min(row + Self.headBlockRows, config.vocabSize)
             let block = try source.rows(named: headName, range: row..<upper)
-            let product = Self.matmul(
+            let product = MetalMatmul.ordered(
                 x: hidden, w: block, rows: length, k: hiddenSize, out: upper - row
             )
             for position in 0..<length {
@@ -587,7 +559,7 @@ public struct Qwen3_5Forward: ForwardPass {
         let scaling = Float(1) / Float(headDim).squareRoot()
         let rotary = tables.cos.count / max(length, 1)
 
-        let projected = Ops.orderedMatmul(
+        let projected = MetalMatmul.ordered(
             x: hidden, w: weights[.attnQ]!, rows: length, k: config.hiddenSize, out: heads * headDim * 2
         )
         var query = [Float](repeating: 0, count: length * heads * headDim)
@@ -601,10 +573,10 @@ public struct Qwen3_5Forward: ForwardPass {
                 }
             }
         }
-        var key = Ops.orderedMatmul(
+        var key = MetalMatmul.ordered(
             x: hidden, w: weights[.attnK]!, rows: length, k: config.hiddenSize, out: kvHeads * headDim
         )
-        let value = Ops.orderedMatmul(
+        let value = MetalMatmul.ordered(
             x: hidden, w: weights[.attnV]!, rows: length, k: config.hiddenSize, out: kvHeads * headDim
         )
 
@@ -622,7 +594,7 @@ public struct Qwen3_5Forward: ForwardPass {
             let kvHead = head / groups
             let queryHead = sliceHead(query, length: length, heads: heads, headDim: headDim, head: head)
             let keyHead = sliceHead(key, length: length, heads: kvHeads, headDim: headDim, head: kvHead)
-            var scores = Ops.orderedMatmul(x: queryHead, w: keyHead, rows: length, k: headDim, out: length)
+            var scores = MetalMatmul.ordered(x: queryHead, w: keyHead, rows: length, k: headDim, out: length)
             for index in 0..<scores.count { scores[index] = scores[index] * scaling + mask[index] }
             let attention = Ops.softmax(x: scores, rows: length, width: length)
             let valueHead = sliceHead(value, length: length, heads: kvHeads, headDim: headDim, head: kvHead)
@@ -630,7 +602,7 @@ public struct Qwen3_5Forward: ForwardPass {
             for position in 0..<length {
                 for index in 0..<headDim { transposed[index * length + position] = valueHead[position * headDim + index] }
             }
-            let mixed = Ops.orderedMatmul(x: attention, w: transposed, rows: length, k: length, out: headDim)
+            let mixed = MetalMatmul.ordered(x: attention, w: transposed, rows: length, k: length, out: headDim)
             for position in 0..<length {
                 for index in 0..<headDim {
                     mixer[(position * heads + head) * headDim + index] = mixed[position * headDim + index]
@@ -640,7 +612,7 @@ public struct Qwen3_5Forward: ForwardPass {
 
         var gated = [Float](repeating: 0, count: mixer.count)
         for index in 0..<mixer.count { gated[index] = mixer[index] * Ops.sigmoid(gate[index]) }
-        return Ops.orderedMatmul(
+        return MetalMatmul.ordered(
             x: gated, w: weights[.attnO]!, rows: length, k: heads * headDim, out: config.hiddenSize
         )
     }
@@ -665,7 +637,7 @@ public struct Qwen3_5Forward: ForwardPass {
         let scaling = Float(1) / Float(headDim).squareRoot()
         let rotary = tables.cos.count
 
-        let projected = Ops.orderedMatmul(
+        let projected = MetalMatmul.ordered(
             x: hidden, w: weights[.attnQ]!, rows: 1, k: config.hiddenSize, out: heads * headDim * 2
         )
         var query = [Float](repeating: 0, count: heads * headDim)
@@ -676,10 +648,10 @@ public struct Qwen3_5Forward: ForwardPass {
                 gate[head * headDim + index] = projected[(head * headDim) * 2 + headDim + index]
             }
         }
-        var key = Ops.orderedMatmul(
+        var key = MetalMatmul.ordered(
             x: hidden, w: weights[.attnK]!, rows: 1, k: config.hiddenSize, out: kvHeads * headDim
         )
-        let value = Ops.orderedMatmul(
+        let value = MetalMatmul.ordered(
             x: hidden, w: weights[.attnV]!, rows: 1, k: config.hiddenSize, out: kvHeads * headDim
         )
 
@@ -709,7 +681,7 @@ public struct Qwen3_5Forward: ForwardPass {
                     keyRows[position * headDim + index] = keys[(position * kvHeads + kvHead) * headDim + index]
                 }
             }
-            var scores = Ops.orderedMatmul(x: queryHead, w: keyRows, rows: 1, k: headDim, out: width)
+            var scores = MetalMatmul.ordered(x: queryHead, w: keyRows, rows: 1, k: headDim, out: width)
             for index in 0..<scores.count { scores[index] = scores[index] * scaling }
             let attention = Ops.softmax(x: scores, rows: 1, width: width)
 
@@ -722,13 +694,13 @@ public struct Qwen3_5Forward: ForwardPass {
                         values[(position * kvHeads + kvHead) * headDim + index]
                 }
             }
-            let mixed = Ops.orderedMatmul(x: attention, w: valueRows, rows: 1, k: width, out: headDim)
+            let mixed = MetalMatmul.ordered(x: attention, w: valueRows, rows: 1, k: width, out: headDim)
             for index in 0..<headDim { mixer[head * headDim + index] = mixed[index] }
         }
 
         var gated = [Float](repeating: 0, count: mixer.count)
         for index in 0..<mixer.count { gated[index] = mixer[index] * Ops.sigmoid(gate[index]) }
-        return Ops.orderedMatmul(
+        return MetalMatmul.ordered(
             x: gated, w: weights[.attnO]!, rows: 1, k: heads * headDim, out: config.hiddenSize
         )
     }

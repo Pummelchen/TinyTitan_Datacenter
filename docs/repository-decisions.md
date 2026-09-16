@@ -1141,3 +1141,48 @@ That is `DC-107`'s "documented as at its limit with the measurement that says so
 **Next is `attn.core` at 4.05 s, which did not move** because its matmuls still go through `Ops`. It is the
 opposite case to the head: its activations are small and its arithmetic is the cost, so the kernel is the
 right instrument there rather than the wrong one.
+
+## D63 — The GPU matmul is bit-exact and slower, so it is opt-in; and round 45's head number was drift
+
+`D62` put the head's matmul on the GPU and measured `head` falling from 1.74 s to 1.28 s. This round routed
+the **core's** matmuls through the same chooser as well — sixteen call sites in `GatedDeltaNet`, fifteen in
+the forward, seven in the mixture, which is every contract matmul in the engine — and the result was slower
+everywhere. Re-measuring the head the same way showed why the earlier number was wrong.
+
+**Correctness is not in question.** The kernel is bit-identical to `Ops.orderedMatmul` over the 288-shape
+grid, the head's real shape and cache reuse; the real trace is `b0d382dbabf36df0…` with the matmul on the GPU
+and on the CPU; `trace_diff` between them is IDENTICAL. 199 tests pass. What follows is about speed only.
+
+**The measurement had to be controlled, and the first one was not.** Comparing a "CPU" run with a "GPU" run
+taken afterwards gave `attn.core` 4.08 against 5.20 s and looked like machine drift — because *every* phase
+was up, including `mix.read`, which no matmul touches. Alternating the conditions on one build settled it:
+
+| phase | off | on |
+| --- | --- | --- |
+| `attn.core` | 4.05, 4.06 | **5.52, 5.64** |
+| `mix.gateup` | 1.17, 1.18 | **1.65, 1.60** |
+| `head` | 1.74, 1.74 | **1.88, 1.85** |
+| `mix.read` (no matmul) | 6.30, 6.34 | 6.38, 6.33 |
+
+Reproducible to a tenth of a second, and the untouched I/O phase is identical, so this is the kernel and not
+the machine. **The lesson is the method**: conditions that are run in sequence drift together, and the earlier
+head figure — CPU first, GPU second — was measuring a warming machine. Alternating them is what makes the
+difference visible; that is how this table was taken.
+
+**The cause is the access pattern, not the arithmetic.** With one thread per output the inner loop is over
+`k`, so thread `column` and thread `column + 1` read `w` rows **`k * 4` bytes apart** — 8 KB at the head's
+width. A warp therefore touches thirty-two separate cache lines to use four bytes of each: roughly
+thirty-two-times the memory traffic the arithmetic needs. The CPU's vectorised path walks `k` **contiguously**
+inside one output and reuses `x` across outputs, which is why it wins. This is the textbook naive-GEMM
+pattern, and it is the one thing the kernel's simplicity bought that it should not have.
+
+**The fix is known and does not threaten bit-exactness.** A **threadgroup-tiled** kernel loads a tile of `w`
+into shared memory cooperatively — coalesced, one line per warp instead of thirty-two — and each thread still
+accumulates over `k` **ascending** inside its own output. Tiling changes *which thread* does the accumulating,
+not the order, so the grid's assertion carries over unchanged.
+
+**So the default is off.** `SHARD_GPU_MATMUL=1` turns it on; the kernel, its grid and the chooser stay, so the
+tiled version has somewhere to land. A kernel that is slower is not a default, and `D62`'s conclusion that the
+head was at its I/O floor does **not** hold either: the head's compute was never removed, and the 1.28 s was a
+warmer machine rather than a faster matmul. What *does* hold from `D62` is the part that was measured twice:
+the head reads 1.02 GB of its own weights, and that is the floor under it.
