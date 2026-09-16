@@ -65,7 +65,7 @@ wiki; the measurements live in `docs/`.
 - `docs/` holds the decision records (`m0-decisions.md`, `m1-decisions.md`,
   `m2-decisions.md`, `repository-decisions.md` for decisions about the repository itself), the gate docs (`m0-gate.md`, `m1-gate.md`,
   `m0c-quantization.md`), the contracts
-  (`ir-schema.md`, `trace-format.md`, `reference-*.md`), `repository-layout.md`, and
+  (`ir-schema.md`, `trace-format.md`, `wire-protocol.md`, `reference-*.md`), `repository-layout.md`, and
   `invariants-audit.md` — where each of I1–I6 stands, with its evidence and what would falsify it.
 
 ## This node's hard limit — read before running anything
