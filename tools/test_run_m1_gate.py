@@ -98,11 +98,9 @@ class GateInstrumentTests(unittest.TestCase):
             self.assertIsNotNone(entry["expert_requests"], f"{entry['id']}: expert requests")
             self.assertIsNotNone(entry["expert_hit_rate"], f"{entry['id']}: hit rate")
 
-    @unittest.expectedFailure
-    # DC-113: on the tiny install the engine and the contract DIFFER, while the real 35 B install agrees
-    # byte for byte (`D56`). The case is kept, and marked, because it is the only test that drives the
-    # install path — and because an expected failure turns into an unexpected *success* the moment the
-    # divergence is understood, which is the loudest available signal that DC-113 is fixed.
+    # This case found DC-113 and then confirmed its fix: the install source mapped one expert to 16 install
+    # rows where the quantiser writes 32, which the real model's geometry hides. It is the only test that
+    # drives the install path, and it is ordinary now rather than an expected failure.
     def testTheGateRunsAgainstATinyInstallAndWouldHaveCaughtTheMissingFlag(self):
         """The install is the source that refuses to materialise an expert stack.
 

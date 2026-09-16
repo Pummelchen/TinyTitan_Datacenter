@@ -1512,3 +1512,57 @@ work and this is performance rather than correctness. It is `DC-114`.
 install now (`D69`); on this node it needs hours per prompt because the contract's read path is 80× off the
 engine's, and the engine's own trace is not the bottleneck. That is why the milestone's own gate remains a
 quiet-window, or bigger-node, item rather than something I can report as passed.
+
+## D71 — DC-113 fixed: the install source mapped an expert to half its rows, and my D69 fix was wrong
+
+`D70` ended with the next step named: bisect the tiny install by quantising **one role at a time**. It took one
+round and it worked.
+
+**The bisection.** With int4 on exactly one role and everything else at its declared precision, **every role is
+IDENTICAL except the two expert stacks** — `expert.stack_gate_up` and `expert.stack_down` both DIFFER, and
+`attn.*`, `linear.*` and `mlp.*` all agree. So the divergence is not quantisation in general and not the Gated
+DeltaNet projections; it is the *stacks*, which are exactly the tensors whose `shape.last` is not their
+`padded_columns`.
+
+**The decisive number was in the manifest.** For the fixture's `expert.stack_gate_up`, shape `(8, 32, 32)` padded
+to 64, the quantiser records `nbytes: 9472`. That is **256 rows** of 32 padded to 64 — the layout
+`Install.swift` computes as `prod(shape.dropLast())` rows of `shape.last` — and it is **not** the 4,736 bytes
+that 128 rows of 64 would be. The Swift reader was right and the Python reader was wrong.
+
+**The bug is one formula, and it is off by exactly two.** `InstallSource._rows_per_index` asked how many install
+rows make one checkpoint row and answered "the flattened trailing width divided by the padded row":
+`(32 * 32) // 64 = 16`. The truth is the product of everything **between** the first and last axis — 32 — because
+the install keeps the leading axis as the index and drops only the last axis into the row. Sixteen against
+thirty-two, so the reader returned half of every expert and the reshape that followed was the
+`cannot reshape array of size 512 into shape (1, 32, 32)` of `D69`.
+
+**And `D69`'s fix was wrong, which the same evidence shows.** I read that error as an over-trim and changed
+`columns` from `shape[-1]` to `min(padded, _width)`. The error was in the **row count**, not the column count:
+16 rows of 32 is 512, and 32 rows of 32 is the 1,024 the reshape wanted. The correction is to take the row
+count from the middle axes and the row content from the **last axis**, which is what the quantiser padded, and
+to revert my change. What misled me was `_width`'s own docstring — "every trailing dimension flattened, because
+`rows()` is per leading index" — which is **false of the quantiser**. The payload's `nbytes` is the authority,
+and it was one command away.
+
+**Why the real model never showed it.** On the real install `shape.last` and `padded_columns` are both 512 and
+the middle product is 2,048, so the old formula returns 2,048 as well: the two agree, and `D56`'s byte-identical
+result is not evidence for the wrong one. Every real-model geometry is **provably unchanged** by this fix:
+
+| tensor | shape | padded | old `(factor, columns)` | new | |
+| --- | --- | --- | --- | --- | --- |
+| `expert.stack_gate_up` | (256, 2048, 512) | 512 | (2048, 512) | (2048, 512) | same |
+| `expert.stack_down` | (256, 2048, 512) | 512 | (2048, 512) | (2048, 512) | same |
+| `linear.in_qkv` | (2048, 512) | 512 | (1, 512) | (1, 512) | same |
+| `norm` | (512,) | 0 | (1, 0) | (1, 0) | same |
+| `linear.conv` | (64, 1, 4) | 0 | (4, 0) | (1, 4) | **changed** |
+
+**The last row is a second, latent bug found by the same table.** The convolution was being read as `factor 4`
+with `columns 0` — four install rows per index and no values from them. The correct reading is one row per index
+and four values, which is the `(8192, 1, 4)` case `_width`'s docstring was written about. Nothing had compared
+its output, because the checkpoint contract and the install contract both reached agreement on that path
+another way.
+
+**How the fix is verified.** The install-mode gate case that *was* `DC-113`'s expected failure now **passes**,
+and the suite reports **373 tests, OK, expected failures 2** where it reported 3 — the count moving is the
+evidence, and it is the same shape as `D68`'s unexpected success. The tiny install with the **full** policy is
+`IDENTICAL` between the two sides, and so is each single-stack policy that used to differ. `DC-113` is closed.

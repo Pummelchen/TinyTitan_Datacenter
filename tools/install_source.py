@@ -58,13 +58,18 @@ class InstallSource:
 
     @staticmethod
     def _width(tensor: Tensor) -> int:
-        """The row width: every trailing dimension flattened, because `rows()` is per leading index.
+        """The **last axis**, which is the install's row content before padding.
 
-        `shape[-1]` is right for a matrix and wrong for the convolution's `(8192, 1, 4)`, whose row is four
-        values and not one.
+        This docstring used to say "every trailing dimension flattened, because `rows()` is per leading
+        index", and that was wrong in the way that matters: it made `_width` disagree with what the
+        quantiser writes. `int4Layout` in `Install.swift` takes `rows = prod(shape.dropLast())` and
+        `columns = shape.last`, and `install.json` records the resulting `nbytes` -- for the tiny
+        `expert.stack_gate_up`, 9,472 bytes, which is 256 rows of 32 padded to 64 and not 128 rows of 64.
+        The two only coincide when `shape.last == padded_columns`, which is true for the real model (2,048
+        either way) and false for the fixture, so the error was invisible on the model it was written for.
         """
         shape = tuple(tensor.shape or ())
-        return int(np.prod(shape[1:])) if len(shape) > 1 else 1
+        return int(shape[-1]) if len(shape) > 1 else 1
 
     @staticmethod
     def _is_stack(tensor: Tensor) -> bool:
@@ -74,25 +79,29 @@ class InstallSource:
     def _rows_per_index(self, tensor: Tensor) -> int:
         """How many of the install's rows make one of the checkpoint's rows.
 
-        An install flattens an expert's trailing dimensions into the row length: `expert.stack_gate_up` is
-        **262,144 rows of 2,048**, not 256 rows of two million, so one expert is **1,024 consecutive install
-        rows**. `rows()` is asked in the checkpoint's own index space — one expert is one row there — so the
-        two have to be mapped, which is the thing this source exists to get right.
+        An install keeps the leading axis as the index and drops the last one into the row: for a stack
+        `(experts, rows, columns)` it is `experts * rows` install rows of `columns` (padded), so **one expert
+        is the product of everything between the first and last axis** — 32 for the fixture's `(8, 32, 32)`
+        and 2,048 for the real model's `(256, 2,048, 512)`. `rows()` is asked in the checkpoint's own index
+        space, where one expert is one row, so the two have to be mapped.
+
+        The first version divided the flattened trailing width by the padded row and so returned 16 where the
+        truth is 32, which is exactly half, and it returned the right answer for the real model by
+        coincidence: there `shape.last` and `padded_columns` are both 512, so the two formulas agree.
         """
-        _rows_total, padded = tensor.geometry()
-        return max(self._width(tensor) // max(padded, 1), 1)
+        shape = tuple(tensor.shape or ())
+        if len(shape) <= 2:
+            return 1
+        return max(int(np.prod(shape[1:-1])), 1)
 
     def _materialise(self, tensor: Tensor, start: int, end: int, row_block: int) -> np.ndarray:
         """Rows `[start, end)` in the checkpoint's index space, in fp32, flat; the callers shape it."""
         shape = tuple(tensor.shape or ())
         _rows_total, padded = tensor.geometry()
-        # The row's content is the *true* row width, capped by what the install actually stores:
-        # `shape[-1]` is that width for a matrix and `_width` for a flattened stack, and `padded` is the same
-        # width rounded up. Reading `padded` blindly over-reads a padded matrix; reading `shape[-1]` blindly
-        # under-reads a flattened stack, which is how the tiny install raised `cannot reshape array of size
-        # 512 into shape (1, 32, 32)`. For the real model all three numbers are 2,048, so both mistakes are
-        # invisible there — `expert.stack_gate_up` is 2,048 wide whichever way it is read.
-        columns = padded if len(shape) <= 1 else min(padded, self._width(tensor))
+        # The row's content is the last axis, which is what the quantiser padded up to `padded`: a padded
+        # row holds `shape[-1]` real values followed by padding. A one-dimensional tensor is one value per
+        # row, so there `padded` is the row.
+        columns = padded if len(shape) <= 1 else self._width(tensor)
         factor = self._rows_per_index(tensor)
         values: list[float] = []
         for row in self.install.row_range(tensor, start * factor, end * factor, row_block=row_block):
