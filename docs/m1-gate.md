@@ -14,11 +14,20 @@ float     layer.00.hidden_out  element 0: reference -0.006576654966920614,
 discrete  layer.00.router.topk missing [231, 71], unexpected [72, 19]  (and 39 more layers)
 ```
 
-`layer.00.hidden_in` **matches**, so the divergence is not in the embedding: it is **inside layer 0**, at
-**token 0, channel 0** — 28% relative but only 0.0014 absolute, which is what a boundary or a rounding
-difference looks like rather than a structural one. Layer 0 of this family is a **Gated DeltaNet** layer,
-whose causal convolution has its boundary at token 0. From there the router flips marginally and the
-decisions cascade for all forty layers, which is exactly the failure mode `I3` exists to catch.
+`layer.00.hidden_in` **matches**, so the divergence is not in the embedding: it is **inside layer 0**. From
+there the router flips and the decisions cascade for all forty layers, which is exactly the failure mode
+`I3` exists to catch.
+
+**Correction, same day, to how that first line was read.** "1 float" in the differ's output means one float
+**tensor**, not one element: **all 10240 values** of `layer.00.hidden_out` differ, and the single value quoted
+is merely the first of them. The earlier reading — "one element, 0.0014 absolute, a boundary difference" —
+was wrong, and what it suggests changes with it: this is a **systematic** difference in the layer, not a
+rounding artefact at one position. `layer.00.hidden_in` matching still stands, and the layer's convolution has
+since been eliminated by reading both implementations: the reference and the engine index
+`position + tap - (kernel - 1)`, accumulate in the same order, zero-pad identically, and activate with silu,
+which is why neither is the cause. The open candidates are the delta rule's first step, the gates'
+exponentiation, and the gated RMSNorm's ordering — the engine's own comment records that its bf16 oracle
+rounds the normalised value *before* the weight multiply while an all-fp32 contract does not.
 
 **And the re-run is no longer a hazard, which is what made this possible.** Two changes: the reference can
 read the checkpoint through `pread` instead of `safe_open`'s mmap (`D47`), and it can fetch the routed

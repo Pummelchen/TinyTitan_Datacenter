@@ -583,3 +583,39 @@ here": it is **failing, reproducibly, with the first divergence localised to one
 the instrument that shows it now runs on this node in two minutes. The next step is a bisect inside layer 0 —
 the trace captures layer boundaries, so the reference needs internal capture points — with the convolution's
 boundary and the recurrent state's first step as the two named candidates.
+
+## D49 — Localising M1's divergence: the convolution is out, and my own reading of the differ was wrong
+
+Two rounds of localisation have produced one elimination, one correction, and a sharper set of candidates.
+
+**The correction first, because it was mine.** The differ prints `DIFFERENT — 40 discrete, 1 float`, and I read
+the second number as one *element*. It is one float **tensor**, and **all 10240 values** of
+`layer.00.hidden_out` differ: the value quoted in `docs/m1-gate.md` is only the first of them. That changes
+what the evidence suggests — a *systematic* difference inside layer 0, not a boundary rounding at one
+position — and the earlier text said the wrong thing. `layer.00.hidden_in` matching is unaffected, and the
+conclusion that the divergence is *inside layer 0* is unaffected; what is withdrawn is the reason for
+expecting the convolution.
+
+**A probe that disagreed with its own reference, and was wrong.** Before adding capture points, I tried to
+discriminate cheaply: recompute the reference's router on the **engine's** layer-0 output and see whether it
+chooses what the engine chose. The probe disagreed with the reference's *recorded* decision — which is not a
+finding about the engine, it is a broken instrument: `layer.00.hidden_out` is the layer's **final** output,
+while the router ran earlier, on the value the residual had after attention. Feeding the final output to a
+router that never saw it produced a number that meant nothing. The habit that caught it is the one this
+project keeps relearning: when an instrument and the record disagree, the instrument is what is wrong until
+proven otherwise.
+
+**What that leaves.** The trace captures layer boundaries only, so the router's input — and every other
+intermediate — is not in it: a bisect needs capture points inside the layer, in the reference at least, which
+is a small change to a place that is otherwise the authority. The named candidates are now: the **delta
+rule's first step** (token 0 is the recurrence's first update from an all-zero state), the **gates'
+exponentiation** (`a_log` and `dt_bias` reach an exponential, where a 4-bit or a bf16 rounding is not a small
+error), and the **gated RMSNorm's ordering** — the engine's own comment records that its bf16 oracle rounds
+the normalised value *before* the weight multiply and that an all-fp32 contract does not, which is exactly the
+kind of difference that is invisible on a tiny fixture and systematic on a real one.
+
+**Eliminated by reading, which is cheaper than running.** The convolution: reference
+`depthwise_causal_conv` and engine `depthwiseCausalConv` index `position + tap - (kernel - 1)`, accumulate
+`tap · x[source]` in ascending tap order, zero-pad on the left, and apply silu. Same arithmetic, same order,
+same boundary. Both cite `causal_conv1d_fn:270`, and for once the two implementations agree with each other
+and with the comment.
