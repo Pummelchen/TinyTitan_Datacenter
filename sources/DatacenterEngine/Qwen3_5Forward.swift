@@ -185,6 +185,34 @@ public struct Qwen3_5Forward: ForwardPass {
     /// and a profile cannot change under a running forward. `SHARD_PROFILE=1` turns it on.
     public static let profilingEnabled = ProcessInfo.processInfo.environment["SHARD_PROFILE"] == "1"
 
+    /// Whether large matmuls run on the GPU. On where there is a GPU; `SHARD_GPU_MATMUL=0` turns it off.
+    ///
+    /// The arithmetic is not a matter of trust: `D61` measured it, and `MetalMatmulTests` asserts the kernel
+    /// is bit-identical to `Ops.orderedMatmul` over a grid of 288 shapes — including output counts that are
+    /// not multiples of four, which exercise the CPU vector's tail — on the head's real shape, and across
+    /// buffer-cache reuse. A failure falls back to the scalar op rather than failing the forward, and because
+    /// the two are bit-identical that fallback cannot change a trace.
+    public static let gpuMatmulEnabled = ProcessInfo.processInfo.environment["SHARD_GPU_MATMUL"] != "0"
+
+    /// Below this much work a dispatch costs more than it saves, which the unpack learned the expensive way
+    /// (`D59`): its first version was *slower* than the scalar path it replaced. The figure is deliberately
+    /// conservative — the CPU does about 1.4 G multiply-adds a second, so a dispatch's overhead is worth
+    /// roughly a hundred thousand of them, and this is ten times that.
+    public static let gpuMatmulMinimumWork = 1_000_000
+
+    /// `Ops.orderedMatmul`, or the GPU equivalent when one is available, asked for, and worth it.
+    ///
+    /// The choice lives here rather than in `Ops` because `Ops` **is** the definition of the contract and
+    /// should not know about a device; this file is the wiring, which is what its own comment says.
+    static func matmul(x: [Float], w: [Float], rows: Int, k: Int, out: Int) -> [Float] {
+        if gpuMatmulEnabled, MetalMatmul.isAvailable, rows * k * out >= gpuMatmulMinimumWork,
+            let product = try? MetalMatmul.matmul(x: x, w: w, rows: rows, k: k, out: out)
+        {
+            return product
+        }
+        return Ops.orderedMatmul(x: x, w: w, rows: rows, k: k, out: out)
+    }
+
     /// Whether the trace records what is *inside* a decoder layer as well as at its boundaries.
     ///
     /// Off by default, and it has to be: the trace's digest covers the tensor list, so a trace with extra
@@ -528,7 +556,7 @@ public struct Qwen3_5Forward: ForwardPass {
         while row < config.vocabSize {
             let upper = min(row + Self.headBlockRows, config.vocabSize)
             let block = try source.rows(named: headName, range: row..<upper)
-            let product = Ops.orderedMatmul(
+            let product = Self.matmul(
                 x: hidden, w: block, rows: length, k: hiddenSize, out: upper - row
             )
             for position in 0..<length {

@@ -81,8 +81,7 @@ public enum MetalUnpack {
 
         let zeroBytes = layout.rows * layout.groups
         return try Self.buffers.withBuffers(
-            codeBytes: layout.codeBytes, scaleBytes: layout.scaleBytes, zeroBytes: zeroBytes,
-            outBytes: values * 4, device: pipeline.device
+            [layout.codeBytes, layout.scaleBytes, zeroBytes, values * 4], device: pipeline.device
         ) { cached in
             let codes = cached[0], scales = cached[1], zeros = cached[2], out = cached[3]
             // One copy per section, straight into the buffer the GPU will read. The first version made an
@@ -127,45 +126,8 @@ public enum MetalUnpack {
         }
     }
 
-    /// A one-slot cache of GPU buffers, so a fetch stops allocating one per call.
-    ///
-    /// The first version allocated a fresh output buffer for every unpack — 8 MB for a single expert, and
-    /// 2,218 fetches in a five-token trace — and copied the payload four times on the way to the GPU. That
-    /// is why the path measured **slower** than the scalar one (`D58`) even though the kernel is right.
-    ///
-    /// Reuse is safe because the lock is held across the dispatch **and** its completion, so a buffer cannot
-    /// be overwritten while a kernel is still reading it. It also costs nothing: work on one GPU is
-    /// serialised in any case, which is what `@unchecked Sendable` is standing on here — the class has
-    /// mutable state and no compiler-checkable proof, and the proof is the lock.
-    private final class BufferCache: @unchecked Sendable {
-        private let lock = NSLock()
-        private var cached: [any MTLBuffer] = []
+    private static let buffers = MetalBufferCache()
 
-        static func makeBuffer(_ device: any MTLDevice, _ length: Int) throws -> any MTLBuffer {
-            // A zero-length buffer is not a thing Metal will make, and an absent zero section is normal.
-            guard let buffer = device.makeBuffer(length: max(length, 1), options: .storageModeShared) else {
-                throw MetalUnpack.Error.commandFailed("could not make a buffer of \(length) bytes")
-            }
-            return buffer
-        }
-
-        func withBuffers(
-            codeBytes: Int, scaleBytes: Int, zeroBytes: Int, outBytes: Int, device: any MTLDevice,
-            _ body: ([any MTLBuffer]) throws -> [Float]
-        ) throws -> [Float] {
-            lock.lock()
-            defer { lock.unlock() }
-            let sizes = [codeBytes, scaleBytes, zeroBytes, outBytes]
-            if cached.count != sizes.count
-                || zip(cached, sizes).contains(where: { $0.length < max($1, 1) })
-            {
-                cached = try sizes.map { try Self.makeBuffer(device, $0) }
-            }
-            return try body(cached)
-        }
-    }
-
-    private static let buffers = BufferCache()
 
     private static let shader = """
     #include <metal_stdlib>

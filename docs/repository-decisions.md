@@ -1098,3 +1098,46 @@ Two tests carry it: `testWhichModeAndFormulationReproduceTheContractsRounding` a
 combination reproduces the contract and prints which, and
 `testTheFormulationThatMatchesAlsoKeepsTheOrder` checks a 257-term dot against
 `Ops.orderedMatmulScalar` — the engine's own definition of the order, not a loop written in the test.
+
+## D62 — The head's matmul on the GPU: bit-exact over 288 shapes, and 26% off the phase
+
+`D61` settled the arithmetic, so the kernel could be written. It is deliberately simple: **one thread per
+output element, `k` accumulated in ascending order**, one rounding for the product and one for the add, with
+the product spelled `metal::fma(x, w, 0.0f)` because that is the form `D61` measured to survive every math
+mode. There is no reduction and nothing to reassociate, which is exactly why a GPU kernel can be bit-exact
+against a sequential loop.
+
+**The proof is a grid, not an example.** `MetalMatmulTests` asserts bit-identity against
+`Ops.orderedMatmul` over **288 shapes** — `rows` 1, 2, 3, 5; `k` 1, 2, 3, 4, 5, 8, 17, 64, 257; `out` 1, 2, 3,
+4, 5, 8, 17, 129 — chosen so that output counts which are **not** multiples of four are in it, because that is
+where the CPU's four-wide vector takes its tail. Plus the head's real shape at `k = 2048`, buffer-cache reuse
+across shapes, and refusals for mismatched buffers.
+
+**The choice lives in the forward, not in `Ops`.** `Ops` **is** the definition of the contract and should not
+know about a device; `Qwen3_5Forward` is the wiring, which is what its own comment says. So a small chooser
+sits there, with a **work threshold** of a million multiply-adds — deliberately conservative, since the CPU
+measures about 1.4 G of them a second and a dispatch costs roughly a hundred thousand — and a fallback to
+`Ops.orderedMatmul`. Because the two are bit-identical, that fallback cannot change a trace, which is the
+property that makes a silent fallback safe rather than sloppy. `SHARD_GPU_MATMUL=0` turns it off.
+
+**End to end: identical, and the phase moved.** The real 35 B trace is `b0d382dbabf36df0…` with the head's
+matmul on the GPU and on the CPU, and `trace_diff` against the stored trace reports IDENTICAL for both.
+
+| phase | CPU head | GPU head |
+| --- | --- | --- |
+| `head` | **1.74 s** | **1.28 s** |
+| `attn.core` | 4.08 s | 4.05 s |
+| `mix.read` | 5.76 s | 5.86 s |
+
+**The totals would have hidden this.** The two runs take 16.3 s and 16.4 s — the wrong way round — because
+the reads vary by more than the saving. A phase profile resolves what a total cannot, which is the same lesson
+as `D60` from the other side.
+
+**What the head still spends is I/O, and it is the same floor.** The head is the embedding — 248,320 rows of
+2,048 bf16, **1.02 GB** — and at 1.28 s that is about **0.8 GB/s**, the sequential rate the expert reads
+already established. So the kernel removed the compute and left the floor, and no further kernel changes it.
+That is `DC-107`'s "documented as at its limit with the measurement that says so" for the head.
+
+**Next is `attn.core` at 4.05 s, which did not move** because its matmuls still go through `Ops`. It is the
+opposite case to the head: its activations are small and its arithmetic is the cost, so the kernel is the
+right instrument there rather than the wrong one.
