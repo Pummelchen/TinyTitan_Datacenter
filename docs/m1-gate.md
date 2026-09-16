@@ -397,6 +397,52 @@ open question `Q9` — so:
 was wrong by the same factor. A number about the read path has to come from the read path, which is the
 next measurement rather than another division.
 
+## The read path, measured 2026-09-16: ~1 GB/s, so the reads are not the bottleneck
+
+The sweep's numbers left a question — 39.5 s for five tokens, and various wrong readings of where
+that went — so the read path was measured directly with `tools/measure_expert_reads.py`, which
+performs the engine's own fetch: **six preads per expert** (codes, scales, zeros for `gate_up`, then
+the same three for `down`), taken from the install's geometry rather than assumed.
+
+**3.10 GB per pattern — larger than cache, which matters.** The first version of this measurement read
+77.6 MB and reported **2957 MB/s**, above this SSD's measured ceiling: it was measuring cache, exactly
+the trap the Testbed page records ("a file that fit in cache" gave 13 GB/s). The tool now refuses a
+sample below 1 GB by default and measures the same pattern twice to show whether a cache effect exists.
+
+| pattern | GB | seconds | MB/s |
+| --- | --- | --- | --- |
+| `ascending` — the engine's pattern, slab order | 3.10 | 3.113 | **997** |
+| `ascending`, repeated immediately | 3.10 | 3.139 | 989 |
+| `random` — the engine's pattern, shuffled order | 3.10 | 3.169 | **979** |
+| `blocks-16k` — 16 KB random | 3.10 | 22.940 | 135 |
+
+Cold and warm agree (997 against 989), so there is no cache effect and these are the disk's figures.
+**The engine's access pattern achieves ~86% of the SSD's sequential ceiling, and randomising the expert
+order costs it 2%.** 16 KB blocks, by contrast, are 7.4× slower — which is why the layout is contiguous
+and why `D13` records what would change if the read path ever moved to `O_DIRECT`.
+
+**Two earlier claims of mine are withdrawn with this measurement.** An "effective 177 MB/s" was
+computed from the `elementsRead * 2` estimate and was wrong by that estimate's factor. And the
+conclusion drawn from it — that the single node was "running at a fraction of its own SSD's
+capability", with local read-path work as the first priority — does not survive contact with the
+measurement: **the reads are already near the ceiling.** Both are withdrawn in the [News](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/News) record
+rather than edited out of it.
+
+**So where does 39.5 s go?** Bounded by measurement, the components are:
+
+| component | basis | time |
+| --- | --- | --- |
+| expert reads | 2.02–4.03 GB (fetch count is `Q9`) at ~1 GB/s | 2–4 s |
+| dense weights re-read per forward | 3.08 GB of the 21.7 GB install is not expert stacks; `loadLayer` runs per layer **per forward** and every read is uncached | ~3 s |
+| expert dequantisation | 3.49 G elements at the measured 1185 M values/s | ~2.9 s |
+| matmuls | ~10 GFLOP per five tokens at the measured 6.8 GFLOP/s | ~1.5 s |
+| **accounted for** | | **~9–11 s** |
+| **measured** | the sweep's wall clock | **39.5 s** |
+
+**A factor of about 3.5 is unaccounted for, and it is not the disk.** The next measurement is a profile
+of the forward itself rather than more arithmetic about it — the pattern that has been wrong three times
+now when it replaced a measurement.
+
 ## Running the sweep
 
 The sweep is a script, not a sequence typed from memory, because it is a heavy run on a node that has
