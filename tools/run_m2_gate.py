@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""M2's gate at fixture scale: two **processes**, one shard plan, one trace to match.
+"""M2's gate at fixture scale: two **nodes**, one shard plan, one trace to match.
+
+With no `--remote`, the two nodes are two processes on this host. With `--remote node1@node1`, node 1
+runs on **another machine**, which is what M2's gate actually asks for: a different address space, a
+different install reader, and a real link between them.
+
+    python3 tools/run_m2_gate.py --remote node1@node1
+
+The test is deliberately tiny — a ~2 MB fixture and the node binary, no model install, no benchmarks —
+so it does not compete with anything else the farm is doing.
 
 M2's claim is that N nodes produce what one node produces. Everything before this ran the two nodes on
 two threads in one address space, which shares a heap and a failure domain; this runs them as separate
@@ -18,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import time
@@ -90,6 +100,27 @@ def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True, **kwargs)
 
 
+def stage_remote(remote: str, directory: str, install: Path, binary: Path, plan: Path) -> None:
+    """Copy what a node needs onto another machine: the binary, the fixture, the plan. Nothing else."""
+    subprocess.run(["ssh", remote, f"mkdir -p {directory}"], check=True, cwd=ROOT)
+    subprocess.run(
+        ["scp", "-q", "-r", str(binary), str(install), str(plan), f"{remote}:{directory}/"],
+        check=True, cwd=ROOT,
+    )
+
+
+def remote_address(host: str) -> str:
+    """Resolve the peer's address, and say which one it is.
+
+    The farm resolves node names over a mesh VPN, which the Testbed notes is ~2.5x the round-trip of the
+    direct Ethernet segment. For a functional run that is irrelevant; for the timing work it is the whole
+    difference, so the address is printed rather than assumed.
+    """
+    import socket
+
+    return socket.gethostbyname(host)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--install", type=Path, default=FIXTURE)
@@ -97,6 +128,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--nodes", type=int, default=2, help="2 for M2's gate; the CLI is two-node for now")
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--keep", action="store_true", help="leave .build/m2-gate in place")
+    parser.add_argument(
+        "--remote", default=None,
+        help="run node 1 on another machine, as user@host (e.g. node1@node1); "
+             "the fixture and the node binary are copied, and the trace is fetched back",
+    )
+    parser.add_argument("--remote-dir", default="m2-gate", help="where to stage files on the remote")
     args = parser.parse_args(argv)
 
     if args.nodes != 2:
@@ -133,47 +170,97 @@ def main(argv: list[str] | None = None) -> int:
     # The cluster: node 0 listens and reports its port, node 1 connects to it.
     processes: list[subprocess.Popen] = []
     try:
-        print(f"[3/4] {args.nodes} processes over TCP")
-        listener = subprocess.Popen(
-            [
-                str(binaries["node"]), str(args.install), str(OUT / "node-0"), args.tokens,
-                str(plan_path), "--node", "0", "--listen", "127.0.0.1:0",
-            ],
-            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        )
-        processes.append(listener)
-        port = wait_for_port(listener, args.timeout)
-        print(f"      node 0 bound port {port}")
-
-        for node in range(1, args.nodes):
-            connector = subprocess.Popen(
+        # Who listens depends on where the other node is. On one host the local node listens and the
+        # peers connect to it; with a remote peer the **remote** node listens, because this host is the
+        # one that can reach the other machine's address — and only one of them may hold the role.
+        if args.remote:
+            stage_remote(args.remote, args.remote_dir, args.install, binaries["node"], plan_path)
+            print(f"[3/4] two machines: node 1 listening on {args.remote}, node 0 connecting from here")
+            remote = subprocess.Popen(
                 [
-                    str(binaries["node"]), str(args.install), str(OUT / f"node-{node}"), args.tokens,
-                    str(plan_path), "--node", str(node), "--connect", f"127.0.0.1:{port}",
+                    "ssh", args.remote,
+                    f"cd {args.remote_dir} && ./datacenter-node ./install ./node-1 {args.tokens} "
+                    f"./plan.json --node 1 --listen 0.0.0.0:0",
                 ],
                 cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
-            processes.append(connector)
+            processes.append(remote)
+            port = wait_for_port(remote, args.timeout)
+            host = args.remote.split("@")[-1]
+            address = remote_address(host)
+            print(f"      node 1 bound port {port} on {address} (the farm's names take the VPN)")
+            processes.append(
+                subprocess.Popen(
+                    [
+                        str(binaries["node"]), str(args.install), str(OUT / "node-0"), args.tokens,
+                        str(plan_path), "--node", "0", "--connect", f"{address}:{port}",
+                    ],
+                    cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                )
+            )
+        else:
+            print(f"[3/4] {args.nodes} processes over TCP on one host")
+            processes.append(
+                subprocess.Popen(
+                    [
+                        str(binaries["node"]), str(args.install), str(OUT / "node-0"), args.tokens,
+                        str(plan_path), "--node", "0", "--listen", "127.0.0.1:0",
+                    ],
+                    cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                )
+            )
+            port = wait_for_port(processes[0], args.timeout)
+            print(f"      node 0 bound port {port}")
+            for node in range(1, args.nodes):
+                processes.append(
+                    subprocess.Popen(
+                        [
+                            str(binaries["node"]), str(args.install), str(OUT / f"node-{node}"),
+                            args.tokens, str(plan_path), "--node", str(node),
+                            "--connect", f"127.0.0.1:{port}",
+                        ],
+                        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    )
+                )
 
         failed = False
-        for node, process in enumerate(processes):
+        # The label is the **node id**, not the process index: with a remote peer the listener is node 1
+        # and it is started first, and printing "node 0" beside its output is how a passing run gets read
+        # as a failing one.
+        labels = [1, 0] if args.remote else list(range(len(processes)))
+        for slot, process in enumerate(processes):
+            label = labels[slot]
             try:
                 stdout, stderr = process.communicate(timeout=args.timeout)
             except subprocess.TimeoutExpired:
                 process.kill()
-                print(f"node {node} did not finish inside {args.timeout}s", file=sys.stderr)
+                print(f"node {label} did not finish inside {args.timeout}s", file=sys.stderr)
                 failed = True
                 continue
             for line in stdout.strip().splitlines():
-                print(f"      node {node}: {line}")
+                print(f"      node {label}: {line}")
             if process.returncode != 0:
-                print(f"node {node} failed:\n{stderr}", file=sys.stderr)
+                print(f"node {label} failed:\n{stderr}", file=sys.stderr)
                 failed = True
         if failed:
             return 1
 
+        if args.remote:
+            # Fetch the remote trace so the differ runs here, where the reference is. A trace is a
+            # directory, so this is a recursive copy into a destination that must not already exist —
+            # the first version copied without -r and scp said so.
+            local = OUT / "node-1"
+            if local.exists():
+                shutil.rmtree(local)
+            local.mkdir(parents=True)
+            subprocess.run(
+                ["scp", "-q", "-r", f"{args.remote}:{args.remote_dir}/node-1/.", str(local)],
+                check=True, cwd=ROOT,
+            )
+            print(f"      fetched node 1's trace from the other machine ({len(list(local.iterdir()))} files)")
+
         # The judge is the harness M0 built: byte-for-byte tensors and exact discrete decisions.
-        print("[4/4] trace_diff, every node against the reference and against each other")
+        print("[4/4] trace_diff, every node against the reference")
         for node in range(args.nodes):
             diff = run(
                 [
@@ -195,7 +282,8 @@ def main(argv: list[str] | None = None) -> int:
     if failed:
         print("M2 GATE (fixture scale) FAILED", file=sys.stderr)
         return 1
-    print(f"M2 GATE (fixture scale) PASSED: {args.nodes} processes, one plan, one trace")
+    where = f"node 0 here and node 1 on {args.remote}" if args.remote else f"{args.nodes} processes on one host"
+    print(f"M2 GATE (fixture scale) PASSED: {where}, one plan, one trace")
     return 0
 
 
