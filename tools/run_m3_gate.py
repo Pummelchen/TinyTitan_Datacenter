@@ -133,6 +133,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-speedup", type=float, default=3.0)
     parser.add_argument("--quiet-load", type=float, default=1.0)
     parser.add_argument("--allow-busy-farm", action="store_true")
+    parser.add_argument(
+        "--functional-only",
+        action="store_true",
+        help=(
+            "run the cluster and check that every node reproduces the single-node result, and stop there. "
+            "No speedup is computed, printed or recorded, because the timing half of this gate belongs to a "
+            "quiet-window measurement: the functional half is a different question and can be asked at any "
+            "time. The report records `functional_only` and nulls the timing fields rather than omitting "
+            "them, so a reader cannot mistake the output for a measurement."
+        ),
+    )
     parser.add_argument("--timeout", type=float, default=1800)
     parser.add_argument("--report", type=Path, default=None)
     args = parser.parse_args(argv)
@@ -149,28 +160,35 @@ def main(argv: list[str] | None = None) -> int:
         if not binary.exists():
             raise SystemExit(f"{binary} is missing: run `swift build -c release` first ({name})")
 
-    # 1. Is the farm quiet enough for a throughput claim to mean anything?
-    loads = {
-        entry: load_average(entry, local=(index == 0)) for index, entry in enumerate(entries)
-    }
-    busy, unknown = farm_state(loads, args.quiet_load)
-    unknown = [host for host, value in loads.items() if value is None]
-    busy = [host for host, value in loads.items() if value is not None and value > args.quiet_load]
-    print("[1/4] quiet-farm check (one-minute load average, threshold " f"{args.quiet_load})")
-    for host, value in loads.items():
-        print(f"      {host}: {'NOT CHECKED' if value is None else f'{value:.2f}'}")
-    if unknown:
-        print(f"      {len(unknown)} node(s) could not be asked; they are NOT CHECKED", file=sys.stderr)
-    if busy and not args.allow_busy_farm:
-        print(
-            "M3 GATE REFUSED: the farm is not quiet — "
-            + ", ".join(f"{host} at {loads[host]:.2f}" for host in busy)
-            + f". A throughput figure from a busy farm is a different measurement, not a weak one. "
-            f"Re-run when the nodes are idle, or pass --allow-busy-farm to record an OBSERVATION "
-            f"(which cannot pass this gate).",
-            file=sys.stderr,
-        )
-        return 2
+    # 1. Is the farm quiet enough for a throughput claim to mean anything? A functional run is not making
+    #    a throughput claim, so it skips the precondition and says so rather than reporting a load it did
+    #    not use.
+    loads: dict[str, float | None] = {}
+    busy: list[str] = []
+    if not args.functional_only:
+        loads = {
+            entry: load_average(entry, local=(index == 0)) for index, entry in enumerate(entries)
+        }
+        busy, unknown = farm_state(loads, args.quiet_load)
+        unknown = [host for host, value in loads.items() if value is None]
+        busy = [host for host, value in loads.items() if value is not None and value > args.quiet_load]
+        print("[1/4] quiet-farm check (one-minute load average, threshold " f"{args.quiet_load})")
+        for host, value in loads.items():
+            print(f"      {host}: {'NOT CHECKED' if value is None else f'{value:.2f}'}")
+        if unknown:
+            print(f"      {len(unknown)} node(s) could not be asked; they are NOT CHECKED", file=sys.stderr)
+        if busy and not args.allow_busy_farm:
+            print(
+                "M3 GATE REFUSED: the farm is not quiet — "
+                + ", ".join(f"{host} at {loads[host]:.2f}" for host in busy)
+                + f". A throughput figure from a busy farm is a different measurement, not a weak one. "
+                f"Re-run when the nodes are idle, or pass --allow-busy-farm to record an OBSERVATION "
+                f"(which cannot pass this gate).",
+                file=sys.stderr,
+            )
+            return 2
+    else:
+        print("[1/4] quiet-farm check skipped: --functional-only makes no throughput claim")
 
     OUT.mkdir(parents=True, exist_ok=True)
     plan_path = OUT / "plan.json"
@@ -298,6 +316,33 @@ def main(argv: list[str] | None = None) -> int:
     if not identical:
         print("M3 GATE FAILED: the cluster did not reproduce the single-node result", file=sys.stderr)
         return 1
+
+    if args.functional_only:
+        report = {
+            "install": str(args.install),
+            "nodes": len(entries),
+            "steps": args.steps,
+            "functional_only": True,
+            "bit_identical": True,
+            "tokens": baseline_tokens,
+            "baseline_seconds_per_step": None,
+            "nodes_seconds_per_step": None,
+            "speedup": None,
+            "min_speedup": None,
+            "load_average": {},
+        }
+        if args.report:
+            # The functional path returns before the normal report site, and that site is downstream of the
+            # output directory being made. A report path whose parent does not exist yet is the caller's
+            # intent, not an error.
+            args.report.parent.mkdir(parents=True, exist_ok=True)
+            args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+            print(f"      report: {args.report}")
+        print(
+            f"M3 FUNCTIONAL CHECK PASSED: {len(entries)} node(s) reproduced the single-node result, "
+            "tokens and digests. No speedup was computed and none is claimed."
+        )
+        return 0
 
     ratio = speedup(baseline_per_step, [entry["seconds_per_step"] for entry in per_node])
     print("[4/4] throughput")

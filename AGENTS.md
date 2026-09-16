@@ -192,6 +192,11 @@ python3 tools/check_baselines.py --metrics .build/baseline-check/trace/metrics.j
 # nodes rather than an honour system — see D38.
 python3 tools/run_m3_gate.py --install .build/m1-install --mesh node4@<addr>,node1@<addr>,node2@<addr>,node3@<addr>
 
+# The functional half of M3, which is a different question from the throughput gate and can be asked at any
+# time: the cluster runs, every node is checked against the single-node result, and NO speedup is computed,
+# printed or recorded (D68).
+python3 tools/run_m3_gate.py --install .build/m1-install --mesh node4@<addr>,node1@<addr>,node2@<addr>,node3@<addr> --functional-only
+
 # Re-check the milestone claims, not just the repository: which digest the engine produces, and
 # whether it was ever checked against the contract. A divergence that is not declared fails (D46).
 python3 tools/run_all_gates.py --milestones

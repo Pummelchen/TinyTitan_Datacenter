@@ -1364,3 +1364,44 @@ of leaving a command that cannot be run.
 them — but they are printed to a reader who may copy them, so they are now placeholders. An example that
 cannot go stale is better than an example that has to be maintained, which is the same reason the shard plan
 is generated rather than hard-coded.
+
+## D68 — M3's four-node mesh re-verified, and the functional half made runnable on its own
+
+`D66` re-established the two-machine claim and deliberately left the four-node mesh alone, because one peer was
+at load 14. The farm went quiet — node1 at 2.5, node2 at 1.4, node3 at 1.0 — and this round ran it.
+
+**The mesh is M3's distinctive functional claim** — every node generates from the same prompt in a full mesh
+driven by the loaded plan, and the result is compared with the single-node run. Four machines, current
+binaries, each reading **its own** install:
+
+```
+baseline, one node here      tokens [11751, 11, 264, 3177]
+node 0  IDENTICAL — tokens [11751, 11, 264, 3177]
+node 1  IDENTICAL — tokens [11751, 11, 264, 3177]
+node 2  IDENTICAL — tokens [11751, 11, 264, 3177]
+node 3  IDENTICAL — tokens [11751, 11, 264, 3177]
+```
+
+Tokens **and** digests, on all four, over a plan staged to three peers that already held their own install
+copies — so the only thing that moved across the network was the binary and the plan. The tokens are also the
+first four that `D65` verified for the single node, which is a second line of evidence rather than a second
+measurement of the same thing.
+
+**The tool now expresses the split the operator asked for.** The timing half of M3 is a quiet-window
+measurement; the functional half is a different question, answerable any time. `run_m3_gate.py
+--functional-only` runs the cluster, checks tokens and digests, and **stops** — it does not compute, print or
+record a speedup, and its report **nulls** the timing fields rather than omitting them, so a later reader
+cannot mistake the output for a measurement. It also skips the quiet-farm precondition and says that it
+skipped it, because a functional run is not making a throughput claim and should not pretend to have checked
+a precondition it does not use.
+
+**Two of my own defects, and the run caught both.**
+
+* The functional path returns **before** the point where the output directory is created, so the first run
+  wrote its report into a directory that did not exist and ended in a traceback — after printing four
+  IDENTICAL lines. The fix creates the report's parent, because a report path whose parent does not exist is
+  the caller's intent rather than an error.
+* **I hid that traceback's exit code with a pipe to `tail`.** The gate crashed and my command reported `gate
+  exit: 0`, because `$?` was the exit status of `tail`. This is the third time in this session that the same
+  recorded lesson has bitten, and the fix is not care but shape: capture the output to a file and read `$?`,
+  which is how the re-run was done.
