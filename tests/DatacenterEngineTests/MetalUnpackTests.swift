@@ -101,6 +101,27 @@ final class MetalUnpackTests: XCTestCase {
         }
     }
 
+    /// **The buffer cache is the new thing, and its risk is the second call.** A buffer grown for a large
+    /// shape must not leak into the next small one, and a small one must not be reused for a large shape
+    /// without growing. Unpacking small, then large, then small again — each compared against the scalar
+    /// path — is what makes that risk testable rather than argued.
+    func testTheBufferCacheDoesNotLeakBetweenCalls() throws {
+        try XCTSkipUnless(MetalUnpack.isAvailable, "no Metal device")
+        // Deliberately in this order: small, large, small, large. The repeat is the point.
+        for (rows, columns, group) in [(2, 17, 4), (5, 130, 8), (1, 65, 4), (5, 130, 8)] {
+            var padded = columns + (group - columns % group) % group
+            if padded % 2 == 1 { padded += group }
+            let entry = try entry(rows: rows, columns: columns, padded: padded, group: group)
+            let body = payload(rows: rows, padded: padded, group: group)
+            let scalar = try InstallFile.dequantizeInt4(body, entry: entry)
+            let gpu = try MetalUnpack.unpack(payload: body, entry: entry)
+            XCTAssertEqual(
+                gpu.map(\.bitPattern), scalar.map(\.bitPattern),
+                "\(rows)x\(columns) group \(group): a reused buffer changed the answer"
+            )
+        }
+    }
+
     /// The fixture's real payloads, not synthetic ones: same bytes the engine unpacks.
     func testTheGpuUnpackMatchesTheWholeInstallTensor() throws {
         try XCTSkipUnless(MetalUnpack.isAvailable, "no Metal device")

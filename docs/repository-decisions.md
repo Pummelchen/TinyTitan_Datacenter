@@ -985,3 +985,36 @@ with nothing watching. It recovered on its own when the run ended, `du` showed n
 sample was almost certainly APFS purgeable space, which is exactly why the watchdog acts on three readings
 and not one. But a guard that is tidy to remove is the guard that was needed: the watchdog is running again,
 and the rule is that it is started with the heavy job and stopped by the marker, not by hand.
+
+## D59 — The GPU unpack's cost was the plumbing, and fixing it made it faster than the scalar path
+
+`D58` ended with a precise diagnosis and no fix: the GPU unpack was bit-identical and **slower** (38.2 s
+against 18.2 s for one five-token trace), because the row path concatenated `codes + scales + zeros` into a
+`Data`, `unpack` sliced it twice more, each section was copied into an `[UInt8]` before reaching a buffer, and
+— the dominant term — a **fresh output buffer was allocated per fetch**, 8 MB for a single expert and 2,218
+fetches in that trace.
+
+Two changes, both inside `MetalUnpack` so the public API does not move:
+
+* **A one-slot buffer cache.** The four buffers are reused and only reallocated when a shape needs a bigger
+  one. Reuse is safe because the lock is held across the dispatch **and** its completion, so no kernel can
+  still be reading a buffer that the next call is about to overwrite — and it costs nothing, because work on
+  one GPU is serialised in any case. That is what `@unchecked Sendable` stands on here, and the comment says
+  so where the annotation is.
+* **One copy per section, straight into the buffer the GPU reads.** `copyBytes(to:from:)` for the codes and
+  the zeros, and one `copyMemory` of the flushed scales, replacing the `subdata`/`[UInt8]`/`Data` chain.
+
+**Result: 16.3 s**, against 38.2 s before the change and **18.2 s for the scalar path** — so the GPU unpack is
+now faster than the CPU one, with `trace_diff` against the scalar run reporting **IDENTICAL — 83 tensors, 0
+differing elements, 40 discrete decisions**. The target `DC-107` set is met: *faster, with the same digest*.
+
+**These are wall-clock observations of one trace each, not a benchmark.** The timing phase is deferred, and
+this is the same kind of number `testGpuUnpackThroughputReport` reports rather than gates.
+
+**Why it stays behind the flag anyway.** A default is a policy, and the evidence for changing a default
+should be the frozen prompt set rather than one prompt; the path also holds a persistent GPU buffer, which is
+a memory decision on a node that has panicked for less. `SHARD_GPU_UNPACK=1` makes it a deliberate act, and
+the end-to-end check — the same trace digest with the flag off and on — is what any future default change
+would have to repeat. What is *not* deferred is the correctness: `testTheBufferCacheDoesNotLeakBetweenCalls`
+unpacks small, large, small and large again, each compared against the scalar path, because the cache's real
+risk is the second call rather than the first.

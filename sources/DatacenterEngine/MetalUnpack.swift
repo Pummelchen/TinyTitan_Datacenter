@@ -64,61 +64,108 @@ public enum MetalUnpack {
         let values = layout.rows * layout.columns
         guard values > 0 else { return [] }
 
-        let codes = payload.subdata(in: 0..<layout.codeBytes)
-        let rawScales = payload.subdata(in: layout.codeBytes..<(layout.codeBytes + layout.scaleBytes))
         // `D11` on the GPU, which this kernel did not do: a denormal scale reads as zero, exactly as the
         // scalar path and `tools/quantize.py` both do. The divergence `DC-087` recorded as "the sign of
         // zero" was therefore two things — the sign, and a rule this path had never implemented at all.
         // Flushing here is one pass per dispatch instead of a branch per value, and it routes through the
         // same `flushed` the CPU uses, so the rule cannot drift between them.
         var flushedScales = [Float](repeating: 0, count: layout.rows * layout.groups)
-        rawScales.withUnsafeBytes { raw in
+        payload.withUnsafeBytes { raw in
             for index in 0..<flushedScales.count {
-                let bits = raw.loadUnaligned(fromByteOffset: index * 4, as: UInt32.self)
-                flushedScales[index] = InstallFile.flushed(
-                    Float(bitPattern: UInt32(littleEndian: bits))
+                let bits = raw.loadUnaligned(
+                    fromByteOffset: layout.codeBytes + index * 4, as: UInt32.self
                 )
+                flushedScales[index] = InstallFile.flushed(Float(bitPattern: UInt32(littleEndian: bits)))
             }
         }
-        let scales = Data(bytes: flushedScales, count: flushedScales.count * 4)
-        let zeros = payload.subdata(
-            in: (layout.codeBytes + layout.scaleBytes)..<(layout.codeBytes + layout.scaleBytes + layout.rows * layout.groups)
-        )
 
-        func buffer(_ bytes: Data, _ label: String) throws -> any MTLBuffer {
-            guard let buffer = pipeline.device.makeBuffer(bytes: [UInt8](bytes), length: max(bytes.count, 1), options: .storageModeShared) else {
-                throw Error.commandFailed("could not make the \(label) buffer")
+        let zeroBytes = layout.rows * layout.groups
+        return try Self.buffers.withBuffers(
+            codeBytes: layout.codeBytes, scaleBytes: layout.scaleBytes, zeroBytes: zeroBytes,
+            outBytes: values * 4, device: pipeline.device
+        ) { cached in
+            let codes = cached[0], scales = cached[1], zeros = cached[2], out = cached[3]
+            // One copy per section, straight into the buffer the GPU will read. The first version made an
+            // `[UInt8]` of each, a `Data` of the flushed scales, and three `subdata` slices of the payload
+            // — four copies to move bytes that are already in hand.
+            payload.copyBytes(to: codes.contents().assumingMemoryBound(to: UInt8.self), from: 0..<layout.codeBytes)
+            flushedScales.withUnsafeBytes { source in
+                if let base = source.baseAddress, layout.scaleBytes > 0 {
+                    scales.contents().copyMemory(from: base, byteCount: layout.scaleBytes)
+                }
+            }
+            payload.copyBytes(
+                to: zeros.contents().assumingMemoryBound(to: UInt8.self),
+                from: (layout.codeBytes + layout.scaleBytes)..<(layout.codeBytes + layout.scaleBytes + zeroBytes)
+            )
+
+            var params = SIMD4<UInt32>(
+                UInt32(layout.rows), UInt32(layout.columns), UInt32(layout.padded), UInt32(layout.group)
+            )
+            guard let command = pipeline.queue.makeCommandBuffer(),
+                  let encoder = command.makeComputeCommandEncoder()
+            else { throw Error.commandFailed("could not make a command buffer") }
+
+            encoder.setComputePipelineState(pipeline.state)
+            encoder.setBuffer(codes, offset: 0, index: 0)
+            encoder.setBuffer(scales, offset: 0, index: 1)
+            encoder.setBuffer(zeros, offset: 0, index: 2)
+            encoder.setBuffer(out, offset: 0, index: 3)
+            encoder.setBytes(&params, length: MemoryLayout<SIMD4<UInt32>>.size, index: 4)
+            let width = pipeline.state.threadExecutionWidth
+            encoder.dispatchThreads(
+                MTLSize(width: values, height: 1, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
+            )
+            encoder.endEncoding()
+            command.commit()
+            command.waitUntilCompleted()
+            if let error = command.error { throw Error.commandFailed("\(error)") }
+
+            let raw = out.contents().bindMemory(to: Float.self, capacity: values)
+            return Array(UnsafeBufferPointer(start: raw, count: values))
+        }
+    }
+
+    /// A one-slot cache of GPU buffers, so a fetch stops allocating one per call.
+    ///
+    /// The first version allocated a fresh output buffer for every unpack — 8 MB for a single expert, and
+    /// 2,218 fetches in a five-token trace — and copied the payload four times on the way to the GPU. That
+    /// is why the path measured **slower** than the scalar one (`D58`) even though the kernel is right.
+    ///
+    /// Reuse is safe because the lock is held across the dispatch **and** its completion, so a buffer cannot
+    /// be overwritten while a kernel is still reading it. It also costs nothing: work on one GPU is
+    /// serialised in any case, which is what `@unchecked Sendable` is standing on here — the class has
+    /// mutable state and no compiler-checkable proof, and the proof is the lock.
+    private final class BufferCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cached: [any MTLBuffer] = []
+
+        static func makeBuffer(_ device: any MTLDevice, _ length: Int) throws -> any MTLBuffer {
+            // A zero-length buffer is not a thing Metal will make, and an absent zero section is normal.
+            guard let buffer = device.makeBuffer(length: max(length, 1), options: .storageModeShared) else {
+                throw MetalUnpack.Error.commandFailed("could not make a buffer of \(length) bytes")
             }
             return buffer
         }
 
-        var params = SIMD4<UInt32>(UInt32(layout.rows), UInt32(layout.columns), UInt32(layout.padded), UInt32(layout.group))
-        guard let out = pipeline.device.makeBuffer(length: values * 4, options: .storageModeShared) else {
-            throw Error.commandFailed("could not make the output buffer")
+        func withBuffers(
+            codeBytes: Int, scaleBytes: Int, zeroBytes: Int, outBytes: Int, device: any MTLDevice,
+            _ body: ([any MTLBuffer]) throws -> [Float]
+        ) throws -> [Float] {
+            lock.lock()
+            defer { lock.unlock() }
+            let sizes = [codeBytes, scaleBytes, zeroBytes, outBytes]
+            if cached.count != sizes.count
+                || zip(cached, sizes).contains(where: { $0.length < max($1, 1) })
+            {
+                cached = try sizes.map { try Self.makeBuffer(device, $0) }
+            }
+            return try body(cached)
         }
-        guard let command = pipeline.queue.makeCommandBuffer(),
-              let encoder = command.makeComputeCommandEncoder()
-        else { throw Error.commandFailed("could not make a command buffer") }
-
-        encoder.setComputePipelineState(pipeline.state)
-        encoder.setBuffer(try buffer(codes, "codes"), offset: 0, index: 0)
-        encoder.setBuffer(try buffer(scales, "scales"), offset: 0, index: 1)
-        encoder.setBuffer(try buffer(zeros, "zeros"), offset: 0, index: 2)
-        encoder.setBuffer(out, offset: 0, index: 3)
-        encoder.setBytes(&params, length: MemoryLayout<SIMD4<UInt32>>.size, index: 4)
-        let width = pipeline.state.threadExecutionWidth
-        encoder.dispatchThreads(
-            MTLSize(width: values, height: 1, depth: 1),
-            threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
-        )
-        encoder.endEncoding()
-        command.commit()
-        command.waitUntilCompleted()
-        if let error = command.error { throw Error.commandFailed("\(error)") }
-
-        let raw = out.contents().bindMemory(to: Float.self, capacity: values)
-        return Array(UnsafeBufferPointer(start: raw, count: values))
     }
+
+    private static let buffers = BufferCache()
 
     private static let shader = """
     #include <metal_stdlib>
