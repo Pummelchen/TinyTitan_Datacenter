@@ -70,12 +70,16 @@ do {
     fail("could not load \(snapshot.path): \(error)")
 }
 
+// Measured, not derived: the install counts payload bytes as it reads them, so the traffic a
+// forward caused is the difference across it. Zero would mean this family does not count.
+let bytesBefore = forward.sourceBytesRead
 let result: ForwardResult
 do {
     result = try forward.forwardWithDecisions(tokens: tokens)
 } catch {
     fail("forward failed: \(error)")
 }
+let bytesThisForward = forward.sourceBytesRead - bytesBefore
 let captured = result.tensors
 
 var writer = TraceWriter(
@@ -93,10 +97,13 @@ if !result.expertMetrics.isEmpty {
     metrics["expert_hits"] = result.expertMetrics.reduce(0) { $0 + $1.hits }
     metrics["expert_misses"] = result.expertMetrics.reduce(0) { $0 + $1.misses }
     metrics["expert_elements_read"] = result.expertElementsRead
-    // The file stores bf16 for the expert stacks, so the bytes the device read are half the
-    // elements; the fp32 figure is what the kernel had in hand. Both, because the brief's
-    // currency is bytes from the SSD and the two differ by a factor of two.
-    metrics["expert_bytes_from_ssd"] = result.expertElementsRead * 2
+    // The brief's currency is **bytes read from the SSD**, and this is the measured figure: the
+    // install counts the payload bytes it hands out, and a forward's share is the difference
+    // across it. It replaces `expertElementsRead * 2`, which assumed bf16 on disk and so
+    // overstated a 4-bit install by ~3.5x — this model stores experts at 0.578 bytes per weight
+    // (4-bit codes with group-64 scales and zeros), where the estimate gave 2.0.
+    metrics["install_bytes_read_this_forward"] = bytesThisForward
+    metrics["install_bytes_read_total"] = forward.sourceBytesRead
     metrics["expert_bytes_in_memory"] = result.expertElementsRead * 4
     metrics["expert_hit_rate"] = result.expertHitRate
     metrics["expert_distinct"] = Set(result.discrete.flatMap { $0.values }).count

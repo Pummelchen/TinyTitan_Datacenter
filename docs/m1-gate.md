@@ -338,7 +338,7 @@ Run under the operator's standing approval, with `check_disk_headroom` clean (17
 5 GB), swap at 935 MB of 2048 MB used, and `tools/disk_watchdog.py` alongside. `capital`'s five frozen
 tokens — the same ids as the earlier run — through the engine at bank sizes **2, 8 and 16**:
 
-| bank size | trace digest | wall clock | bytes from SSD | requests | hits | decoded in memory |
+| bank size | trace digest | wall clock | bytes from SSD *(estimate — see the correction below)* | requests | hits | decoded in memory |
 | --- | --- | --- | --- | --- | --- | --- |
 | 2 | `b0d382db…` | 39.5 s | 6,977,224,704 | 2,218 | **0** | 13,954,449,408 |
 | 8 | `b0d382db…` | 39.3 s | 6,977,224,704 | 2,218 | **0** | 13,954,449,408 |
@@ -349,7 +349,7 @@ tokens — the same ids as the earlier run — through the engine at bank sizes 
 the bank's size cannot change what the engine outputs, which is the least a cache has to be — and it is
 the same property M2 will need from sharding, on the same harness.
 
-**What the numbers say per token:** 1,395 MB read from SSD per prefill token; 13.95 GB decoded into
+**What the numbers say per token:** 1,395 MB read from SSD per prefill token *by the estimate that has since been withdrawn — the measured figure is 2.6×–5.2× smaller, see the correction below*; 13.95 GB decoded into
 memory, exactly twice the SSD bytes because the int4 payload becomes fp32; prefill at **7.90 s per
 token, 0.127 prefill tok/s**. That last figure is a **prefill** rate and the gate's baseline is a
 **generation** rate — they measure different things and must not be compared.
@@ -370,6 +370,32 @@ still the outstanding half** of M1's correctness claim.
 selections per token. A mixture that de-duplicates selections within a layer would land below 320, and
 5.5 distinct experts per layer per position is plausible — but that is an inference, not a measurement.
 Settling it means counting distinct experts per layer in the mixture and comparing.
+
+### Correction, 2026-09-16: the "bytes from SSD" column was an estimate, and a wrong one
+
+It came from `expertElementsRead * 2`, which assumes two bytes per element on disk. This install stores
+experts at **0.578 bytes per weight** — 4-bit codes with group-64 scales and zeros, 4.625 bits — so the
+estimate is **≈3.5× too large**. The install had been counting the bytes it actually read all along
+(`InstallFile.bytesRead`, exposed as `WeightSource.bytesReadFromSource` and now reported by
+`datacenter-trace` as `install_bytes_read_this_forward`), so the fix was to report the measurement
+instead of arithmetic about it. Three tests hold it: that a forward reports the bytes it read, that the
+counter only grows, and that **a forward does not read the whole install** — which is the streaming
+claim, and the same class of bug as `DC-088`'s guard that touched a whole entry to answer a question
+about one expert.
+
+**What the real traffic was, bounded by the geometry rather than guessed.** One expert's payload is
+**1,818,624 bytes** (gate+up 1,212,416 + down 606,208, read from `install.json`), so the run's traffic
+is 1,818,624 × the number of expert fetches. The counters do not pin the fetch count down — that is the
+open question `Q9` — so:
+
+| if a request is | fetches for 5 tokens | real traffic | per prefill token |
+| --- | --- | --- | --- |
+| an (expert, projection) read | 1,109 | 2.02 GB | 404 MB |
+| one expert fetch | 2,218 | 4.03 GB | 807 MB |
+
+**And the derived "effective 177 MB/s" is withdrawn with it**: it was computed from the estimate, so it
+was wrong by the same factor. A number about the read path has to come from the read path, which is the
+next measurement rather than another division.
 
 ## Running the sweep
 

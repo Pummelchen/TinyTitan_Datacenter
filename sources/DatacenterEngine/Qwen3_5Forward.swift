@@ -27,6 +27,10 @@ public struct Qwen3_5Forward: ForwardPass {
     let finalNormName: String
     let headName: String
 
+    /// `ForwardPass`: what this model's install has actually read, counted by the reader — the
+    /// figure M1's gate needs, rather than one derived from element counts.
+    public var sourceBytesRead: Int { source.bytesReadFromSource }
+
     public enum Error: Swift.Error, CustomStringConvertible {
         case missingTensor(block: String, role: TensorRole)
         case noEmbedding

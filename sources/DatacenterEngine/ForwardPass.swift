@@ -51,6 +51,17 @@ public protocol ForwardPass {
     /// The same, plus the discrete decisions. A family with no such decisions — every family
     /// before the mixture — gets the default, so this costs the earlier ones nothing.
     func forwardWithDecisions(tokens: [Int]) throws -> ForwardResult
+    /// Payload bytes the family's weight source has read since it was opened, when it counts.
+    ///
+    /// This is a protocol **requirement** rather than an extension member on purpose: an extension
+    /// member is dispatched statically, so a caller holding `any ForwardPass` would silently get
+    /// the default and the figure would look measured while being a constant. Zero means *not
+    /// counted* — the dense family holds its weights from open time.
+    var sourceBytesRead: Int { get }
+}
+
+extension ForwardPass {
+    public var sourceBytesRead: Int { 0 }
 }
 
 extension ForwardPass {

@@ -18,6 +18,17 @@ public protocol WeightSource {
     /// keeping: the routed expert slabs. Defaults to the ordinary read, which is what an install
     /// already does — its payload is read uncached by construction.
     func rowsStreaming(named name: String, range: Range<Int>) throws -> [Float]
+    /// Payload bytes this source has **actually read**, when it counts them.
+    ///
+    /// Zero means **not counted**, not "nothing was read": the dense family loads its weights at
+    /// open time and holds them, so it has no live counter to ask, and a caller must not present
+    /// that as zero traffic. That confusion is exactly what made `expert_bytes_from_ssd` an
+    /// estimate — `elementsRead * 2`, which is 3.5x too large for a 4-bit install.
+    var bytesReadFromSource: Int { get }
+}
+
+extension WeightSource {
+    public var bytesReadFromSource: Int { 0 }
 }
 
 extension WeightSource {
@@ -98,6 +109,10 @@ public struct InstallFile: WeightSource {
 
     /// Payload bytes read through this instance.
     public var bytesRead: Int { state.bytesRead }
+
+    /// `WeightSource`: the same counter, so a caller can report measured traffic rather than an
+    /// estimate derived from element counts.
+    public var bytesReadFromSource: Int { bytesRead }
 
     /// Open an install.
     ///
