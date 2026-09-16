@@ -288,6 +288,27 @@ public struct Qwen3_5Forward: ForwardPass {
         try forwardWithDecisions(tokens: tokens).tensors
     }
 
+    /// A mixture layer's output, sharded or not — **one** implementation, because a second call site is
+    /// a second chance to forget the reduce, and that failure mode is a plausible token sequence computed
+    /// from a fraction of the experts. The cached decode path calls this too (`DC-109`); before it did,
+    /// a sharded `--cached` run would have ignored the shard entirely and looked fine.
+    func mixtureOutput(
+        hidden: [Float], tokens: Int, weights: MixtureWeights, shape: MixtureShape,
+        profiler: Profiler? = nil
+    ) throws -> (output: [Float], indices: [[Int]]) {
+        guard let shard else {
+            let whole = try MixtureOfExperts.block(
+                hidden: hidden, tokens: tokens, weights: weights, shape: shape, profiler: profiler
+            )
+            return (whole.output, whole.indices)
+        }
+        let (routed, indices) = try shardedRouted(
+            hidden: hidden, tokens: tokens, weights: weights, shape: shape, shard: shard,
+            profiler: profiler
+        )
+        return (routed, indices)
+    }
+
     /// One node's half of a mixture layer: its own experts' terms, the all-reduce with its peers, and the
     /// shared expert added back by the same `combine` the single-node path uses.
     ///
@@ -403,21 +424,9 @@ public struct Qwen3_5Forward: ForwardPass {
 
             case .mixture(let weights, let provider):
                 let shape = try mixtureShape()
-                let routed: [Float]
-                let indices: [[Int]]
-                if let shard {
-                    (routed, indices) = try shardedRouted(
-                        hidden: postNormed, tokens: length, weights: weights, shape: shape,
-                        shard: shard, profiler: profiler
-                    )
-                } else {
-                    let whole = try MixtureOfExperts.block(
-                        hidden: postNormed, tokens: length, weights: weights, shape: shape,
-                        profiler: profiler
-                    )
-                    routed = whole.output
-                    indices = whole.indices
-                }
+                let (routed, indices) = try mixtureOutput(
+                    hidden: postNormed, tokens: length, weights: weights, shape: shape, profiler: profiler
+                )
                 // Kept so the caller can report a measured hit rate rather than an assurance.
                 // M1's gate asks for the number, and the number is not visible from outside.
                 expertMetrics.append(provider.metrics)

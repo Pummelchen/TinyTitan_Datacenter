@@ -122,33 +122,16 @@ if let config {
     } catch {
         fail("the cluster config does not fit this node: \(error)")
     }
-    guard addresses.nodes == plan.nodes else {
-        fail("the config describes \(addresses.nodes) nodes and the plan \(plan.nodes)")
-    }
-    let mine = addresses.endpoints[node]
-    let bound: TCPListener
     do {
-        bound = try TCPListener(host: mine.host, port: mine.port, backlog: Int32(max(1, addresses.nodes)))
+        let joined = try ClusterJoin.mesh(
+            config: addresses, node: node, nodes: plan.nodes, timeoutMilliseconds: timeoutMilliseconds
+        )
+        peers = joined.transports
+        listener = joined.listener
+        print("PORT \(joined.listener.port)")
+        fflush(stdout)
     } catch {
-        fail("could not bind \(mine.host):\(mine.port): \(error)")
-    }
-    listener = bound
-    print("PORT \(bound.port)")
-    fflush(stdout)
-    do {
-        for peer in 0..<node {
-            peers.append(
-                try TCPTransport.connect(
-                    host: addresses.endpoints[peer].host, port: addresses.endpoints[peer].port,
-                    timeoutMilliseconds: timeoutMilliseconds
-                )
-            )
-        }
-        for _ in (node + 1)..<addresses.nodes {
-            peers.append(try bound.accept(timeoutMilliseconds: timeoutMilliseconds))
-        }
-    } catch {
-        fail("could not join the mesh: \(error)")
+        fail("\(error)")
     }
 } else if let listen {
     let parts = listen.split(separator: ":")

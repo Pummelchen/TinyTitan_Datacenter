@@ -148,7 +148,8 @@ extension Qwen3_5Forward {
                 )
             case .mixture(let weights, _):
                 let shape = try mixtureShape()
-                let (routed, indices, _) = try MixtureOfExperts.block(
+                // The same entry point the sequence path uses, so a sharded decode all-reduces here too.
+                let (routed, indices) = try mixtureOutput(
                     hidden: normed, tokens: 1, weights: weights, shape: shape
                 )
                 hidden = add(residual, routed)

@@ -23,10 +23,42 @@ func fail(_ message: String) -> Never {
 var arguments = Array(CommandLine.arguments.dropFirst())
 var modelID = ""
 var revision = ""
+// Sharding options. `--plan`/`--config`/`--node` join a mesh exactly as `datacenter-node` does, so a
+// generation run can be spread over the cluster and measured — which is what M3's gate needs. The
+// cached decode path goes through the same mixture entry point as the sequence path, so a sharded
+// `--cached` run reduces rather than quietly computing a fraction of the experts.
+var planPath: String?
+var configPath: String?
+var shardNode = -1
+var shardTimeout = 30_000
+
 // `--cached` is a flag rather than a positional argument, so it is removed from the list before
 // the arity check — leaving it in made every cached invocation print the usage line and exit.
 let cached = arguments.contains("--cached")
 arguments.removeAll { $0 == "--cached" }
+
+var index = 0
+while index < arguments.count {
+    switch arguments[index] {
+    case "--plan", "--config", "--node", "--timeout-ms":
+        let flag = arguments[index]
+        guard index + 1 < arguments.count else { fail("\(flag) needs a value") }
+        let value = arguments[index + 1]
+        switch flag {
+        case "--plan": planPath = value
+        case "--config": configPath = value
+        case "--node":
+            guard let parsed = Int(value) else { fail("--node needs a number") }
+            shardNode = parsed
+        default:
+            guard let parsed = Int(value) else { fail("--timeout-ms needs a number") }
+            shardTimeout = parsed
+        }
+        arguments.removeSubrange(index...(index + 1))
+    default:
+        index += 1
+    }
+}
 
 for flag in ["--model", "--revision"] {
     if let index = arguments.firstIndex(of: flag) {
@@ -46,12 +78,67 @@ let maxNewTokens = Int(arguments[3]) ?? -1
 guard !prompt.isEmpty else { fail("the prompt must contain at least one token") }
 guard maxNewTokens >= 0 else { fail("max-new-tokens must be a non-negative integer") }
 
-let forward: any ForwardPass
-do {
-    forward = try ModelLoader.open(snapshot: snapshot)
-} catch {
-    fail("could not load \(snapshot.path): \(error)")
+/// The shard context, when this is one node of a cluster run.
+struct Sharded {
+    let forward: any ForwardPass
+    let listener: TCPListener
+    let node: Int
+    let nodes: Int
 }
+
+let sharded: Sharded?
+if let planPath {
+    guard let configPath, shardNode >= 0 else { fail("--plan needs --config and --node") }
+    do {
+        let plan = try ShardPlan.load(from: URL(fileURLWithPath: planPath))
+        let addresses = try ClusterConfig.load(
+            from: URL(fileURLWithPath: configPath), thisNode: shardNode
+        )
+        // The geometry and the family come from the model this node actually opened, and the plan is
+        // checked against them (`D20`) — a plan for another model must be refused, not run.
+        let probe = try Qwen3_5Forward(install: snapshot)
+        let shape = try probe.mixtureShape()
+        try plan.validate(forFamily: probe.spec.family, experts: shape.experts)
+        let joined = try ClusterJoin.mesh(
+            config: addresses, node: shardNode, nodes: plan.nodes, timeoutMilliseconds: shardTimeout
+        )
+        print("PORT \(joined.listener.port)")
+        fflush(stdout)
+        let identity = ClusterIdentity(
+            family: probe.spec.family, revision: revision, experts: shape.experts,
+            hiddenSize: shape.hiddenSize, topK: shape.topK, planDigest: try plan.canonicalDigest()
+        )
+        _ = try ClusterHandshake.perform(
+            ours: NodeDeclaration(identity: identity, node: shardNode, nodes: plan.nodes),
+            peers: joined.transports,
+            policy: ExchangePolicy(receiveTimeoutMilliseconds: shardTimeout, attempts: 1)
+        )
+        let shard = ShardExecution(
+            node: shardNode, ownership: ExpertOwnership(plan: plan), peers: joined.transports,
+            policy: ExchangePolicy(receiveTimeoutMilliseconds: shardTimeout, attempts: 3)
+        )
+        sharded = Sharded(
+            forward: try Qwen3_5Forward(install: snapshot, shard: shard), listener: joined.listener,
+            node: shardNode, nodes: plan.nodes
+        )
+    } catch {
+        fail("could not join the cluster: \(error)")
+    }
+} else {
+    sharded = nil
+}
+
+let forward: any ForwardPass
+if let sharded {
+    forward = sharded.forward
+} else {
+    do {
+        forward = try ModelLoader.open(snapshot: snapshot)
+    } catch {
+        fail("could not load \(snapshot.path): \(error)")
+    }
+}
+_ = sharded  // held for the life of the run so the port stays bound
 
 let generation: Generation
 do {
@@ -81,6 +168,9 @@ do {
     let total = generation.secondsPerStep.reduce(0, +)
     let slowest = generation.secondsPerStep.max() ?? 0
     print("generated: \(generation.generated.map(String.init).joined(separator: ","))")
+    if let sharded {
+        print("sharded: node \(sharded.node) of \(sharded.nodes), one all-reduce per mixture layer")
+    }
     print("mode: \(cached ? "cached decode" : "full sequence each step")")
     // The margins, step by step: a marginal flip is not a defect and a large-margin disagreement
     // is, and the token ids alone cannot tell them apart.

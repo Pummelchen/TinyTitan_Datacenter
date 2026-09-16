@@ -499,3 +499,53 @@ payload and the runtime are small enough not to disturb anyone.
 names: the names resolve over the mesh VPN at roughly 2.5× the round trip, which is the trap the Testbed
 records, and it is the difference that will matter when the synchronisation budget is measured. The
 inventory on that page carries the addresses so the next run does not rediscover them.
+
+## D28 — Generation across a shard, and the defect that made it worth reading first
+
+`DC-109` asks the generation CLI to shard, because M3's gate is a throughput claim and nothing could
+measure throughput across nodes. Reading the call sites first was the whole value of the exercise:
+
+**`ModelCache.decodeOne` called `MixtureOfExperts.block` directly.** The cached decode path never went
+through the shard branch, so a sharded `--cached` run would have computed **only its own experts**,
+all-reduced nothing, and produced a token sequence that looked entirely reasonable — the exact failure
+mode this project exists to eliminate, in the one path a benchmark would have used. The sequence path had
+the branch; the cached path did not.
+
+The fix is the `D23` discipline again: **one entry point**. `Qwen3_5Forward.mixtureOutput` is sharded or
+not, and both the sequence path and the cached path call it, so there is no longer a call site that can
+forget the reduce. A second implementation would have been a second chance to differ; a second *call
+site* was the same chance with a different name.
+
+**The CLI and the join.** `datacenter-generate` gained `--plan/--config/--node/--timeout-ms`, and joining
+a mesh moved into `ClusterJoin`, used by both CLIs — the node CLI's inline copy was deleted rather than
+kept in step by hand. Sharded generation requires an **install** rather than a checkpoint, because the
+shard context is a property of the install reader, and the CLI says so by refusing the plan when it
+cannot open one.
+
+**The evidence, on the real model, across two machines, in cached decode:**
+
+```
+[2/4] reference (one node): [11751, 11]
+[3/4] node 0: generated: 11751,11 | sharded: node 0 of 2 | mode: cached decode
+      node 1: generated: 11751,11 | sharded: node 1 of 2 | mode: cached decode
+[4/4] node 0: IDENTICAL — 1 tensor(s), 0 element(s), 1 discrete decision(s) checked
+      node 1: IDENTICAL — 1 tensor(s), 0 element(s), 1 discrete decision(s) checked
+      both nodes: digest ec3fd8f114e88dc2…, the reference's own
+SHARDED GENERATION PASSED: two machines, 2 token(s), [11751, 11]
+```
+
+Identical tokens **and** identical trace bytes, which is the stronger of the two: the trace is what the
+differ compares. M2's gate asked for "the generated text"; this produces it, on the real model, with an
+all-reduce inside every mixture layer of every step.
+
+**No timings are claimed here either.** The run logs wall clocks (10.4 s and 10.7 s for two steps)
+because a log without them is hard to read, and the standing rule for this phase is functional tests on
+a shared farm. M3's ≥3× gate is a separate, deliberate measurement on a quiet farm, using this
+instrument.
+
+**Two test failures worth keeping.** The three-node test built its own triangle of socket pairs and
+deadlocked — the engine's `ShardExecution` requires `nodes - 1` peers and the hand-wiring was the only
+suspect, so the test now joins through the **production** mesh rule with real loopback sockets, which is
+both correct and closer to what runs. And its first version found free ports by binding `0` and holding
+the listeners, then could not bind them for the join; ports are found by a function whose return releases
+the probe. Test bugs, not engine bugs, and both were found because the failures were loud.

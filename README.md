@@ -14,7 +14,7 @@ A distributed inference engine for large MoE language models on clusters of Mac 
 
 **Status: M0, M1 and M2 are complete and their gates have passed.** On the required
 toolchain — **Xcode 27 with Swift 6.4, and nothing else** — `swift build` is clean and
-`swift test --no-parallel` runs **165 tests, 2 skipped, 0 failures** (the skips are the
+`swift test --no-parallel` runs **167 tests, 2 skipped, 0 failures** (the skips are the
 Metal kernels, which need a GPU), with **179** standard-library Python tests run in CI.
 M0 matched the reference on `Qwen/Qwen3.5-2B`: 40,683,520 bytes of trace data identical
 to the contract, every discrete decision matching. M1 runs the real 35 B model on one node
@@ -23,9 +23,10 @@ decisions, digest `b8c976c5e7ba8816…` — generating at **0.108 tok/s** cached
 **348.6 MB** peak memory. **M2 shards that same 35 B model across two machines** and
 produces **the same digest as the single-node baseline** (`b0d382dbabf36df0…`): 83 tensors,
 0 differing elements, 40 discrete decisions, checked by `trace_diff` on both nodes. All four machines also
-run one forward together in a full mesh and produce that same single trace. What remains open is a
-sharded generation CLI (`DC-109`), the tok/s gates, `D12`, and an install-path contract (`DC-108`).
-There are **no releases and no tags**.
+run one forward together in a full mesh and produce that same single trace, and **generation** shards
+too: a two-machine cached decode produced the single-node tokens and the same trace digest. What remains
+open is the tok/s measurement, `D12`, and an install-path contract (`DC-108`). There are **no releases
+and no tags**.
 
 News, measurements and the live work list are in the **[wiki](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki)** —
 start with [News](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/News) for what

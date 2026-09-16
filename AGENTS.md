@@ -16,7 +16,7 @@ A distributed inference engine for large MoE language models on a cluster of Mac
 minis and Mac Studios, over LAN/SFP/QSFP and Thunderbolt. The Swift engine under
 `sources/` **builds and passes its tests on Swift 6.4 / Xcode 27**, the toolchain
 `swift-tools-version:6.4` requires: `swift build` clean, `swift test --no-parallel`
-at **165 tests, 2 skipped, 0 failures** (the skips are the Metal kernel tests, which
+at **167 tests, 2 skipped, 0 failures** (the skips are the Metal kernel tests, which
 need a GPU). **M0, M1 and M2 are done and their gates have passed** — M0 on `Qwen/Qwen3.5-2B`
 (three frozen prompts, **40,683,520 bytes identical** to the contract, every discrete
 decision matching: `docs/m0-gate.md`), M1 on the real 35 B model, whose trace is
@@ -33,9 +33,10 @@ a peer and one here, and `trace_diff` reports **83 tensors, 0 differing elements
 matching digests `b0d382dbabf36df0…`** — the same digest as the single-node M1 baseline. The farm's nodes
 are shared with other work, so cluster runs are functional rather than benchmarked until the timing phase;
 a sharded generation CLI (`DC-109`) is what the tok/s gates will need. **M3 is under way**: all four
-machines run one forward in a full mesh and produce the single-node trace exactly (`--mesh`), which is its
-functional half; its ≥3× throughput gate needs a quiet farm and a sharded generation CLI (`DC-109`).
-**M4–M5 have not started**.
+machines run one forward in a full mesh and produce the single-node trace exactly (`--mesh`), and
+`datacenter-generate` shards, so a two-machine cached generation produced the reference's tokens and
+digest. Its ≥3× throughput gate is a deliberate measurement for a quiet farm. **M4–M5 have not
+started**.
 There are **no releases and no tags**. The design, the plan and the status live in the
 wiki; the measurements live in `docs/`.
 
@@ -237,7 +238,7 @@ any failure.
   evidenced.** The first revision said there was no source code; the second said the
   engine runs; the third said it is "untested and does not run". The first two were
   wrong, and so is the third as written — on the toolchain the manifest requires, the
-  build is clean and **165 Swift tests pass**, while on the `macos-26` CI image (Xcode
+  build is clean and **167 Swift tests pass**, while on the `macos-26` CI image (Xcode
   26.x, below the 6.4 floor) the manifest does not even parse. **Any status claim must
   name the toolchain**, because that is the whole difference between "does not build"
   and "builds and passes". Point at a command and its output, never at an adjective.
