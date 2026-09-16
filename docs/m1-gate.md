@@ -332,6 +332,45 @@ which is the number my first version of the test got wrong, not the engine. A fi
 nothing about the real model's routing, and it is not meant to: it says the mechanism honours its own
 contract, so that when the real sweep prints a curve, the curve means something.
 
+## The sweep on the real model, 2026-09-16: the cache is transparent, and the hit rate is zero at every size
+
+Run under the operator's standing approval, with `check_disk_headroom` clean (17.01 GB free, floor
+5 GB), swap at 935 MB of 2048 MB used, and `tools/disk_watchdog.py` alongside. `capital`'s five frozen
+tokens — the same ids as the earlier run — through the engine at bank sizes **2, 8 and 16**:
+
+| bank size | trace digest | wall clock | bytes from SSD | requests | hits | decoded in memory |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2 | `b0d382db…` | 39.5 s | 6,977,224,704 | 2,218 | **0** | 13,954,449,408 |
+| 8 | `b0d382db…` | 39.3 s | 6,977,224,704 | 2,218 | **0** | 13,954,449,408 |
+| 16 | `b0d382db…` | 39.9 s | 6,977,224,704 | 2,218 | **0** | 13,954,449,408 |
+
+**The traces are byte-identical, checked independently rather than inferred from the digests:**
+`trace_diff` reports *83 tensors, 0 differing elements, 40 discrete decisions* and matching digests. So
+the bank's size cannot change what the engine outputs, which is the least a cache has to be — and it is
+the same property M2 will need from sharding, on the same harness.
+
+**What the numbers say per token:** 1,395 MB read from SSD per prefill token; 13.95 GB decoded into
+memory, exactly twice the SSD bytes because the int4 payload becomes fp32; prefill at **7.90 s per
+token, 0.127 prefill tok/s**. That last figure is a **prefill** rate and the gate's baseline is a
+**generation** rate — they measure different things and must not be compared.
+
+**The hit rate is 0.0000 at every size**, which is the structural result `DC-091` found by audit: the
+banks are rebuilt per forward, so no token can hit what an earlier one read, and the size is therefore
+irrelevant. `D12` is not "how big should the bank be" but "may a bank survive a token, and what total
+budget may it hold".
+
+**Two things this run also establishes by accident, both worth keeping:** the run pushed swap from
+**935 MB to 1,504 MB** used, and the sweep's own guard now **refuses a second run** at that level — the
+check is doing its job, not decorating the script. And the digest differs from the pre-`D11`
+`b8c976c5…`, exactly as `D11` predicted, so **the contract comparison under the flushed definition is
+still the outstanding half** of M1's correctness claim.
+
+**One number is not yet explained and is recorded rather than guessed:** 2,218 requests is 221.8 expert
+*fetches* per token (2,218 = 2 projections × 1,109 fetches), against 8 experts × 40 layers = 320
+selections per token. A mixture that de-duplicates selections within a layer would land below 320, and
+5.5 distinct experts per layer per position is plausible — but that is an inference, not a measurement.
+Settling it means counting distinct experts per layer in the mixture and comparing.
+
 ## Running the sweep
 
 The sweep is a script, not a sequence typed from memory, because it is a heavy run on a node that has
