@@ -26,8 +26,10 @@ tools/                   the M0 harness and the repository gates, standard-libra
                          (trace_capture, ordered_reference, make_contract_vectors,
                          make_safetensors_fixture, check_engine_contract) and pinned
                          requirements
-docs/                    m0-decisions, trace-format, ir-schema, and one
-                         reference-<family>.md contract per model family
+docs/                    m0-decisions, m1-decisions, m2-decisions, trace-format,
+                         ir-schema, and one reference-<family>.md contract per model
+                         family. Decision records are per phase and are written before
+                         the code that depends on them.
 .github/                 CI: the tool suite, the two Markdown gates, and — on a runner
                          that meets the toolchain requirement, failing otherwise — the
                          Swift build and test
