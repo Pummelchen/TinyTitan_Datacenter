@@ -107,6 +107,8 @@ Clearing `.build/DISK_STOP` is a deliberate act: read it, free space, then `rm` 
 ## Build and run
 
 ```bash
+python3 tools/check_toolchain.py   # refuses anything but Xcode 27 with Swift 6.4
+
 swift build                  # release: swift build -c release
 swift test --no-parallel
 
@@ -160,9 +162,12 @@ any failure.
 
 ## Conventions
 
-- **Swift 6.4 on Xcode 27**: `swift-tools-version:6.4`, the Swift 6 language mode,
-  and no architectural changes to imported models. `tests/` mirrors `sources/` path
-  for path. The language-feature register is `DC-015`.
+- **Swift 6.4 on Xcode 27 — the only supported toolchain, with no exceptions.**
+  `swift-tools-version:6.4`, the Swift 6 language mode, **no version conditionals and no
+  lowered manifest floor**, so there is nothing to fall back to on an older toolchain;
+  `tools/check_toolchain.py` asserts the pairing and CI fails without it. And no
+  architectural changes to imported models. `tests/` mirrors `sources/` path for path.
+  The language-feature register is `DC-015`.
 - The `sources/` and `tests/` directories are lower-case and declared explicitly in
   `Package.swift`: SwiftPM's conventional capitals resolve silently on a
   case-insensitive disk and fail on a case-sensitive one.
@@ -195,9 +200,14 @@ any failure.
   wheel.
 - `.gitignore` excludes `models/`, `*.gturbo`, `.venv/`, `.wiki/`, `.inspect/`: model
   weights are never committed.
-- **The Swift CI gate is effectively a no-op today**: `macos-26` runner images carry
-  Xcode 26.x only, below the manifest's 6.4 floor, so the job prints a `::warning::`
-  and skips `swift build` and `swift test`. Run them locally.
+- **The Swift CI job has no skip branch, and that is deliberate.** `macos-26` runner
+  images carry Xcode 26.x, below the manifest's 6.4 floor, so the job **fails** there —
+  which is the correct signal: the runner cannot meet the project's toolchain. Do not
+  "fix" it with a warning-and-skip, a `#if swift(>=…)`, or a lowered manifest floor. The
+  step this replaced read `swift --version | tail -1` — the **target** line — so its
+  pattern could never match and it took its skip branch on every runner it ever saw;
+  `tools/check_toolchain.py` parses the output properly and its tests pin both halves of
+  that mistake. Run the gates locally, on Xcode 27.
 - **No architecture assertion exists anywhere in the repository**, and there is no
   release artifact to assert against — do not invent a `lipo` step.
 - **The public status of this repository has swung three times, and only the latest is

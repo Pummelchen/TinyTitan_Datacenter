@@ -27,9 +27,13 @@ later changes, and the contract comparison is verified on one prompt of five. Tr
 each capability below as intent plus whatever `docs/` measures. There are **no
 releases and no tags**.
 
-**On a toolchain below 6.4 none of this builds at all**: `swift-tools-version:6.4`
-cannot be parsed by Xcode 26.x, which is what the current `macos-26` CI image
-carries, so the Swift CI job prints a warning and skips. Build and test locally.
+**The toolchain is a requirement, not a preference: Xcode 27 with Swift 6.4, and
+nothing else.** There are no version conditionals in the sources and no lowered manifest
+floor to fall back on, and `tools/check_toolchain.py` refuses any other pairing — the CI
+job **fails** rather than warns, so a red Swift job means the runner image is below the
+standard, never that the code is broken. GitHub's `macos-26` image carries Xcode 26.x, so
+that job cannot pass until an image ships Xcode 27: it is the one gate that runs only
+where the requirement is met, and it says so out loud.
 
 ## What it does
 

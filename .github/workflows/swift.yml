@@ -27,6 +27,10 @@ jobs:
   build-test:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: macos-26
+    # `macos-26` because it is the newest label that exists; it carries Xcode 26.x, so the
+    # toolchain step below fails here until an image ships Xcode 27 — at which point this
+    # label moves to `macos-27` and nothing else changes. The failure is the point: it names
+    # the gap instead of letting a skipped check look like a passing one.
     steps:
       - uses: actions/checkout@v7
       - name: Select the newest Xcode on the image
@@ -45,18 +49,18 @@ jobs:
         run: |
           swift --version
           xcodebuild -version
-      - name: Build and test, when the image has the project's toolchain
-        # The project standard is Swift 6.4 on Xcode 27, and the manifest asks for
-        # swift-tools-version 6.4 — so a runner with 6.3.3 cannot build it at all.
-        # GitHub's macos-26 image carries Xcode 26.x only (checked: 26.0 … 26.5), so
-        # today this reports the gap and the gate runs locally on the farm. It starts
-        # gating by itself the day an image ships Xcode 27; nothing else has to change.
+      - name: Require the project toolchain — Xcode 27 with Swift 6.4
+        # There is no skip branch, deliberately. The project uses Xcode 27 with Swift 6.4 and
+        # supports no other toolchain, so a runner that cannot provide it must FAIL this job
+        # rather than warn and move on: a check that cannot run must never look like a check
+        # that passed. The step it replaces read `swift --version | tail -1` — the *target*
+        # line — so its pattern could never match and it took the skip branch on every runner
+        # it ever saw. `tools/check_toolchain.py` parses the output properly and refuses
+        # anything that is not the standard, with tests that pin both halves of that mistake.
+        run: python3 tools/check_toolchain.py
+      - name: Build and test
+        # Unconditional, because the step above has already established the toolchain. A red
+        # run here means the runner image is below the standard, not that the code is broken.
         run: |
-          version=$(swift --version 2>&1 | tail -1)
-          echo "$version"
-          if echo "$version" | grep -qE "Swift version 6\.([4-9]|[1-9][0-9])"; then
-            swift build
-            swift test --no-parallel
-          else
-            echo "::warning::runner toolchain is '$version'; the project standard is Swift 6.4 on Xcode 27, so the Swift gate cannot run here. It ran locally before the push (swift build && swift test), and this job is a no-op until a runner image carries Xcode 27."
-          fi
+          swift build
+          swift test --no-parallel

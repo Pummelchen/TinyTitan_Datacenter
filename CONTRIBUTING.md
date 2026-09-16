@@ -10,6 +10,12 @@ closes a gap `docs/m1-gate.md` names as unmeasured.
 
 ## Before you write code
 
+**The toolchain is Xcode 27 with Swift 6.4, and there are no exceptions.** The manifest is
+`swift-tools-version:6.4`, the sources carry no version conditionals and the floor is not
+negotiable; `python3 tools/check_toolchain.py` refuses any other pairing, locally and in CI.
+A pull request that adds a fallback for an older toolchain, or a warning-and-skip where a
+gate should run, will be closed rather than merged.
+
 Open an issue or a [discussion](https://github.com/Pummelchen/TinyTitan_Datacenter/discussions)
 first. The plan is deliberately gated: every phase ends with a measurement, and the
 next phase assumes the previous gate passed. A pull request that adds a feature
