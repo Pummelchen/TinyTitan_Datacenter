@@ -238,3 +238,46 @@ a baseline that can never run is a comment.
 test used `step_seconds_0` scalars — a shape no run writes. The real file has a `step_seconds` **list**, so
 the tool crashed while 19 tests passed. The test now uses the recorded shape, and an unexpected shape is
 reported NOT CHECKED with the command that produces it rather than becoming a traceback.
+
+## D41 — One command for the gates, and the counts come from the runs
+
+`DC-036` asked for "a Swift gate that actually runs on a clean machine". GitHub's hosted runners cannot meet
+the toolchain (their `macos-26` image carries Xcode 26.x, below the manifest's 6.4 floor), and that failure is
+the point rather than the problem — but it left the *substance* of the task unmet: the battery was a chain of
+commands run by hand, and a chain that is remembered rather than executed eventually skips a link.
+
+`tools/run_all_gates.py` is that battery in one command, and it does two things a list of commands cannot:
+
+* **the counts come from the runs.** It runs the Python and Swift suites first, parses their own output, and
+  hands those numbers to `check_status_claims.py`. For three rounds those numbers were typed in beside the
+  command, and twice they had gone stale. The class of mistake stops being possible instead of being watched
+  for — and on its very first use on another machine it **caught one**: the Python suite reported **288** where
+  the documentation said 276, because this round had just added twelve tests to it;
+* **a gap is named, not fatal.** A Python test file whose package is missing is reported NOT CHECKED by name,
+  and when that happens the documentation's counts are **not** compared at all — an incomplete run's total is
+  smaller than a complete one's, so comparing them would blame the documentation for what the machine lacks.
+
+**Run on a clean machine, and it passes.** The whole tree was staged on another farm node — one that has never
+built this checkout — and the battery ran there:
+
+```
+  toolchain        OK
+  markdown tables  OK
+  markdown links   OK
+  provenance       OK
+  python tests     288 test(s)
+  swift tests      186 test(s), 0 skipped, 0 failure(s)
+  status claims    OK
+```
+
+That is `DC-036`'s criterion met: **the Swift gate runs on a clean machine**, because the farm nodes carry the
+toolchain the manifest requires. What GitHub's hosted runner cannot do is now precisely stated rather than
+implied, and the same one command runs in both places — `--skip-swift` is the half a machine without Xcode 27
+can still do, and it is what the link job runs.
+
+**Two bugs the tool found in itself, both of the same kind.** It read the Swift summary with `search`, which
+returns the *first* `Executed …` line — a suite's six tests — and reported **13 of 186**; XCTest prints one
+line per suite and the total last, so it now parses the last. And its per-file Python invocation used
+`-m unittest tools.<file>`, which does not put `tools/` on the path, so nine **first-party** modules were
+reported as missing packages; it now runs each file the way `unittest discover` does. Both are the same
+mistake this project keeps meeting: an instrument that agrees with itself and not with the thing it measures.

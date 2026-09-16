@@ -137,11 +137,16 @@ python3 tools/check_toolchain.py   # refuses anything but Xcode 27 with Swift 6.
 swift build                  # release: swift build -c release
 swift test --no-parallel
 
+# Every gate, in one command, with the test counts read from the runs themselves rather than
+# typed in beside them. `--skip-swift` is the standard-library half, which is all a machine
+# without Xcode 27 can do (DC-036, D41).
+python3 tools/run_all_gates.py
+
 # The CI link gate: local links and #anchors, offline
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 186 --swift-skipped 0 --python-tests 276
+python3 tools/check_status_claims.py --swift-tests 186 --swift-skipped 0 --python-tests 288
 
 # The provenance position: no copied code, and no NOTICE to carry
 python3 tools/check_provenance.py

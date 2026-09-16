@@ -32,23 +32,11 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
-      - name: Test the repository tools
-        run: python3 -m unittest discover -s tools -v 2>&1 | tee tools.log
-      - name: Check the documentation's claims about the tools
-        # The number comes from the run that just happened, not from a literal in this file: a gate that
-        # hard-codes the count it is checking is a gate that has to be updated by the same person who
-        # forgot to update the documentation.
-        run: |
-          count=$(sed -n 's/^Ran \([0-9]*\) tests.*/\1/p' tools.log | tail -1)
-          if [ -z "$count" ]; then
-            echo "::error::could not read the test count from the suite output"
-            exit 1
-          fi
-          python3 tools/check_status_claims.py --python-tests "$count"
-      - name: Check Markdown links
-        run: python3 tools/check_markdown_links.py --verbose
-      - name: Check Markdown tables
-        run: python3 tools/check_markdown_tables.py
+      - name: Every gate that a machine without Xcode 27 can run
+        # One command, not a list maintained here beside the tools: the counts the documentation claims
+        # are read from the suites' own output by the runner, so this file cannot go stale against them.
+        # `--skip-swift` because `swift.yml` owns the Swift half.
+        run: python3 tools/run_all_gates.py --skip-swift
       - name: Check the wiki's tables too
         run: |
           # The wiki is a separate repository and is gitignored here, so the step above cannot see
