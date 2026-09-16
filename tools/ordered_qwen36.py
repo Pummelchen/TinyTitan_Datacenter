@@ -46,13 +46,19 @@ class SpecConfig(q35.SpecConfig):
         )
 
 
-def mixer_weights(names: dict, materialise) -> dict:
-    """One layer's roles, with the mixture in place of a dense feed-forward."""
+def mixer_weights(names: dict, materialise, provider=None) -> dict:
+    """One layer's roles, with the mixture in place of a dense feed-forward.
+
+    `provider` names a callable factory: given a tensor name it returns a callable that fetches one expert's
+    rows. With it the routed experts are never materialised as a stack; without it the whole layer is, which
+    is the form that does not fit on an 8 GB node for the real model. The shared expert is small either way.
+    """
     weights = q35.layer_weights(names, materialise)
+    stack = provider or materialise
     weights["mlp"] = {
         "router_weight": materialise(names["router.logits"]),
-        "gate_up": materialise(names["expert.stack_gate_up"]),
-        "down": materialise(names["expert.stack_down"]),
+        "gate_up": stack(names["expert.stack_gate_up"]),
+        "down": stack(names["expert.stack_down"]),
         "shared_gate": materialise(names["expert.shared.gate"]),
         "shared_up": materialise(names["expert.shared.up"]),
         "shared_down": materialise(names["expert.shared.down"]),
@@ -121,21 +127,36 @@ def text_model_forward(
 
 def streamed_text_forward(
     spec: dict, source, tokens, capture: dict | None = None, discrete: dict | None = None,
-    head_block: int = 8192
+    head_block: int = 8192, stream_experts: bool = False
 ) -> np.ndarray:
     """The text tower, one layer resident at a time, recording the router's decisions.
 
     `source.tensor(name)` returns a whole tensor in fp32 and `source.rows(name, start, end)` a
     row range — the same two operations the Swift engine's reader offers.
 
-    Note what this does *not* do yet: it materialises a whole layer's experts at once, which
-    for the real model is 3.2 GB in fp32 and does not fit on an 8 GB node. The streaming of
-    individual experts is M1's next piece (`DC-032`); this contract is the target that
-    streaming has to reproduce, and it runs on the tiny checkpoint.
+    With `stream_experts` it fetches the routed experts **by index** instead of materialising a layer's
+    stack, which for the real model is 3.2 GB in fp32 against about 4.5 GB usable per node. The values are
+    the same ones — one expert is one row of the stacked tensor — so the arithmetic is unchanged, and
+    `tools/test_ordered_qwen36.py` asserts the two paths produce byte-identical captures and decisions
+    rather than trusting that argument.
     """
     config = SpecConfig(spec["config"])
     names = q35.roles_by_block(spec)
     tokens = list(tokens)
+
+    def provider(name):
+        """Fetch one expert's rows on demand, so a layer's stack is never materialised.
+
+        Raises if the source cannot do row ranges: silently falling back to the whole stack would be the
+        kind of quiet substitution this project keeps writing tests against.
+        """
+        if not hasattr(source, "rows"):
+            raise SystemExit(f"the source cannot read rows, so experts cannot be streamed for {name}")
+
+        def fetch(expert: int) -> np.ndarray:
+            return source.rows(name, expert, expert + 1)[0]
+
+        return fetch
 
     def materialise(name):
         return source.tensor(name)
@@ -154,7 +175,7 @@ def streamed_text_forward(
         block = f"layer.{index:02d}"
         if capture is not None:
             capture[f"{block}.hidden_in"] = hidden
-        weights = mixer_weights(names[block], materialise)
+        weights = mixer_weights(names[block], materialise, provider if stream_experts else None)
         hidden = moe_decoder_layer(hidden, weights, config, index, cos, sin, mask, discrete)
         if capture is not None:
             capture[f"{block}.hidden_out"] = hidden

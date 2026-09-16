@@ -47,6 +47,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default="")
     parser.add_argument("--revision", default="")
     parser.add_argument(
+        "--stream-experts",
+        action="store_true",
+        help=(
+            "fetch the routed experts by index instead of materialising a layer's stack. For the real model "
+            "that stack is 3.2 GB in fp32 against about 4.5 GB usable per node, which is why the contract "
+            "could not be re-run here; the values are identical (one expert is one row of the stacked "
+            "tensor) and tools/test_ordered_moe.py asserts the two paths byte for byte."
+        ),
+    )
+    parser.add_argument(
         "--uncached",
         action="store_true",
         help=(
@@ -71,7 +81,9 @@ def main(argv: list[str] | None = None) -> int:
 
     captured: dict[str, np.ndarray] = {}
     decisions: dict[str, np.ndarray] = {}
-    q36.streamed_text_forward(spec, source, tokens, capture=captured, discrete=decisions)
+    q36.streamed_text_forward(
+        spec, source, tokens, capture=captured, discrete=decisions, stream_experts=args.stream_experts
+    )
 
     tensors = [(name, "f32", values.shape, values.tobytes()) for name, values in captured.items()]
     discrete = [

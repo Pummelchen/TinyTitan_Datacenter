@@ -542,3 +542,44 @@ resource runs out first, and fixing the named one does not fix the run: the page
 it exposed the memory underneath. The way to settle a blocker is to attempt the thing and watch it, not to
 reason about which of its parts is fatal — the attempt cost ninety seconds and produced a better blocker than
 three rounds of inference.
+
+## D48 — The M1 gate fails on today's artifacts, and the divergence is in layer 0
+
+`DC-111` asked whether the engine still reproduces the contract. It does not, and now that is a measurement
+rather than an inference — because two blockers had to be removed before the question could be asked at all.
+
+**The blockers were different, and the first hid the second.** The first was a page cache: the reference read
+the checkpoint through `safe_open`, which memory-maps a 67 GB file on an 8 GB node (`D47`). Removing it — with
+a `pread` reader proven byte-identical to `safe_open` on a real shard — did **not** make the run work, and
+that is how the second was found: the reference materialised a whole layer's experts, 3.2 GB in fp32, and the
+attempt drove swap to 5.1 GB and free disk from 11.8 GB to 8.0 GB in a minute. The routed experts are now
+fetched **by index**, which is the same fact `DC-032` used on the engine side: the checkpoint's leading axis
+*is* the expert, so one expert is one row. The kernel already accumulated in ascending expert index and
+already indexed `gate_up[expert]`; only the materialisation was whole.
+
+**The streaming is not a hypothesis.** `tools/test_ordered_moe.py` asserts that the array path and the
+provider path produce byte-identical output, and that the provider is asked only for the experts that were
+chosen. And on the **real model**, the contract produced with the streamed reference is **IDENTICAL** to the
+contract produced before these changes with the stacked one — 83 tensors, 0 elements, 40 decisions. A change
+that reads less and computes the same thing is worth making and worth proving.
+
+**What the re-run found.** The fresh contract and today's engine differ by **40 discrete decisions and 1
+float** — the same divergence as against the stale contract, so it is real. In the differ's order:
+
+```
+float     layer.00.hidden_out  element 0: reference -0.006576654966920614,
+                                          candidate -0.005132569000124931, 3101151 ULP apart
+discrete  layer.00.router.topk missing [231, 71], unexpected [72, 19]
+```
+
+`layer.00.hidden_in` matches, so the embedding is not the cause: the difference is **inside layer 0**, at
+**token 0, channel 0**. It is 28% relative and 0.0014 absolute — a boundary or a rounding difference, not a
+structural one — and layer 0 of this family is a **Gated DeltaNet** layer, whose causal convolution has its
+boundary exactly there. The router then flips marginally and the discrete decisions cascade through all forty
+layers: the failure mode `I3` exists to catch, arriving through a single element.
+
+**What this changes about the objective.** M1 is not "passing, historically" and it is not "unverifiable
+here": it is **failing, reproducibly, with the first divergence localised to one layer and one token**, and
+the instrument that shows it now runs on this node in two minutes. The next step is a bisect inside layer 0 —
+the trace captures layer boundaries, so the reference needs internal capture points — with the convolution's
+boundary and the recurrent state's first step as the two named candidates.

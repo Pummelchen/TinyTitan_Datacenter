@@ -69,6 +69,13 @@ def experts(
 
     `gate_up` is `[experts, 2·intermediate, hidden]` with the gate in the **first** half,
     `down` is `[experts, hidden, intermediate]`.
+
+    Either may also be a **provider**: a callable taking an expert index and returning that expert's rows.
+    The layout makes this cheap — the checkpoint's leading axis *is* the expert, so one expert is one row of
+    the stacked tensor — and it is what lets the reference run where a layer's stack does not fit: the real
+    model's `gate_up` is 3.2 GB in fp32 against about 4.5 GB usable per node, and no account of the
+    arithmetic changes when the same values arrive one expert at a time. `DC-032` did the same thing on the
+    engine side; this is the contract catching up with it.
     """
     hidden = f32(hidden)
     tokens = hidden.shape[0]
@@ -80,14 +87,17 @@ def experts(
         for rank in range(indices.shape[1]):
             pairs.setdefault(int(indices[token, rank]), []).append((token, rank))
 
+    def expert_rows(tensor, expert: int) -> np.ndarray:
+        return tensor(expert) if callable(tensor) else tensor[expert]
+
     for expert in sorted(pairs):
         rows = [token for token, _ in pairs[expert]]
         current = hidden[rows]
-        fused = ordered_matmul(current, gate_up[expert])
+        fused = ordered_matmul(current, expert_rows(gate_up, expert))
         half = fused.shape[-1] // 2
         gate, up = fused[:, :half], fused[:, half:]
         activated = f32(silu(gate) * up)
-        projected = ordered_matmul(activated, down[expert])
+        projected = ordered_matmul(activated, expert_rows(down, expert))
         for position, (token, rank) in enumerate(pairs[expert]):
             output[token] = f32(output[token] + f32(projected[position] * weights[token, rank]))
     return output

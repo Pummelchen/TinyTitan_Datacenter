@@ -1,10 +1,35 @@
 # The M1 gate
 
-**Status update, 2026-09-17: the gate is NOT current.** Re-running it against today's artifacts, the
-engine and the contract **differ — 40 discrete decisions and 1 float** — so the milestone cannot be called
-passing until it is re-established. The recorded pass below is real and was real; it belongs to the
-artifacts of 16 September 01:5x, and both the install and the engine have changed since. Nothing here has
-been rewritten: the pass is kept, and this is what a re-check found.
+**Status update, 2026-09-17 (later): the gate FAILS on today's artifacts, and the failure is localised.**
+The earlier update said "not current" because the only comparison available used a contract predating the
+changes. That gap is now closed: the contract was **re-run** — see below for how, since it had been
+impossible — and it still differs from the engine by **40 discrete decisions and 1 float**. So this is not a
+stale artifact. The milestone does not hold today, and the divergence is small enough to hunt.
+
+**The first divergence, in the differ's own order:**
+
+```
+float     layer.00.hidden_out  element 0: reference -0.006576654966920614,
+                                          candidate -0.005132569000124931, 3101151 ULP apart
+discrete  layer.00.router.topk missing [231, 71], unexpected [72, 19]  (and 39 more layers)
+```
+
+`layer.00.hidden_in` **matches**, so the divergence is not in the embedding: it is **inside layer 0**, at
+**token 0, channel 0** — 28% relative but only 0.0014 absolute, which is what a boundary or a rounding
+difference looks like rather than a structural one. Layer 0 of this family is a **Gated DeltaNet** layer,
+whose causal convolution has its boundary at token 0. From there the router flips marginally and the
+decisions cascade for all forty layers, which is exactly the failure mode `I3` exists to catch.
+
+**And the re-run is no longer a hazard, which is what made this possible.** Two changes: the reference can
+read the checkpoint through `pread` instead of `safe_open`'s mmap (`D47`), and it can fetch the routed
+experts **by index** instead of materialising a layer's 3.2 GB stack (`D48`). With both, the contract run
+finishes in about two minutes with swap **flat at ~1.2 GB** and disk **steady at 11 GB**, where the attempt
+without them drove swap to 5.1 GB and disk down to 8.0 GB in a minute. The streaming change is proven
+arithmetically invisible on the **real model**: the contract produced with the streamed reference is
+**IDENTICAL** to the one produced with the stacked reference — 83 tensors, 0 elements, 40 decisions.
+
+The recorded pass below is real and was real; it belongs to the artifacts of 16 September 01:5x. Nothing
+here has been rewritten: the pass is kept, and this is what re-checking it found.
 
 The evidence, measured today:
 

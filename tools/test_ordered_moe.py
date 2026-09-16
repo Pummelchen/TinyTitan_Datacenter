@@ -200,3 +200,51 @@ class MixtureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProviderEquivalenceTests(unittest.TestCase):
+    """Reading experts one at a time must be arithmetically invisible.
+
+    `DC-032` did this on the engine side; this is the contract side of the same fact: the routed experts may
+    arrive as a stack or be fetched by index, because the values are the same values — one expert is one row
+    of the stacked tensor. That argument is easy to make and cheap to check, so it is checked: every captured
+    number, as bytes, from both paths.
+    """
+
+    def weights(self, seed: int = 3):
+        import ordered_moe as moe
+
+        rng = np.random.default_rng(seed)
+        hidden = rng.standard_normal((5, 8)).astype(np.float32)
+        stack_gate_up = rng.standard_normal((4, 6, 8)).astype(np.float32)
+        stack_down = rng.standard_normal((4, 8, 3)).astype(np.float32)
+        # Deliberate rather than random: two of four experts, so "fewer than the stack holds" is a fact
+        # about the data instead of a coincidence of the seed.
+        indices = np.array([[0, 1], [1, 0], [0, 1], [1, 0], [0, 1]], dtype=np.int64)
+        weights = rng.random((5, 2)).astype(np.float32)
+        return moe, hidden, stack_gate_up, stack_down, indices, weights
+
+    def test_a_provider_gives_byte_identical_output(self) -> None:
+        moe, hidden, stack_gate_up, stack_down, indices, weights = self.weights()
+        from_stack = moe.experts(hidden, stack_gate_up, stack_down, indices, weights)
+        by_index = moe.experts(
+            hidden,
+            lambda expert: stack_gate_up[expert],
+            lambda expert: stack_down[expert],
+            indices,
+            weights,
+        )
+        self.assertEqual(from_stack.tobytes(), by_index.tobytes())
+
+    def test_the_provider_is_asked_only_for_the_experts_that_were_chosen(self) -> None:
+        """A provider that is asked for a whole stack has not solved anything."""
+        moe, hidden, stack_gate_up, stack_down, indices, weights = self.weights()
+        asked: list[int] = []
+
+        def provider(expert: int) -> np.ndarray:
+            asked.append(expert)
+            return stack_gate_up[expert]
+
+        moe.experts(hidden, provider, lambda expert: stack_down[expert], indices, weights)
+        self.assertEqual(asked, sorted(set(int(index) for index in indices.flatten())))
+        self.assertLess(len(set(asked)), stack_gate_up.shape[0], "fewer experts than the stack holds")

@@ -26,9 +26,10 @@ exists and some evidence does not; `not applicable yet` — the model or phase i
 **Evidence.** M0 matched the reference implementation on `Qwen/Qwen3.5-2B` with **40,683,520 bytes
 identical** over three frozen prompts (`docs/m0-gate.md`). M1's trace on the real 35 B model **was**
 byte-identical to the contract — 83 tensors, 40 discrete decisions, digest `b8c976c5e7ba8816…`
-(`docs/m1-gate.md`) — and a re-check on 2026-09-17 found today's engine differing by 40 discrete decisions
-and 1 float. That evidence is therefore **historical until `DC-111` re-establishes it**, and this audit says
-so rather than counting a stale pass. M2 produced that same digest from **half the experts on each of two machines**
+(`docs/m1-gate.md`) — and a re-check on 2026-09-17, against a contract **re-run** on the current
+artifacts, found the engine differing by 40 discrete decisions and 1 float: a real divergence, not a stale
+comparison. That evidence is therefore **failing**, and this audit says so rather than counting it
+(`DC-111`). M2 produced that same digest from **half the experts on each of two machines**
 (`b0d382dbabf36df0…` for the shared prompt, `docs/m2-decisions.md`), and the four-node mesh reproduced the
 single-node trace exactly. The GPU unpack is asserted **bit-identical** to the scalar one across a grid of
 shapes (`MetalUnpackTests`), and the reduction is asserted to be bit-identical across arrival orders and
