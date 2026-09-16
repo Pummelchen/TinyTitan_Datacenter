@@ -19,6 +19,7 @@ from run_all_gates import (  # noqa: E402
     parse_swift_summary,
     python_test_files,
     run_python_tests,
+    swift_failure_names,
 )
 
 # Copied from a real run, per-suite lines and all.
@@ -117,3 +118,27 @@ class TestDiscoveryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SwiftFailureNameTests(unittest.TestCase):
+    """A failure has to be identifiable, or a flake is a mystery.
+
+    This runner once reported "1 failure(s)" with no name; that failure has not recurred, so it can never be
+    explained. The parser is tested against the line XCTest actually prints.
+    """
+
+    def test_a_failure_line_is_read_with_its_reason(self) -> None:
+        line = ("/tmp/x/Tests.swift:219: error: -[DatacenterEngineTests.TCPTransportTests testX] : "
+                "XCTAssertEqual failed: (\"a\") is not equal to (\"b\")")
+        self.assertEqual(
+            swift_failure_names(line),
+            ["DatacenterEngineTests.TCPTransportTests testX: XCTAssertEqual failed: (\"a\") is not equal to (\"b\")"],
+        )
+
+    def test_output_without_failures_names_nothing(self) -> None:
+        self.assertEqual(swift_failure_names(REAL_SWIFT_TAIL), [])
+
+    def test_an_empty_reason_still_names_the_test(self) -> None:
+        self.assertEqual(
+            swift_failure_names("error: -[Suite testY] :"), ["Suite testY: failed"]
+        )

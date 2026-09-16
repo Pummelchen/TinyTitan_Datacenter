@@ -328,3 +328,57 @@ copied here". It is right; the caller was wrong. It now **announces what it is a
 starts, which is the difference between a mystery and a message. And the run's output was invisible because
 it was piped into `tail`, which buffers: the pipeline lesson recorded in the previous round, applied one
 round late.
+
+## D43 — A killed node, and what the survivor actually says
+
+`D19`'s failure rules were asserted with a transport whose peer is a Swift object that can be told to go
+quiet. Last round showed that an in-process peer can be wrong about a real socket, so the rules were finally
+tested the way a cluster fails: a **two-node run on the real install, with one node's process killed
+mid-exchange**.
+
+**The run failed the way it should.** The survivor exited with a named failure and did not hang — which is
+last round's fix doing its work under a genuine `kill` rather than a simulated one:
+
+```
+node 0 failed (exit 2):
+datacenter-generate: generation failed: connection reset by peer: the peer's process is gone, not merely quiet
+node 1 failed (exit 255):
+no output: exit 255, which is what `ssh` reports when the remote command was killed
+```
+
+**Three things were wrong, and the first run said so.**
+
+* **A reset had no name.** A killed process does not close politely: the kernel answers with RST, and the
+  transport reported it as a generic `socket error` carrying an errno. `ContributionTransportError.reset`
+  now exists for it, `readChunk` maps `ECONNRESET` and `send` maps `EPIPE` and `ECONNRESET`, and the
+  exchange's decision logic is unchanged — a reset fails the run exactly as a closed connection does. What
+  improved is the *diagnosis*: "the peer's process is gone, not merely quiet" is a sentence an operator can
+  act on, and a socket error is not.
+* **An empty failure is not a failure message.** The harness printed `node 1 failed:` followed by a blank
+  line, because a killed process has no stderr. It now says what it knows, including what `255` means —
+  and that number is `ssh`'s, not "128 + signal 127", which was the first version of the explanation and
+  arithmetic on a number that never meant it.
+* **Using a closed transport crashed the process.** `close()` was added so a test could make the kernel send
+  RST rather than a FIN, and a test of its idempotence found that a second use raises an Objective-C
+  exception from `FileHandle.fileDescriptor` — "Operation now in progress" — which **Swift cannot catch**.
+  A closed transport now refuses with `.closed` before touching the handle, which is the same reasoning that
+  put `SO_NOSIGPIPE` on the descriptor: this project cannot afford a failure that presents as a crash.
+
+**Two tests were wrong, and they were removed or rewritten rather than weakened.**
+
+* Asserting *which* of `.reset` and `.closed` a killed peer produces asserts the kernel's choice, and not
+  every path chooses the same one: the same two tests passed in a filtered run and failed in a full one.
+  They now assert the contract the exchange acts on — the peer is **gone**, so the run fails and does not
+  retry, and `.timedOut` is the one answer that would mean something else. The platform decides the wording;
+  the rule is ours.
+**A transient failure this round, stated as one.** During one battery run the Swift suite reported **one
+failure**, and three consecutive runs afterwards reported none. Which test it was cannot be recovered: the
+runner summarised it as "1 failure(s)" and threw the name away, so a flake became a mystery instead of a bug
+report. That is fixed first — the runner now reads the failing test's name and reason out of XCTest's own
+line and prints them — and the failure itself is recorded here as **unexplained**, not as absent. If it
+recurs it will arrive with a name attached.
+
+* The write-side twin cannot be a test. A small frame is buffered successfully before the RST arrives, so
+  "the write eventually fails" is a property of how long the kernel takes, and a test that loops until it
+  does is asserting a race. It was removed with that reason written where it stood; the mapping it found
+  (both `EPIPE` and `ECONNRESET`) stayed.

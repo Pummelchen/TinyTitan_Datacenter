@@ -201,6 +201,57 @@ final class TCPTransportTests: XCTestCase {
         close(peer)
     }
 
+    /// The case the farm produced: a peer process **killed** rather than closed.
+    ///
+    /// The kernel answers a close with unread data in the receiving buffer by sending RST, which is what
+    /// `kill` on a node in mid-exchange actually causes. It is not a polite EOF, and it deserves its own
+    /// name: "connection reset by peer: the peer's process is gone, not merely quiet" is the sentence an
+    /// operator can act on, and it is the sentence a generic `socket error` does not produce.
+    func testAPeerThatDiesWithUnreadDataIsReportedAsReset() throws {
+        let (client, server, _) = try pair()
+        let frame = try ContributionWire.encode(
+            [ExpertContribution(token: 0, expert: 1, values: [1, 2], scale: 1)], tokens: 1, hiddenSize: 2
+        )
+        // The client will never read this, so its close is a reset rather than a shutdown.
+        try server.send(frame)
+        client.close()
+        // **Which** of the two a killed peer produces is the kernel's decision — a close with unread data
+        // often sends RST, but not on every path, and these tests passed and then failed across two runs of
+        // the same suite before this assertion was written to match the contract instead of the platform.
+        // What must hold is the rule the exchange acts on: the peer is **gone**, so the run fails and does
+        // not retry. `.timedOut` is the one answer that would mean something else.
+        XCTAssertThrowsError(try server.receive()) { error in
+            let gone = error as? ContributionTransportError
+            XCTAssertTrue(
+                gone == .reset || gone == .closed,
+                "a peer that dies is gone (reset or closed), never a clean timeout: got \(String(describing: gone))"
+            )
+        }
+    }
+
+    // A write-side twin of the test above was written and then **removed**, deliberately. It is not a
+    // property that can be asserted: a small frame is buffered successfully before the peer's RST arrives,
+    // so "the write eventually fails" depends on how long the kernel takes, and a test that loops until it
+    // does is asserting a race. `send` maps both `EPIPE` and `ECONNRESET` to `.reset` — found by that test
+    // — and the read side, which *is* deterministic, is what holds the contract.
+
+    func testClosingATransportTwiceIsNotAnError() throws {
+        let (client, _, _) = try pair()
+        client.close()
+        client.close()
+        // The descriptor must not be closed twice, and a recycled descriptor must not be closed by
+        // accident — the second call is a no-op rather than a bug that appears once a year. Use after
+        // close must also be a **Swift error**: `FileHandle.fileDescriptor` raises an Objective-C
+        // exception on a closed handle, which Swift cannot catch, so this would otherwise crash the
+        // process instead of failing a run.
+        XCTAssertThrowsError(try client.receive()) { error in
+            XCTAssertEqual(error as? ContributionTransportError, .closed)
+        }
+        XCTAssertThrowsError(try client.send(Data([1, 2, 3]))) { error in
+            XCTAssertEqual(error as? ContributionTransportError, .closed)
+        }
+    }
+
     func testAcceptTimesOutWhenNobodyConnects() throws {
         let listener = try TCPListener(port: 0)
         let started = Date()

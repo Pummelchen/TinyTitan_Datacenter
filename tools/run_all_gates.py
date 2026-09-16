@@ -83,6 +83,25 @@ def run_python_tests(tools: Path = TOOLS, python: str | None = None) -> tuple[in
     return total, problems, not_checked, detail
 
 
+SWIFT_FAILURE = re.compile(r"error: -\[([^\]]+)\]\s*:?\s*(.*)")
+
+
+def swift_failure_names(output: str) -> list[str]:
+    """Which tests failed, because a count is not a diagnosis.
+
+    This runner reported "1 failure(s)" with no name when the suite failed once during a battery run — and
+    that failure has not recurred in three consecutive runs since, so it can never be explained. A gate that
+    cannot say *what* failed turns a flake into a mystery.
+    """
+    names: list[str] = []
+    for line in output.splitlines():
+        match = SWIFT_FAILURE.search(line)
+        if match is not None:
+            detail = match.group(2).strip() or "failed"
+            names.append(f"{match.group(1)}: {detail}")
+    return names
+
+
 def parse_swift_summary(output: str) -> tuple[int, int, int] | None:
     """`(tests, skipped, failures)` from the **overall** summary line, or None.
 
@@ -111,7 +130,14 @@ def run_swift_tests(swift: str = "swift") -> tuple[int | None, int | None, list[
         tail = "\n".join(output.strip().splitlines()[-6:])
         return None, None, [f"swift test did not report a count: {tail}"], "no count"
     tests, skipped, failures = parsed
-    problems = [] if result.returncode == 0 and failures == 0 else [f"swift test: {failures} failure(s)"]
+    if result.returncode == 0 and failures == 0:
+        problems: list[str] = []
+    else:
+        names = swift_failure_names(output)
+        problems = [
+            f"swift test: {failures} failure(s)"
+            + (": " + "; ".join(names) if names else " (no failure line named — the output has been lost)")
+        ]
     return tests, skipped, problems, f"{tests} test(s), {skipped} skipped, {failures} failure(s)"
 
 

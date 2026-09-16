@@ -34,6 +34,10 @@ public enum ContributionTransportError: Swift.Error, CustomStringConvertible, Eq
     case frameTooLarge(Int)
     case truncated(needed: Int, got: Int)
     case closed
+    /// The peer's process died rather than closing politely: the kernel sends RST, which is what a
+    /// killed node actually produces. It fails the run exactly as `.closed` does — only the diagnosis
+    /// differs, and "reset" is the more specific fact an operator wants.
+    case reset
     /// A peer that did not answer inside its deadline.
     ///
     /// The flag is the diagnosis that matters: waiting for a frame that never starts is a silent or
@@ -51,6 +55,8 @@ public enum ContributionTransportError: Swift.Error, CustomStringConvertible, Eq
             return "connection ended mid-frame: \(got) of \(needed) bytes"
         case .closed:
             return "connection closed"
+        case .reset:
+            return "connection reset by peer: the peer's process is gone, not merely quiet"
         case .timedOut(let midFrame):
             return midFrame
                 ? "peer stopped part-way through a frame, so the stream is desynchronised"
@@ -72,6 +78,7 @@ public final class SocketContributionTransport: ContributionTransport {
 
     private let handle: FileHandle
     private var timeoutMilliseconds: Int32
+    private var isClosed = false
 
     /// - Parameter timeoutMilliseconds: how long a `receive` waits for a peer. `poll` is used rather
     ///   than `SO_RCVTIMEO` so the deadline applies per chunk and the *reason* for a stop is visible:
@@ -91,6 +98,11 @@ public final class SocketContributionTransport: ContributionTransport {
     }
 
     public func send(_ frame: Data) throws {
+        // Refuse **before** touching the handle. After `close()`, `FileHandle.fileDescriptor` raises an
+        // Objective-C exception — "Operation now in progress" — which Swift cannot catch, so using a closed
+        // transport would kill the process rather than report anything. That is the same ambiguity
+        // `SO_NOSIGPIPE` exists to avoid on the write path, and a Swift error is the only honest answer.
+        guard !isClosed else { throw ContributionTransportError.closed }
         guard frame.count <= Self.maximumFrameBytes else {
             throw ContributionTransportError.frameTooLarge(frame.count)
         }
@@ -104,11 +116,30 @@ public final class SocketContributionTransport: ContributionTransport {
             try handle.write(contentsOf: Data(prefix))
             try handle.write(contentsOf: frame)
         } catch {
+            // `SO_NOSIGPIPE` turns a write to a dead peer into `EPIPE` rather than a signal, so this is
+            // the send-side half of the same fact the read side reports as `.reset`. A write can also fail
+            // with `ECONNRESET` rather than `EPIPE` depending on what the kernel already learned — the test
+            // that wrote repeatedly to a dead peer found the mapping incomplete, which is the point of
+            // having one.
+            if errno == EPIPE || errno == ECONNRESET { throw ContributionTransportError.reset }
             throw ContributionTransportError.socket("\(error)")
         }
     }
 
+    /// Close the connection deliberately, and idempotently.
+    ///
+    /// `deinit` already closes it, but a node that wants to disconnect — or a test that needs the kernel
+    /// to send RST rather than a polite FIN — cannot wait for a reference to go out of scope. Calling it
+    /// twice is not an error: a double `close(2)` on a recycled descriptor is exactly the kind of bug that
+    /// appears once a year in production.
+    public func close() {
+        guard !isClosed else { return }
+        isClosed = true
+        try? handle.close()
+    }
+
     public func receive() throws -> Data {
+        guard !isClosed else { throw ContributionTransportError.closed }
         let prefix = try readExactly(4, midFrame: false)
         let length = Int(prefix[prefix.startIndex])
             | (Int(prefix[prefix.startIndex + 1]) << 8)
@@ -154,6 +185,7 @@ public final class SocketContributionTransport: ContributionTransport {
         }
         if got > 0 { return Data(buffer[0..<got]) }
         if got == 0 { return nil }
+        if errno == ECONNRESET { throw ContributionTransportError.reset }
         throw ContributionTransportError.socket("read failed: \(String(cString: strerror(errno)))")
     }
 

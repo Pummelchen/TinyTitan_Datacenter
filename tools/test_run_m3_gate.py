@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from run_m3_gate import LOAD, farm_state, load_average, speedup  # noqa: E402
+from run_m3_gate import LOAD, farm_state, load_average, signal_explanation, speedup  # noqa: E402
 
 
 class SpeedupTests(unittest.TestCase):
@@ -73,3 +73,31 @@ class LoadParsingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EmptyFailureTests(unittest.TestCase):
+    """A node that reports nothing must still produce a sentence.
+
+    Found by killing a peer mid-exchange: the harness printed `node 1 failed:` followed by a blank line,
+    which reads like the tool lost the message rather than like the process was killed.
+    """
+
+    def test_a_signalled_process_is_named_as_such(self) -> None:
+        self.assertIn("signal 9", signal_explanation(-9))
+
+    def test_a_shell_style_exit_code_is_decoded(self) -> None:
+        self.assertIn("128 + signal 9", signal_explanation(137))
+
+    def test_ssh_255_is_described_as_ssh(self) -> None:
+        """255 is `ssh`'s code, not "128 + signal 127": that arithmetic was in the first version of this."""
+        explanation = signal_explanation(255)
+        self.assertIn("ssh", explanation)
+        self.assertNotIn("signal 127", explanation)
+
+    def test_an_ordinary_nonzero_exit_says_the_process_died_before_reporting(self) -> None:
+        self.assertIn("before it could report", signal_explanation(1))
+
+    def test_every_explanation_says_something(self) -> None:
+        for code in (-15, -9, 137, 1, 2):
+            with self.subTest(code=code):
+                self.assertTrue(signal_explanation(code).strip())

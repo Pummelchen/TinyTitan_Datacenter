@@ -65,6 +65,25 @@ def load_average(target: str, local: bool = False, timeout: int = 15) -> float |
     return float(match.group(1)) if match else None
 
 
+def signal_explanation(returncode: int) -> str:
+    """Why a node reported nothing, in words, because "no output" is a fact worth stating.
+
+    A process killed by a signal has no stderr of its own: the shell reports it as a negative return code,
+    or 128 + the signal number. Saying so is the difference between "the peer was killed" and "the tool
+    lost the message".
+    """
+    if returncode < 0:
+        return f"no output: the process was killed by signal {-returncode}"
+    if returncode == 255:
+        # 255 is `ssh`'s own code for "the remote command failed or the connection died", not a signal:
+        # the first version of this said "128 + signal 127", which is arithmetic on a number that never
+        # meant that. When a peer is killed with `pkill`, this is the exit the harness sees.
+        return "no output: exit 255, which is what `ssh` reports when the remote command was killed"
+    if returncode > 128:
+        return f"no output: exit {returncode}, which a shell reports as 128 + signal {returncode - 128}"
+    return "no output, and no error message: the process died before it could report"
+
+
 def _install_bytes(install: Path) -> int:
     """The size of an install, for the one message that says how much is about to be copied."""
     total = 0
@@ -217,7 +236,11 @@ def main(argv: list[str] | None = None) -> int:
             failed = True
             continue
         if process.returncode != 0:
-            print(f"node {index} failed:\n{stderr}", file=sys.stderr)
+            # An empty reason is not a reason. A node that was killed reports nothing, and printing a blank
+            # line after "node 1 failed:" reads like the tool lost the message rather than like the process
+            # was shot — which is what happened when a peer was killed mid-exchange to test the failure path.
+            detail = stderr.strip() or signal_explanation(process.returncode)
+            print(f"node {index} failed (exit {process.returncode}):\n{detail}", file=sys.stderr)
             failed = True
     if failed:
         print("M3 GATE FAILED: the cluster could not complete the run", file=sys.stderr)
