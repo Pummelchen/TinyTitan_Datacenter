@@ -1604,3 +1604,56 @@ catch at open. The generalisation is not "be more careful": it is that a quantit
 needs its own check, because the check on the input says nothing about the derivation. `geometry()` was right
 and verified; `_rows_per_index` was wrong and unchecked; the fixture's whole value was that it made the
 difference visible at all.
+
+## D73 — M1's gate passes on the real checkpoint, on this node, and the other half of the safe pair was missing
+
+`docs/m1-gate.md` records what made a real-model contract run survivable: **both** flags together. "With both, the
+contract run finishes in about two minutes with swap flat at ~1.2 GB and disk steady at 11 GB, where the attempt
+without them drove swap to 5.1 GB and disk down to 8.0 GB in a minute." The gate passed **neither** for the
+checkpoint path. `D69` added the first, `--stream-experts`, because an install refuses to materialise a stack;
+this round found the second missing.
+
+**The checkpoint path was mapping 67 GB.** Without `--uncached` the contract falls through to `SafetensorsSource`,
+which uses `safe_open` and therefore **maps** the file — and the node's own rules say it plainly: a read that does
+not go through `UncachedFile`/`open_uncached` "still is the old hazard". So the gate's checkpoint runs were the
+hazardous variant the doc warns about, while `uncached_safetensors.py` sat there saying "never mmap, so a contract
+run does not fill the page cache".
+
+**Measured before changed.** The contract on the checkpoint, with both flags:
+
+```
+66.20 real   58.05 user   2.42 sys     397,344,768  maximum resident set size
+```
+
+0.397 GB, against the 4.16 GB `docs/m1-gate.md` recorded before either flag existed. Then the gate itself, one
+prompt: `IDENTICAL — 83 tensor(s), 0 element(s), 40 discrete decision(s) checked (matching digests)`, engine
+34.5 s, peak 3.71 GB.
+
+**And then the whole thing, which is what this round is for.** All five frozen prompts, on the real checkpoint,
+on this 8 GB node:
+
+| prompt | tokens | engine | peak RSS | |
+| --- | --- | --- | --- | --- |
+| capital | 5 | 34.94 s | 3.79 GB | IDENTICAL |
+| arithmetic | 33 | 89.65 s | 3.76 GB | IDENTICAL |
+| code | 40 | 115.92 s | 3.63 GB | IDENTICAL |
+| repeat | 60 | 128.13 s | 3.60 GB | IDENTICAL |
+| long | 67 | 146.26 s | 3.67 GB | IDENTICAL |
+
+`GATE PASSED`, 83 tensors and 40 discrete decisions on every one. The engine's digest for the first prompt is
+`b8c976c5e7ba8816…` — **the figure `docs/m1-gate.md` recorded for this pair on 2026-09-16**, still reproduced
+after the GPU unpack became the default and every contract matmul went through a chooser. Expert traffic runs
+2,240 to 8,040 requests and 3.5 to 12.6 GB of elements read, with a cache hit rate of **0** on every prompt,
+which is `D31`'s finding arriving again from a different direction.
+
+**A correction I made within the hour, because the measurement said so.** I first re-based this path's
+declaration on the contract's 0.397 GB and set it to 1.5 GB. The gate's own peak — **3.79 GB** — proved that
+wrong immediately: streaming made the *contract* cheap, but a checkpoint run's peak is the **engine's** trace
+over bf16 weights. The declaration went back to 4.2 GB with the measurement that now justifies it, because an
+under-declared guard admits a job the machine cannot take, which is worse than a conservative one. It is `D71`'s
+lesson in another register: measure the thing the number is about, not the thing that was easy to measure.
+
+**What this supersedes.** `D65` concluded that M1's gate "belongs on a machine with more memory" because it maps
+70 GB. For the **checkpoint** path that is no longer true: it ran here, in about eight minutes of engine time
+plus the contracts, with both flags. What remains specific to this node is the **install** path, where the
+contract's per-row Python reads make the same run take hours (`DC-114`) — a cost, not a correctness problem.

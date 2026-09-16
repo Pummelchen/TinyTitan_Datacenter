@@ -142,10 +142,13 @@ def main(argv: list[str] | None = None) -> int:
     else:
         family = json.loads((args.snapshot / "config.json").read_text()).get("model_type", "")
         kind = "checkpoint"
-        # 4.16 GB is the checkpoint path's measured peak RSS (`docs/m1-gate.md`), taken *before* the contract
-        # streamed expert stacks. That measurement is now stale in the safe direction, and it stays as it is:
-        # a guard lowered to a number nobody has measured is a guard weakened, and re-measuring the
-        # checkpoint path is its own job.
+        # 4.2 GB is the checkpoint path's measured peak, and the measurement was redone this round rather
+        # than inherited. The *contract* half is now cheap -- 0.397 GB for a five-token prompt, streaming its
+        # experts and reading through `pread`, against the 4.16 GB `docs/m1-gate.md` recorded before either
+        # flag existed -- but the gate's peak is **3.71 GB**, because the **engine's** trace over the bf16
+        # checkpoint is what a checkpoint run actually costs. So streaming lowered the contract and the
+        # declaration stays where the engine puts it: an under-declared guard admits a job the machine cannot
+        # take, which is worse than a conservative one.
         needs_gb = 4.2
 
     require_heavy_headroom(needs_gb, purpose=f"the M1 gate on the {kind}")
@@ -197,6 +200,12 @@ def main(argv: list[str] | None = None) -> int:
             # layer is gigabytes. Without this flag the contract half of this gate could not run against an
             # install, and nothing had ever asked it to.
             "--stream-experts",
+            # `--uncached` is the other half of the pair `docs/m1-gate.md` records: without it the checkpoint
+            # path goes through `safe_open`, which *maps* the file. The gate passed this flag for neither, so
+            # its checkpoint runs mapped 67 GB and its install runs refused the stacks -- and the doc's own
+            # incident, swap to 5.1 GB and disk to 8.0 GB in a minute, is what happens without both. The
+            # install branch ignores this flag, because the install branch is chosen first.
+            *(["--uncached"] if kind == "checkpoint" else []),
             "--spec", str(spec_path), "--tokens", tokens_arg, "--model", args.model, "--revision", args.revision,
         ])
         if contract.returncode != 0:
