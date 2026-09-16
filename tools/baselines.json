@@ -1,0 +1,108 @@
+{
+  "schema": 1,
+  "note": "Recorded baselines, as data rather than prose. Every value here came from a document in docs/ with the command that produced it, and nothing is recorded that was not measured. `count` baselines are deterministic given their input, so they are asserted exactly; `observed` ones depend on the machine and the moment (seconds, memory), so they are reported with their delta and only asserted when a caller asks for it \u2014 on a quiet farm. tools/check_baselines.py compares them against a run's metrics.json, and a baseline it cannot find is NOT CHECKED rather than assumed.",
+  "baselines": [
+    {
+      "key": "expert_requests",
+      "value": 2218,
+      "kind": "count",
+      "produced_by": "datacenter-trace",
+      "applies_to": "the M1 install, prompt 760,6511,314,9338,369",
+      "source": "docs/m2-decisions.md",
+      "requires": {
+        "layers": 40
+      }
+    },
+    {
+      "key": "expert_hit_rate",
+      "value": 0.0,
+      "kind": "count",
+      "produced_by": "datacenter-trace",
+      "applies_to": "the M1 install, any bank size (D31: the rate is 0 at 1, 2, 4, 8 and 16 slots)",
+      "source": "docs/m2-decisions.md",
+      "requires": {
+        "layers": 40
+      }
+    },
+    {
+      "key": "install_bytes_read_this_forward",
+      "value": 3060562432,
+      "kind": "count",
+      "produced_by": "datacenter-trace",
+      "applies_to": "the M1 install, prompt 760,6511,314,9338,369",
+      "source": "docs/m2-decisions.md",
+      "requires": {
+        "layers": 40
+      }
+    },
+    {
+      "key": "dense_payload_bytes_read",
+      "value": 1043708416,
+      "kind": "count",
+      "produced_by": "datacenter-generate --cached",
+      "applies_to": "the M1 install, prompt 760,6511,314,9338,369, 3 steps, the dense cache on",
+      "source": "docs/m1-decisions.md",
+      "requires": {
+        "steps": 3
+      }
+    },
+    {
+      "key": "dense_payload_cache_hits",
+      "value": 4277,
+      "kind": "count",
+      "produced_by": "datacenter-generate --cached",
+      "applies_to": "the M1 install, prompt 760,6511,314,9338,369, 3 steps, the dense cache on",
+      "source": "docs/m1-decisions.md",
+      "requires": {
+        "steps": 3
+      }
+    },
+    {
+      "key": "dense_payload_bytes_held",
+      "value": 1043708416,
+      "kind": "count",
+      "produced_by": "datacenter-generate --cached",
+      "applies_to": "the M1 install, prompt 760,6511,314,9338,369, 3 steps, the dense cache on",
+      "source": "docs/m1-decisions.md",
+      "requires": {
+        "steps": 3
+      }
+    },
+    {
+      "key": "exchange_reduces",
+      "value": 10,
+      "kind": "count",
+      "produced_by": "datacenter-generate --cached --plan/--config/--node",
+      "applies_to": "the tiny-qwen36 fixture, 2 nodes, prompt 1,2,3, 2 steps",
+      "source": "docs/repository-decisions.md",
+      "requires": {
+        "nodes": 2
+      }
+    }
+  ],
+  "observations": [
+    {
+      "key": "steps_per_second",
+      "value": 0.108,
+      "unit": "tok/s",
+      "kind": "observed",
+      "produced_by": "datacenter-generate --cached",
+      "applies_to": "the M1 install, one node, 4 steps after a 5-token prompt",
+      "source": "docs/m1-gate.md",
+      "note": "9.25 s/token. Recorded from a run on this node; the farm is shared, so this is a baseline to compare against rather than a guarantee.",
+      "requires": {
+        "steps": 3
+      }
+    },
+    {
+      "key": "peak_rss_bytes",
+      "value": 348600000,
+      "unit": "bytes",
+      "kind": "observed",
+      "produced_by": "/usr/bin/time -l datacenter-generate",
+      "applies_to": "the M1 install, one node",
+      "source": "docs/m1-gate.md",
+      "note": "348.6 MB peak, 12x below the checkpoint path's 4.16 GB. Measured with /usr/bin/time, not by this checker."
+    }
+  ]
+}

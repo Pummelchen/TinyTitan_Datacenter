@@ -141,10 +141,14 @@ swift test --no-parallel
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 186 --swift-skipped 0 --python-tests 250
+python3 tools/check_status_claims.py --swift-tests 186 --swift-skipped 0 --python-tests 276
 
 # The provenance position: no copied code, and no NOTICE to carry
 python3 tools/check_provenance.py
+
+# The recorded baselines, against a run's metrics.json. Counts are asserted exactly; seconds and
+# memory are reported and only asserted with --assert-observed, which belongs on a quiet farm (D40).
+python3 tools/check_baselines.py --metrics .build/baseline-check/trace/metrics.json
 
 # M3's throughput gate. It refuses to run unless the farm is quiet, which is a measurement of the
 # nodes rather than an honour system — see D38.

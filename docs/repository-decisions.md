@@ -197,3 +197,44 @@ INSTALL VERIFIED: 693 tensor(s), structure and policy, 5 payload digest(s)
 
 Every node now holds the same install, tiling and digests included, and the figures are the ones this
 checkout reports.
+
+## D40 — The baselines are data, and the counts in them are asserted
+
+`DC-084` asked for the sister project's practice — recorded baselines, re-checked — and this repository's
+figures lived only in prose. They are now `tools/baselines.json`, read by `tools/check_baselines.py`.
+
+**Two kinds, and the split is the decision.** A **count** is deterministic given its input (expert requests,
+payload bytes read, cache hits), so it is asserted **exactly** and can be re-checked at any time — on a
+shared farm, in the middle of other work. An **observed** value depends on the machine and the moment
+(seconds, memory), so it is **reported with its delta** and asserted only with `--assert-observed`, which
+belongs on a quiet farm. The first real check shows why: the recorded throughput baseline is **0.108 tok/s**
+and the fresh run measured **0.1761**, +63.1%, on a farm that happened to be quieter. Asserting that would
+have failed a correct run.
+
+**What the demonstration verified.** A trace and a cached generation on the real 35 B install, at the
+recorded conditions (prompt `760,6511,314,9338,369`, three steps), reproduced every recorded count exactly:
+
+| baseline | recorded | this run |
+| --- | --- | --- |
+| `expert_requests` | 2218 | 2218 |
+| `expert_hit_rate` | 0.0 | 0.0 |
+| `install_bytes_read_this_forward` | 3,060,562,432 | 3,060,562,432 |
+| `dense_payload_bytes_read` | 1,043,708,416 | 1,043,708,416 |
+| `dense_payload_cache_hits` | 4277 | 4277 |
+| `dense_payload_bytes_held` | 1,043,708,416 | 1,043,708,416 |
+
+The trace also re-produced digest `b0d382dbabf36df0…` — the M2 digest — without being asked to.
+
+**Applicability is checkable, because prose is not.** `applies_to` says in words what a figure was measured
+on, and the first version treated it as documentation. It compared the **two-node fixture's**
+`exchange_reduces = 10` against a **single-node** real run, whose correct value is 0, and reported a failure.
+Every baseline now carries a `requires` map keyed on something its producer **actually records** — `layers`
+for the trace, `steps` for generation, `nodes` for the fixture — and a baseline whose requirements are not
+met is NOT CHECKED rather than compared. That last clause matters: the first attempt keyed the trace
+baselines on `nodes`, which no trace metrics file writes, so they could never have been checked at all — and
+a baseline that can never run is a comment.
+
+**The test had invented the artifact.** `steps_per_second` is derived from what a run reports, and the unit
+test used `step_seconds_0` scalars — a shape no run writes. The real file has a `step_seconds` **list**, so
+the tool crashed while 19 tests passed. The test now uses the recorded shape, and an unexpected shape is
+reported NOT CHECKED with the command that produces it rather than becoming a traceback.
