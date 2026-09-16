@@ -73,7 +73,7 @@ final class ShardedMixtureTests: XCTestCase {
         XCTAssertEqual(selected.count, tokens * shape.topK, "the router must select top-k per token")
 
         for nodes in [2, 4] {
-            let ownership = ExpertOwnership(nodes: nodes)
+            let ownership = ExpertOwnership(nodes: nodes, experts: shape.experts)
             var terms: [ExpertContribution] = []
             // Nodes are visited in reverse and each node's experts arrive in its own order: arrival
             // order is the one thing the contract promises not to depend on.
@@ -99,7 +99,7 @@ final class ShardedMixtureTests: XCTestCase {
     func testEveryExpertHasExactlyOneOwner() throws {
         let fixture = try fixture()
         for nodes in [1, 2, 3, 4] {
-            let ownership = ExpertOwnership(nodes: nodes)
+            let ownership = ExpertOwnership(nodes: nodes, experts: fixture.shape.experts)
             var seen = [Int: Int]()
             for node in 0..<nodes {
                 for expert in ownership.experts(ownedBy: node, of: fixture.shape.experts) {
@@ -117,14 +117,16 @@ final class ShardedMixtureTests: XCTestCase {
     func testAnUnownedExpertIsRefusedRatherThanZeroed() throws {
         let fixture = try fixture()
         let owned = OwnedExpertProvider(
-            base: fixture.provider, ownership: ExpertOwnership(nodes: 2), node: 0
+            base: fixture.provider,
+            ownership: ExpertOwnership(nodes: 2, experts: fixture.shape.experts), node: 0
         )
         // Served: the experts this node owns.
-        for expert in ExpertOwnership(nodes: 2).experts(ownedBy: 0, of: fixture.shape.experts) {
+        let pair = ExpertOwnership(nodes: 2, experts: fixture.shape.experts)
+        for expert in pair.experts(ownedBy: 0, of: fixture.shape.experts) {
             XCTAssertNoThrow(try owned.gateUp(expert: expert, shape: fixture.shape))
         }
         // Refused: one it does not. A zero here would be a silently smaller sum.
-        let foreign = ExpertOwnership(nodes: 2).experts(ownedBy: 1, of: fixture.shape.experts).first
+        let foreign = pair.experts(ownedBy: 1, of: fixture.shape.experts).first
         let expert = try XCTUnwrap(foreign)
         XCTAssertThrowsError(try owned.gateUp(expert: expert, shape: fixture.shape)) { error in
             guard case OwnedExpertProvider.Error.notOwned(let asked, let node) = error else {

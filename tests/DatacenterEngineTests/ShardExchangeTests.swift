@@ -57,7 +57,8 @@ final class ShardExchangeTests: XCTestCase {
 
         func terms(node: Int, nodes: Int) throws -> [ExpertContribution] {
             let owned = OwnedExpertProvider(
-                base: provider, ownership: ExpertOwnership(nodes: nodes), node: node
+                base: provider,
+                ownership: ExpertOwnership(nodes: nodes, experts: shape.experts), node: node
             )
             return try MixtureOfExperts.expertContributions(
                 hidden: input, tokens: tokens, provider: owned,

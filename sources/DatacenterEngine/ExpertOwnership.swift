@@ -1,42 +1,59 @@
 import Foundation
 
-/// Which node owns which expert.
+/// Which node owns which expert, at run time.
 ///
-/// `D17` makes the reduction order canonical, so ownership no longer affects any result — but it does
-/// decide *who computes what*, and a run is only correct if every selected expert is served by exactly
-/// one owner. That is why this is a data-shaped artifact and not a property of the network: it is the
-/// thing that must be pinned for two runs at the same N to agree (`DC-011`).
+/// This is a thin view over a `ShardPlan` rather than a rule of its own, and that is the point: the
+/// cluster agrees on a **file** (`DC-011`), and a node that computed ownership from its own arithmetic
+/// would be one refactor away from disagreeing with its peers about who produces which term. Here the
+/// file is the only source of truth, and `init(nodes:experts:)` merely generates one for a caller that
+/// has no file yet.
 ///
-/// The assignment is round-robin by expert id, which balances the count on any N and is trivial to
-/// reproduce from the same inputs on every node. The planner that will replace it (`DC-040`) must
-/// produce a map with the same properties: total, disjoint, and identical on every node.
+/// The distribution is contiguous blocks by default, so a node's experts are adjacent in the stacked
+/// tensor and its reads walk forward through the payload. Rounds 6 to 8 used a round-robin rule, and
+/// changing it changed **no result** — which is `D17`'s whole claim: the reduction order is canonical,
+/// so who computes a term never moves a bit.
 public struct ExpertOwnership: Sendable, Equatable {
-    public let nodes: Int
+    /// The plan this ownership comes from.
+    public let plan: ShardPlan
 
-    public init(nodes: Int) {
-        precondition(nodes >= 1, "a cluster with \(nodes) nodes cannot own anything")
-        self.nodes = nodes
+    public init(plan: ShardPlan) {
+        self.plan = plan
     }
+
+    /// Contiguous blocks over `experts`, for a caller with no plan file yet.
+    public init(nodes: Int, experts: Int, distribution: ShardDistribution = .contiguous) {
+        self.plan = ShardPlan.generate(
+            family: "unspecified", experts: experts, nodes: nodes, distribution: distribution
+        )
+    }
+
+    public var nodes: Int { plan.nodes }
 
     /// The single owner of an expert.
-    public func owner(of expert: Int) -> Int {
-        precondition(expert >= 0, "expert ids are non-negative")
-        return expert % nodes
-    }
+    public func owner(of expert: Int) -> Int { plan.owner(of: expert) }
 
-    public func owns(_ expert: Int, node: Int) -> Bool {
-        owner(of: expert) == node
-    }
+    public func owns(_ expert: Int, node: Int) -> Bool { plan.owner(of: expert) == node }
 
     /// Every expert owned by one node, ascending, out of `count` experts.
+    ///
+    /// The count is taken and checked rather than trusted: a caller that asks about a different number
+    /// of experts than the plan covers has a plan for the wrong model, and finding that out here is
+    /// better than finding it out later as a missing term.
     public func experts(ownedBy node: Int, of count: Int) -> [Int] {
-        precondition(node >= 0 && node < nodes, "node \(node) is outside 0..<\(nodes)")
-        return (0..<count).filter { owns($0, node: node) }
+        precondition(
+            count == plan.experts,
+            "the ownership covers \(plan.experts) experts and was asked about \(count)"
+        )
+        return plan.experts(ownedBy: node)
     }
 
     /// The ownership map as data, so two nodes can compare what they each believe before a run starts.
     public func map(of count: Int) -> [Int] {
-        (0..<count).map(owner(of:))
+        precondition(
+            count == plan.experts,
+            "the ownership covers \(plan.experts) experts and was asked about \(count)"
+        )
+        return plan.owners
     }
 }
 

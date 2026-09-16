@@ -146,7 +146,7 @@ final class ContributionWireTests: XCTestCase {
         )
 
         // Each node computes its own experts' terms and ships them. Nothing is pre-summed (`D17`).
-        let ownership = ExpertOwnership(nodes: 2)
+        let ownership = ExpertOwnership(nodes: 2, experts: shape.experts)
         let (left, right) = try SocketPair.make()
         let transports = [left, right]
         var ownTerms: [[ExpertContribution]] = []

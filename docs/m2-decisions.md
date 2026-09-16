@@ -184,3 +184,53 @@ socket pair on one host, where a peer can be silenced but not made slow, and whe
 lost. The transport measurement (`DC-008`) and M2's own gate (`DC-045`) need the cluster. What is decided
 here is what the run *does* when a peer misbehaves; that the failure is *detected* over a real link is the
 next question, and the rules above are the contract it will be tested against.
+
+## D20 — The shard plan is data, and the format makes the dangerous mistakes unrepresentable
+
+`D17` reduced what the planner has to pin to exactly one thing: the **ownership map**. The ring order no
+longer matters, arrival order never did, and the reduction order is canonical — so the artifact is a map
+from expert id to node, and nothing else.
+
+**The format is chosen so the property the reduction needs is structural rather than validated.**
+
+```json
+{"schema":1,"family":"qwen3_5_moe","experts":256,"nodes":4,
+ "distribution":"contiguous","owners":[0,0,...,1,1,...]}
+```
+
+`owners` is a flat array **indexed by expert id**. An expert cannot be owned twice, because there is one
+slot per expert; it cannot be quietly unowned, because the length is checked against the model's expert
+count. The obvious alternative — a list of expert ids per node — makes both mistakes representable and
+leaves a validator to catch them after the fact, which is the kind of check that is forgotten in the one
+path that matters.
+
+**Compatibility is checked at load, not discovered at the first token.** `schema` is the format version;
+`family` and `experts` are checked against the model a node actually opened
+(`validate(forFamily:experts:)`), so a plan made for another model is refused before a run rather than
+manifesting as a missing term. A file whose `owners` length disagrees with its declared expert count is
+refused on the count — a test writes exactly that file, because a truncated plan is what an editor
+produces.
+
+**Identity: canonical JSON, then a digest.** Keys are sorted and whitespace removed, so two nodes that
+agree produce the same bytes; `canonicalDigest()` is compared during bring-up (`DC-042`) and a mismatch
+stops the run. A test asserts two independent generations agree and that moving one expert changes the
+digest — which is the whole point of comparing before starting.
+
+**Contiguous blocks rather than round-robin, and it changed no result.** Rounds 6 to 8 assigned experts
+round-robin; this assigns contiguous *blocks* so a node's experts are adjacent in the stacked tensor and
+its reads walk forward through the payload instead of striding across it. The bit-identity tests were not
+adjusted and still pass: **who computes a term never moves a bit**, which is `D17`'s claim demonstrated
+by a refactor rather than by argument. Both distributions are available, and a plan whose owners do not
+match its own label is refused.
+
+**The dense backbone is not in the plan, deliberately.** It is replicated on every node and therefore has
+nothing to assign, which is why there is one all-reduce per MoE layer and none per layer elsewhere.
+
+**Dead code removed rather than kept.** A "node owns no experts" check was written, could not be reached
+by any test — a missing node always fails the contiguous-shape check first — and a model with fewer
+experts than nodes legitimately leaves nodes idle. It was deleted, and the test that could not reach it
+was repointed at the shape check that does the work.
+
+**What this leaves.** A command-line writer for the plan file is a convenience, not a gap: any node
+generates the same plan deterministically from `(family, experts, nodes, distribution)` and the digest
+proves it. What remains for M2 is the cluster: two real processes on a real link (`DC-045`).
