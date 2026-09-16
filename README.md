@@ -22,9 +22,10 @@ and its trace is **byte-identical to the contract** — 83 tensors and 40 discre
 decisions, digest `b8c976c5e7ba8816…` — generating at **0.108 tok/s** cached with
 **348.6 MB** peak memory. **M2 shards that same 35 B model across two machines** and
 produces **the same digest as the single-node baseline** (`b0d382dbabf36df0…`): 83 tensors,
-0 differing elements, 40 discrete decisions, checked by `trace_diff` on both nodes. What
-remains open is a sharded generation CLI (`DC-109`), `D12`, and an install-path contract
-(`DC-108`). There are **no releases and no tags**.
+0 differing elements, 40 discrete decisions, checked by `trace_diff` on both nodes. All four machines also
+run one forward together in a full mesh and produce that same single trace. What remains open is a
+sharded generation CLI (`DC-109`), the tok/s gates, `D12`, and an install-path contract (`DC-108`).
+There are **no releases and no tags**.
 
 News, measurements and the live work list are in the **[wiki](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki)** —
 start with [News](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/News) for what

@@ -466,3 +466,36 @@ design needs — a shard-repacked install is a later refinement, not a prerequis
 evidence block, and this repository is public: host names and addresses do not belong in it (R9). The
 line is scrubbed here. It remains in the history of the commit that introduced it, which is a force-push
 to remove and therefore the operator's decision rather than mine.
+
+## D27 — The whole farm runs one forward: four nodes, bit-identical
+
+`--mesh` runs every node as its own process on its own machine. A **mesh rather than a star**, and the
+reason is the contract rather than taste: the all-reduce is pairwise (`D17`), so a leaf in a star would
+hold its own terms and the coordinator's and nothing else. `isComplete` would refuse that run rather than
+let it sum less — the right failure, but not a run. Joining is deterministic and needs no ordering
+agreement: node *i* connects to every lower id and accepts from every higher one, so no pair connects
+twice and every node joins in a single phase. Ports come from the cluster config (`D21`), which is also
+what each node validates its own membership against.
+
+```
+[3/4] mesh of 4 nodes: node4(…26), node1(…27), node2(…25), node3(…29)
+      node 0: BRINGUP ok: node 0 of 4, plan d614a352184da9cc…
+      node 1: BRINGUP ok: node 1 of 4, plan d614a352184da9cc…
+      node 2: BRINGUP ok: node 2 of 4, plan d614a352184da9cc…
+      node 3: BRINGUP ok: node 3 of 4, plan d614a352184da9cc…
+      every node: 7 tensors, 2 discrete, digest 58518422914cfe2b…
+[4/4] node 0..3: IDENTICAL — 7 tensor(s), 0 element(s), 2 discrete decision(s) each
+M2 GATE PASSED: a mesh of 4 machines, install the fixture, one plan, one trace
+```
+
+**That is M3's functional half**: four machines, expert-parallel, producing exactly what one machine
+produces. M3's *gate* is a throughput claim — ≥3× the M1 rate — and it is **not** made here: the farm is
+shared with other work, nothing was isolated, and the timing phase comes later by instruction. The 35 B
+model at four nodes would also need its 20 GB install on three peers; the two-node gate already made the
+real-model bit-identity claim (`D26`), and this one makes the N-node claim on the fixture, where the
+payload and the runtime are small enough not to disturb anyone.
+
+**The addressing is part of the run now.** These runs use the **internal LAN addresses**, not the node
+names: the names resolve over the mesh VPN at roughly 2.5× the round trip, which is the trap the Testbed
+records, and it is the difference that will matter when the synchronisation budget is measured. The
+inventory on that page carries the addresses so the next run does not rediscover them.

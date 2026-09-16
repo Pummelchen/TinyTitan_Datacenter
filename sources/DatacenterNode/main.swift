@@ -23,6 +23,7 @@ var arguments = Array(CommandLine.arguments.dropFirst())
 var node = -1
 var listen: String?
 var connect: String?
+var config: String?
 var revision = "local"
 var timeoutMilliseconds = 30_000
 
@@ -40,6 +41,10 @@ while index < arguments.count {
     case "--connect":
         guard index + 1 < arguments.count else { fail("--connect needs host:port") }
         connect = arguments[index + 1]
+        arguments.removeSubrange(index...(index + 1))
+    case "--config":
+        guard index + 1 < arguments.count else { fail("--config needs a cluster config path") }
+        config = arguments[index + 1]
         arguments.removeSubrange(index...(index + 1))
     case "--revision":
         guard index + 1 < arguments.count else { fail("--revision needs a value") }
@@ -63,7 +68,11 @@ guard arguments.count == 4 else {
     )
 }
 guard node >= 0 else { fail("--node is required") }
-guard (listen == nil) != (connect == nil) else { fail("give exactly one of --listen or --connect") }
+if config == nil {
+    guard (listen == nil) != (connect == nil) else { fail("give --config, or exactly one of --listen / --connect") }
+} else {
+    guard listen == nil, connect == nil else { fail("--config replaces --listen and --connect") }
+}
 
 let install = URL(fileURLWithPath: arguments[0])
 let output = URL(fileURLWithPath: arguments[1])
@@ -98,9 +107,50 @@ do {
 let ownership = ExpertOwnership(plan: plan)
 
 // Bring-up: anyone may connect, but the declaration must agree with what this node actually holds.
-let transport: SocketContributionTransport
+//
+// Two topologies, one exchange. `--listen`/`--connect` is the two-node case a gate needs; `--config`
+// is the **full mesh** that N nodes need, because the all-reduce is pairwise (`D17`) — a star would
+// leave a leaf holding only the coordinator's terms, and the completeness check would refuse the run
+// rather than let it sum less. The mesh rule is deterministic so no pair connects twice: a node
+// connects to every peer with a **lower** id and accepts from every peer with a **higher** one.
+var peers: [any ContributionTransport] = []
 var listener: TCPListener?
-if let listen {
+if let config {
+    let addresses: ClusterConfig
+    do {
+        addresses = try ClusterConfig.load(from: URL(fileURLWithPath: config), thisNode: node)
+    } catch {
+        fail("the cluster config does not fit this node: \(error)")
+    }
+    guard addresses.nodes == plan.nodes else {
+        fail("the config describes \(addresses.nodes) nodes and the plan \(plan.nodes)")
+    }
+    let mine = addresses.endpoints[node]
+    let bound: TCPListener
+    do {
+        bound = try TCPListener(host: mine.host, port: mine.port, backlog: Int32(max(1, addresses.nodes)))
+    } catch {
+        fail("could not bind \(mine.host):\(mine.port): \(error)")
+    }
+    listener = bound
+    print("PORT \(bound.port)")
+    fflush(stdout)
+    do {
+        for peer in 0..<node {
+            peers.append(
+                try TCPTransport.connect(
+                    host: addresses.endpoints[peer].host, port: addresses.endpoints[peer].port,
+                    timeoutMilliseconds: timeoutMilliseconds
+                )
+            )
+        }
+        for _ in (node + 1)..<addresses.nodes {
+            peers.append(try bound.accept(timeoutMilliseconds: timeoutMilliseconds))
+        }
+    } catch {
+        fail("could not join the mesh: \(error)")
+    }
+} else if let listen {
     let parts = listen.split(separator: ":")
     let host = parts.count > 1 ? String(parts[0]) : "127.0.0.1"
     let port = Int(parts.count > 1 ? parts[1] : parts[0]) ?? 0
@@ -114,7 +164,7 @@ if let listen {
     print("PORT \(bound.port)")
     fflush(stdout)
     do {
-        transport = try bound.accept(timeoutMilliseconds: timeoutMilliseconds)
+        peers.append(try bound.accept(timeoutMilliseconds: timeoutMilliseconds))
     } catch {
         fail("no peer connected: \(error)")
     }
@@ -122,8 +172,10 @@ if let listen {
     let parts = connect.split(separator: ":")
     guard parts.count == 2, let port = Int(parts[1]) else { fail("--connect needs host:port") }
     do {
-        transport = try TCPTransport.connect(
-            host: String(parts[0]), port: port, timeoutMilliseconds: timeoutMilliseconds
+        peers.append(
+            try TCPTransport.connect(
+                host: String(parts[0]), port: port, timeoutMilliseconds: timeoutMilliseconds
+            )
         )
     } catch {
         fail("could not connect to \(connect): \(error)")
@@ -145,7 +197,7 @@ do {
 do {
     _ = try ClusterHandshake.perform(
         ours: NodeDeclaration(identity: identity, node: node, nodes: plan.nodes),
-        peers: [transport],
+        peers: peers,
         policy: ExchangePolicy(receiveTimeoutMilliseconds: timeoutMilliseconds, attempts: 1)
     )
     print("BRINGUP ok: node \(node) of \(plan.nodes), plan \(try plan.canonicalDigest().prefix(16))…")
@@ -162,7 +214,7 @@ do {
     shardedForward = try Qwen3_5Forward(
         install: install,
         shard: ShardExecution(
-            node: node, ownership: ownership, peers: [transport],
+            node: node, ownership: ownership, peers: peers,
             policy: ExchangePolicy(receiveTimeoutMilliseconds: timeoutMilliseconds, attempts: 3)
         )
     )

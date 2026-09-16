@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import shutil
 import subprocess
 import sys
@@ -101,7 +102,8 @@ def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
 
 
 def stage_remote(
-    remote: str, directory: str, install: Path, binary: Path, plan: Path, remote_install: str | None
+    remote: str, directory: str, install: Path, binary: Path, plan: Path, remote_install: str | None,
+    extra: list[Path] | None = None,
 ) -> None:
     """Copy what a node needs onto another machine: the binary and the plan, plus the fixture when the
     remote has no install of its own.
@@ -111,6 +113,7 @@ def stage_remote(
     """
     subprocess.run(["ssh", remote, f"mkdir -p {directory}"], check=True, cwd=ROOT)
     sources = [str(binary), str(plan)] if remote_install else [str(binary), str(install), str(plan)]
+    sources += [str(path) for path in (extra or [])]
     subprocess.run(["scp", "-q", "-r", *sources, f"{remote}:{directory}/"], check=True, cwd=ROOT)
 
 
@@ -124,6 +127,109 @@ def remote_address(host: str) -> str:
     import socket
 
     return socket.gethostbyname(host)
+
+
+
+def run_mesh(args, binaries, plan_path: Path, reference: Path, plan: dict) -> int:
+    """Run every node as its own process on its own machine, in a full mesh.
+
+    Every node must be starting at once: the mesh rule has node *i* connect to lower ids and accept from
+    higher ones, so no node can finish joining before the others begin. They are started in parallel and
+    their traces are fetched back for the differ.
+    """
+    entries = [entry.strip() for entry in args.mesh.split(",") if entry.strip()]
+    if len(entries) < 2:
+        raise SystemExit("--mesh needs at least two entries, this host first")
+    if plan["nodes"] != len(entries):
+        raise SystemExit(f"the plan covers {plan['nodes']} nodes and --mesh names {len(entries)}")
+
+    base = random.randint(41_000, 59_000)
+    endpoints = [{"host": e.split("@")[-1], "port": base + i} for i, e in enumerate(entries)]
+    config_path = OUT / "cluster.json"
+    config_path.write_text(json.dumps({"endpoints": endpoints}, sort_keys=True, separators=(",", ":")))
+    print(f"[3/4] mesh of {len(entries)} nodes: " + ", ".join(f"{e}({endpoints[i]['host']})" for i, e in enumerate(entries)))
+
+    for index, remote in enumerate(entries[1:], start=1):
+        stage_remote(
+            remote, args.remote_dir, args.install, binaries["node"], plan_path, args.remote_install,
+            extra=[config_path],
+        )
+        print(f"      staged node {index} on {remote}")
+
+    processes: list[tuple[int, subprocess.Popen]] = []
+    processes.append(
+        (
+            0,
+            subprocess.Popen(
+                [
+                    str(binaries["node"]), str(args.install), str(OUT / "node-0"), args.tokens,
+                    str(plan_path), "--node", "0", "--config", str(config_path),
+                ],
+                cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            ),
+        )
+    )
+    for index, remote in enumerate(entries[1:], start=1):
+        install = args.remote_install or "./install"
+        processes.append(
+            (
+                index,
+                subprocess.Popen(
+                    [
+                        "ssh", remote,
+                        f"cd {args.remote_dir} && ./datacenter-node {install} ./node-{index} "
+                        f"{args.tokens} ./plan.json --node {index} --config ./cluster.json",
+                    ],
+                    cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                ),
+            )
+        )
+
+    failed = False
+    for node, process in processes:
+        try:
+            stdout, stderr = process.communicate(timeout=args.timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            print(f"node {node} did not finish inside {args.timeout}s", file=sys.stderr)
+            failed = True
+            continue
+        for line in stdout.strip().splitlines():
+            print(f"      node {node}: {line}")
+        if process.returncode != 0:
+            print(f"node {node} failed:\n{stderr}", file=sys.stderr)
+            failed = True
+    if failed:
+        return 1
+
+    for index, remote in enumerate(entries[1:], start=1):
+        local = OUT / f"node-{index}"
+        if local.exists():
+            shutil.rmtree(local)
+        local.mkdir(parents=True)
+        subprocess.run(
+            ["scp", "-q", "-r", f"{remote}:{args.remote_dir}/node-{index}/.", str(local)],
+            check=True, cwd=ROOT,
+        )
+    print(f"      fetched {len(entries) - 1} trace(s)")
+
+    print("[4/4] trace_diff, every node against the reference")
+    for node in range(len(entries)):
+        diff = run(
+            [
+                sys.executable, str(ROOT / "tools" / "trace_diff.py"),
+                str(reference), str(OUT / f"node-{node}"),
+            ]
+        )
+        print(f"      node {node}: {diff.stdout.strip() or diff.stderr.strip()}")
+        if diff.returncode != 0:
+            failed = True
+    if failed:
+        print("M2 GATE FAILED", file=sys.stderr)
+        return 1
+    what = args.remote_install or "the fixture"
+    print(f"M2 GATE PASSED: a mesh of {len(entries)} machines, install {what}, one plan, one trace")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -140,17 +246,25 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--remote-dir", default="m2-gate", help="where to stage files on the remote")
     parser.add_argument(
+        "--mesh", default=None,
+        help="user@host for every node with THIS host first, comma separated "
+             "(e.g. node4@10.0.0.4,node1@10.0.0.1). Runs a full mesh: the all-reduce is pairwise, so a "
+             "star would leave a leaf holding only the coordinator's terms",
+    )
+    parser.add_argument(
         "--remote-install", default=None,
         help="an install already present on the remote (e.g. Downloads/m1-install); the fixture is not "
              "copied in that case, which is what a 20 GB install needs",
     )
     args = parser.parse_args(argv)
 
-    if args.nodes != 2:
+    if args.mesh:
+        pass
+    elif args.nodes != 2:
         # The engine's ShardExecution takes any number of peers, and the plan covers any N, but the
         # `datacenter-node` CLI takes exactly one --listen or --connect. Saying so is better than a
         # harness that appears to support four nodes and hangs at the second.
-        raise SystemExit(f"this CLI runs two nodes; asked for {args.nodes} (multi-peer is M3's work)")
+        raise SystemExit(f"without --mesh this runs two nodes; asked for {args.nodes}")
     if not (args.install / "install.json").exists():
         raise SystemExit(f"{args.install} is not an install (no install.json)")
     binaries = {
@@ -160,6 +274,10 @@ def main(argv: list[str] | None = None) -> int:
     for name, binary in binaries.items():
         if not binary.exists():
             raise SystemExit(f"{binary} is missing: run `swift build -c release` first ({name})")
+
+    if args.mesh:
+        # The mesh decides how many nodes there are; --nodes is for the single-host path.
+        args.nodes = len([entry for entry in args.mesh.split(",") if entry.strip()])
 
     OUT.mkdir(parents=True, exist_ok=True)
     plan_path = OUT / "plan.json"
@@ -176,6 +294,9 @@ def main(argv: list[str] | None = None) -> int:
         print(single.stdout + single.stderr, file=sys.stderr)
         raise SystemExit("the single-node reference trace failed")
     print(f"[2/4] reference: {single.stdout.strip().splitlines()[-1]}")
+
+    if args.mesh:
+        return run_mesh(args, binaries, plan_path, reference, plan)
 
     # The cluster: node 0 listens and reports its port, node 1 connects to it.
     processes: list[subprocess.Popen] = []
