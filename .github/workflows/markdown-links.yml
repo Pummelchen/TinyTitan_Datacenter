@@ -33,7 +33,18 @@ jobs:
         with:
           python-version: "3.x"
       - name: Test the repository tools
-        run: python3 -m unittest discover -s tools -v
+        run: python3 -m unittest discover -s tools -v 2>&1 | tee tools.log
+      - name: Check the documentation's claims about the tools
+        # The number comes from the run that just happened, not from a literal in this file: a gate that
+        # hard-codes the count it is checking is a gate that has to be updated by the same person who
+        # forgot to update the documentation.
+        run: |
+          count=$(sed -n 's/^Ran \([0-9]*\) tests.*/\1/p' tools.log | tail -1)
+          if [ -z "$count" ]; then
+            echo "::error::could not read the test count from the suite output"
+            exit 1
+          fi
+          python3 tools/check_status_claims.py --python-tests "$count"
       - name: Check Markdown links
         run: python3 tools/check_markdown_links.py --verbose
       - name: Check Markdown tables

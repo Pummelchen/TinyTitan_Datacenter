@@ -59,7 +59,7 @@ wiki; the measurements live in `docs/`.
   repository is **MIT**, so check the obligations before reusing any of its code here
   (tracked as `DC-013`).
 - `docs/` holds the decision records (`m0-decisions.md`, `m1-decisions.md`,
-  `m2-decisions.md`), the gate docs (`m0-gate.md`, `m1-gate.md`,
+  `m2-decisions.md`, `repository-decisions.md` for decisions about the repository itself), the gate docs (`m0-gate.md`, `m1-gate.md`,
   `m0c-quantization.md`), the contracts
   (`ir-schema.md`, `trace-format.md`, `reference-*.md`) and `repository-layout.md`.
 
@@ -134,6 +134,9 @@ swift test --no-parallel
 
 # The CI link gate: local links and #anchors, offline
 python3 tools/check_markdown_links.py --verbose
+
+# The documentation's own numbers, against the suites' actual output
+python3 tools/check_status_claims.py --swift-tests 184 --swift-skipped 0 --python-tests 211
 
 # Tests for the gate itself
 python3 -m unittest discover -s tools
