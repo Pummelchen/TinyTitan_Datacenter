@@ -73,6 +73,12 @@ let package = Package(
             dependencies: ["DatacenterEngine", "DatacenterIR"],
             path: "sources/DatacenterGenerate",
             swiftSettings: shardLanguageStandard
+        ),
+        .executableTarget(
+            name: "datacenter-node",
+            dependencies: ["DatacenterEngine", "DatacenterIR"],
+            path: "sources/DatacenterNode",
+            swiftSettings: shardLanguageStandard
         )
     ]
 )

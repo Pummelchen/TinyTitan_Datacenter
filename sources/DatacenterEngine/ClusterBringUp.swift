@@ -181,7 +181,7 @@ public enum ClusterHandshake {
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let payload = try encoder.encode(declaration)
         var bytes: [UInt8] = magic
-        var little = version.littleEndian
+        let little = version.littleEndian
         bytes.append(UInt8(truncatingIfNeeded: little))
         bytes.append(UInt8(truncatingIfNeeded: little >> 8))
         bytes.append(contentsOf: payload)
