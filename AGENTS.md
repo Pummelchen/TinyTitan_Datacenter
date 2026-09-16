@@ -23,7 +23,7 @@ decision matching: `docs/m0-gate.md`), M1 on the real 35 B model, whose trace is
 **byte-identical to the contract** (83 tensors, 40 discrete decisions, digest
 `b8c976c5e7ba8816…`) with generation at **0.108 tok/s** cached and **348.6 MB** peak
 memory (`docs/m1-gate.md`, re-established 2026-09-16). It is nevertheless **incomplete**:
-no Python contract reads an install (`DC-108`), `D12` is an open design question, and
+`D12` is an open design question, and
 **M2 shards the real model across two machines**: the reduction contract (`D17`), the wire protocol (`D18`), the failure semantics
 (`D19`), the shard plan as data (`D20`), bring-up (`D21`) and a transport that binds and connects
 (`D22`) are implemented and demonstrated — a two-node exchange driven by a **loaded plan file** is

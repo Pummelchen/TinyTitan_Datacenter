@@ -47,11 +47,20 @@ original run, on the frozen `capital` prompt against the pinned checkpoint:
    resident, while the install reads uncached and maps nothing. Both numbers are correct for what they
    measured; they are not the same measurement.
 
-**What is *not* established, and is now an open task rather than a pending gate item.** There is **no
-Python contract for an install trace**: `ordered_qwen36_trace.py` accepts only a checkpoint, and the
-ordered reference has no int4 reader, so the byte-identical claim above is a claim about the
-**checkpoint** path while the M1 install path is covered by the op-level golden tests, the integrity
-digests, and the bit-identical re-runs across bank sizes. Closing that gap is `DC-108`.
+**What the install path's verification is, since `DC-108` closed it.** There is still **no Python
+contract for an install *trace*** — `ordered_qwen36_trace.py` accepts only a checkpoint — so the
+byte-identical claim above remains a claim about the **checkpoint** path. What the install path has now,
+and did not have when this paragraph first said "no Python contract reads an install", is a reader in the
+other language: `tools/install_reader.py` reads the container and `tools/verify_install.py` checks what a
+per-tensor reader cannot — that the 693 tensors **tile** the 21,700,655,616-byte payload exactly, that
+every role's quantisation is the one `tools/quant_policy.json` requires, and that all 693 payloads hash
+to the manifest's digests (26.3 s, uncached, free disk flat at 15 GB, swap unchanged). The op-level
+golden tests and the bit-identical re-runs across bank sizes are unchanged evidence on top of that.
+
+**Still not checked, and it says so rather than being implied.** The quantisation against the **source
+checkpoint** — the one check that would close the loop between the 67 GB source and the 21.7 GB artifact —
+needs that source, which is not in this checkout. `DC-108` asked for a reader and a check; it did not
+promise the source.
 
 **And a resource note for whoever runs this next.** The contract step re-reads the 67 GB checkpoint
 through a cached path, and on the 8 GB development node it drove swap to **402 MB free** before the run

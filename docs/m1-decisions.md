@@ -688,3 +688,48 @@ The decisions:
 Verified on the real 35 B model: **19.8 s → 15.0 s**, `embed` 1.64 s → 0.00 s, `head` 3.20 s → 1.64 s,
 `load` 2.95 s → 1.74 s, digest seconds 0, trace digest **unchanged**. Counted traffic is 3.06 GB and
 is now the whole truth, because the only reads that were ever uncounted have been removed.
+
+## D29 — The install has a Python reader, and all of it verifies
+
+`DC-108` was the gap this document recorded against itself: the engine reads the install, the contract
+reads the **checkpoint**, so nothing in Python could ask whether the artifact the engine actually reads is
+what the packer claimed. The install path's evidence was the op-level golden tests, the integrity digests
+and bit-identical re-runs — real evidence, but not an independent reader.
+
+`tools/install_reader.py` is that reader, standard library only, mirroring the Swift one guard for guard:
+a tensor's payload is `[codes][scales][zeros]` for the whole tensor, two signed four-bit codes per byte
+**low nibble first**, `padded_columns` as the row length, and `D11`'s denormal flush. `tools/verify_install.py`
+checks what a per-tensor reader cannot — that the tensors **tile** the payload, and that every role's
+quantisation is the one the policy requires:
+
+```
+.build/m1-install: schema 1, family qwen3_5_moe, 693 tensor(s)
+  quantisation: bf16 333, fp32 150, int4-affine 210
+  policy roles: 30
+  payload: 693 tensor(s) tiling 21,700,655,616 byte(s)
+  hashing 693 payload(s), 21.70 GB, streamed
+INSTALL VERIFIED: 693 tensor(s), structure and policy, 693 payload digest(s)
+```
+
+**26.3 s for 21.70 GB — 826 MB/s, uncached — with free disk flat at 15 GB before and after** and swap
+unchanged (953.81 MB used, identical either side). The tiling check is the one most worth having: the 693
+tensors cover the payload *exactly*, so no tensor can be reading another's bytes, and a per-tensor check
+cannot see that failure at all.
+
+**What the format turned out to be.** The manifest carries a `shape` for every tensor and
+`padded_columns` of **zero** for the 221 that were not padded — 2048 for the head, 64 for the experts. A
+reader that demanded a padded width first refused *every norm in the install*, which is how the rule was
+learned: the row count comes from the shape, and the padded width only overrides the row length.
+
+**What is still not checked.** The **quantisation against the source checkpoint** is not, because that
+needs the 67 GB checkpoint, which is not in this checkout. The release rule is explicit — a check that
+cannot run is reported *not checked* — so it says so here and in the gate document rather than being
+implied by a green run. What changed is the direction of the evidence: the artifact the engine reads now
+has an independent reader in the other language, and every byte of it hashes to what the manifest claims.
+
+**Six test bugs, all mine, all found by running.** fp32 values compared against Python doubles (`0.1` is
+not an fp32); an "odd padded width" case the group guard reaches first; "corrupting" byte 0 of `1.0f`,
+which is already `0x00`; expecting `write()` to raise when it is what constructs the reader; a "gap"
+fixture that tripped the bounds guard instead; and one that added the same tensor twice. A guard fired
+before my expectation every time — which is what guards are for, and a reminder to write the expected
+number down before writing the test that checks it.
