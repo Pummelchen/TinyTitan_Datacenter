@@ -25,9 +25,14 @@ decision matching: `docs/m0-gate.md`), M1 on the real 35 B model, whose trace wa
 memory (`docs/m1-gate.md`, re-established 2026-09-16) — **but that pass does not hold today.** Re-checked on
 2026-09-17 against a contract **re-run** on the current artifacts (the reference can now read the checkpoint
 without mapping it, and fetch experts by index, so the run costs two minutes here instead of the node's
-safety), the engine differs by **40 discrete decisions and 1 float**. The first divergence is **inside layer
-0 at token 0**, and the routers cascade from it. `DC-111` tracks the hunt; `docs/m1-gate.md` has the
-evidence. It is nevertheless **incomplete**:
+safety), the engine differs by **40 discrete decisions and 1 float** — and the cause is now **known and
+proved, and it is not an engine bug**. The install holds the Gated DeltaNet's three projections
+(`linear.in_qkv`, `linear.in_z`, `linear.out`) and `attn.q/k/v/o` as **int4-affine**, which is what
+`tools/quant_policy.json` says, while the contract is generated from the **checkpoint's bf16**. Fed the
+install's own values, the reference reproduces the engine's layer-0 attention output **byte for byte**
+(`D55`); with the checkpoint's weights it differs by 24.5% median relative, and that compounds through forty
+layers. The milestone and the quantisation policy are therefore **in conflict**, which is a decision and not a
+bug: `DC-112` carries it. `docs/m1-gate.md` has the evidence. It is nevertheless **incomplete**:
 `D12` was an open design question and is now decided from a measurement (`D31`: the expert slot bank
 is sized from a budget, one slot, because the measured hit rate is 0 at every size), and
 **M2 shards the real model across two machines**: the reduction contract (`D17`), the wire protocol (`D18`), the failure semantics
@@ -161,7 +166,7 @@ python3 tools/run_all_gates.py
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 191 --swift-skipped 0 --python-tests 342
+python3 tools/check_status_claims.py --swift-tests 191 --swift-skipped 0 --python-tests 349
 
 # The provenance position: no copied code, and no NOTICE to carry
 python3 tools/check_provenance.py
@@ -301,6 +306,15 @@ any failure.
   third-party copyright lines, and its own test file held one because the fixture wrote it literally — so
   the fixture now assembles the line at runtime rather than the checker gaining an exemption for the file
   that tests it. A rule with an exemption for its own test is a rule that stops being true quietly.
+- **A streaming iterator wrapped in `list()` is not streaming.** Two of my own comparison scripts grew to
+  gigabytes on this 8 GB node in one round: one wrapped `install.rows()` — an iterator whose entire point is
+  to yield row blocks — in `list()`, and the other asked `dequantize()` for a large tensor, which returns a
+  Python `list[float]` at twenty-four bytes per value. The OS killed the first; the second tripped the disk
+  watchdog at **3.42 GB free**, the same shape as the panic. `tools/memory_watchdog.py` now enforces a
+  **4 GB real-memory** ceiling (three readings, then SIGTERM/SIGKILL, and a `MEMORY_STOP` marker), but an
+  ad-hoc `python - <<EOF` has no command line for any watchdog to match, so a script that loads model data
+  asserts its own peak (`ru_maxrss`) and aborts above its budget (`D54`). Never `dequantize` a tensor you are
+  not going to use whole; `rows()` is the streaming form.
 - **No architecture assertion exists anywhere in the repository**, and there is no
   release artifact to assert against — do not invent a `lipo` step.
 - **The public status of this repository has swung three times, and only the latest is

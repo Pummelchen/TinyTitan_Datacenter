@@ -788,3 +788,82 @@ twice agreed with itself against a measurement.**
 **The instrument is what made this cheap.** Four capture points per side turned a milestone-sized question
 into four runs and four diffs, and the *character* of a difference — median relative, not maximum absolute —
 is what said "structural" rather than "rounding". That distinction is the one that changed the next step.
+
+## D54 — The memory budget is enforced, not advised
+
+`disk_watchdog.py` guards the disk and earned its place: on 2026-09-16 the engine's memory grew swap, swap is
+disk, and the node panicked. What was missing was the guard upstream of that — **resident memory** — and on
+2026-09-17 its absence bit me twice in one round.
+
+Two comparison scripts of mine grew to gigabytes on an 8 GB node. The OS killed the first. The second filled
+the page cache until `disk_watchdog.py` tripped the 5 GB disk floor and wrote its marker, with free space at
+**3.42 GB** — the same shape as the panic, caught by the other guard. Three stale disk watchdogs from earlier
+rounds were also still running, because a `pkill` with a partial pattern had matched none of them.
+
+Neither script *meant* to be heavy, and the two shapes are worth naming because both look innocent:
+
+* `list(install.rows(tensor))` — wrapping an iterator that was **already** streaming row blocks. It
+  materialises the whole tensor, and the streaming property was the entire point of the iterator.
+* `install.dequantize(tensor)` for a large tensor — it returns a Python `list[float]`, which is twenty-four
+  bytes per value, so an 8.4 M-element tensor costs 200 MB before numpy sees it.
+
+So the budget is now enforced by `tools/memory_watchdog.py`, mirroring the disk one:
+
+* the ceiling is **4.0 GB of real memory** — `rss`, not virtual size, which is the quantity a page cache, swap
+  and a panic are actually made of;
+* **three readings in a row** above it, not one, for the reason the disk guard already records: a single
+  reading of a fuzzy number once killed a read-only verification that had done nothing wrong;
+* it writes `.build/MEMORY_STOP`, so a run that tripped the limit cannot resume by itself;
+* seven tests cover the detector, the exclusion of the watchers themselves, the limit, the killer against a
+  child the test owns, and the `--once` no-op.
+
+**What a process-name pattern cannot catch is the important half.** Ad-hoc scripts run as `python - <<EOF` have
+no command line to match, so no watchdog sees them. The rule for those is self-imposed and cheap: a script
+that loads model data asserts its own peak — `resource.getrusage(RUSAGE_SELF).ru_maxrss` — and aborts above
+its budget. The experiments in `D55` do exactly that and peak at 336 MB.
+
+## D55 — M1's divergence is the install's int4 projections, proved bit-exactly
+
+`D50`–`D53` localised M1's divergence to `layer.00`, then to the attention half, then inside
+`chunk_gated_delta_rule` — and found every stage of that function corresponding, twice over, while the
+measured difference was **4.3% median relative**, which is far too large to be a rounding difference. The
+resolution is that the two sides are not running the same weights, and it can be shown exactly.
+
+The install holds `linear.in_qkv`, `linear.in_z` and `linear.out` — the Gated DeltaNet's three projections —
+as **int4-affine**, and `attn.q/k/v/o` likewise. That is deliberate: it is what `tools/quant_policy.json`
+says, and the policy's rationale protects the small sensitive tensors (`conv`, `in_a`, `in_b`, `a_log`,
+`dt_bias`, `norm`, the shared expert, the router) while the bulk projections are quantised. The contract, on
+the other hand, is generated from the **checkpoint**, where those tensors are bf16. Everything else in layer 0
+is byte-identical between the two.
+
+Take the reference's layer 0, feed it the identical `hidden_in`, and run it twice: once with the checkpoint's
+bf16 projections and once with **the install's own int4 values** for those three tensors, read back through
+the install reader so they are literally the weights the engine uses.
+
+```
+reference bf16-proj vs engine (install)    max abs 0.0155785   median rel 0.245   identical=False
+reference int4-proj vs engine              max abs 0           median rel 0       identical=True
+reference bf16 vs reference int4-proj      max abs 0.0155785   median rel 0.245   identical=False
+```
+
+**The engine is correct.** Given the same weights it reproduces the reference's attention output byte for
+byte, through the convolution, the gates, the l2 norms, the chunked delta rule, the triangular solves, the
+gated norm and the projection. There is no engine bug in this path, and the forty differing discrete
+decisions are a consequence of a 24.5% median difference at layer 0 compounding through forty layers.
+
+**Two consequences, and the second is a correction to the record.**
+
+1. **M1's gate and the quantisation policy are in conflict, and the conflict must be settled deliberately**
+   (`DC-112`). Either the DeltaNet's and attention's projections stay at bf16 — roughly +3 GB on a 21.7 GB
+   install, since the routed expert stacks are about 19 GB of it and stay int4 — or M1's claim is restated
+   with this measurement as its evidence. `rule 3` forbids the quiet version of either.
+2. **The M1 pass recorded on 2026-09-16 cannot be reconciled with these artifacts.** It claimed a trace
+   byte-identical to a checkpoint-based contract (`b8c976c5e7ba8816…`) while the engine read int4 projections
+   that a checkpoint-based contract does not have. The evidence says the claim was stale or wrong when it was
+   written; the mechanism is now explicit rather than suspected, and the engine's correctness is evidenced
+   *positively* — byte-identical under matched weights — which is a stronger statement than the original gate
+   ever made.
+
+The rebuild that would test the bf16 policy needs roughly 25 GB free and this node has 9.5 GB, so it is
+**blocked here** and must not be attempted on this machine in any case: it is a GB-scale job of the kind that
+panicked it. `DC-112` carries that.

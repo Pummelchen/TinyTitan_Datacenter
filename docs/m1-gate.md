@@ -18,6 +18,27 @@ discrete  layer.00.router.topk missing [231, 71], unexpected [72, 19]  (and 39 m
 there the router flips and the decisions cascade for all forty layers, which is exactly the failure mode
 `I3` exists to catch.
 
+**Root cause, proved bit-exactly (`D55`).** The two sides are not running the same weights. The install
+holds the Gated DeltaNet's three projections — `linear.in_qkv`, `linear.in_z`, `linear.out` — and
+`attn.q/k/v/o` as **int4-affine**, by `tools/quant_policy.json`; the contract is generated from the
+checkpoint, where they are bf16. Everything else in layer 0 is byte-identical between the two.
+
+Running the reference's layer 0 on the identical `hidden_in`, once with the checkpoint's bf16 projections and
+once with **the install's own int4 values** read back through the install reader:
+
+```
+reference bf16-proj vs engine (install)    max abs 0.0155785   median rel 0.245   identical=False
+reference int4-proj vs engine              max abs 0           median rel 0       identical=True
+reference bf16 vs reference int4-proj      max abs 0.0155785   median rel 0.245   identical=False
+```
+
+**The engine is correct**, and this is stronger evidence than the gate's original claim ever was: given the
+same weights it reproduces the reference byte for byte through the convolution, the gates, the l2 norms, the
+chunked delta rule, the triangular solves, the gated norm and the projection. M1's failure is the
+**quantisation policy**, and the milestone's claim that an int4 install reproduces a bf16 contract
+byte-for-byte **cannot hold as configured**. That is a decision for `DC-112`, not a bug to fix in the engine —
+and it also means the pass recorded on 2026-09-16 cannot be reconciled with these artifacts.
+
 **Narrowed further, with capture points inside the layer.** The trace captures layer boundaries only, so
 both sides gained an **opt-in** internals capture — `SHARD_TRACE_INTERNALS=1` for the engine,
 `--capture-internals` for the reference — recording `attn_out` (the mixture's input, after the attention
