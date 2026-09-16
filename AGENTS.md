@@ -56,8 +56,9 @@ wiki; the measurements live in `docs/`.
 - The sister project [TinyTitan](https://github.com/Pummelchen/TinyTitan) holds the
   single-node streaming runtime, the install format and the repacker. Treat it as
   read-only unless a change there is explicitly requested. It is **Apache-2.0**; this
-  repository is **MIT**, so check the obligations before reusing any of its code here
-  (tracked as `DC-013`).
+  repository is **MIT**, and `DC-013`'s review found **no code copied from it**, so no `NOTICE` transfers —
+  the measurement and the three conditions that would change it are in `THIRD_PARTY_NOTICES.md` and
+  `D36`, and `tools/check_provenance.py` guards the position offline.
 - `docs/` holds the decision records (`m0-decisions.md`, `m1-decisions.md`,
   `m2-decisions.md`, `repository-decisions.md` for decisions about the repository itself), the gate docs (`m0-gate.md`, `m1-gate.md`,
   `m0c-quantization.md`), the contracts
@@ -136,7 +137,10 @@ swift test --no-parallel
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 184 --swift-skipped 0 --python-tests 211
+python3 tools/check_status_claims.py --swift-tests 184 --swift-skipped 0 --python-tests 219
+
+# The provenance position: no copied code, and no NOTICE to carry
+python3 tools/check_provenance.py
 
 # Tests for the gate itself
 python3 -m unittest discover -s tools
@@ -246,6 +250,15 @@ any failure.
 - **An instrument narrower than the thing it diagnoses reports success.** `DC-087`'s divergence diagnostic
   covered fewer shapes than the test that failed, so it printed "identical" while the gate stayed red. When
   a diagnostic and a gate disagree, widen the diagnostic to at least the gate's range before believing it.
+- **A gate whose configuration is a list will go stale.** `check_status_claims.py` named the three
+  decision records explicitly, so the `D36` it was written to check was reported as *cited but undefined*
+  the moment a fourth record existed — the gate caught its own stale configuration, which is better than
+  not catching it, but the fix was to **discover** `docs/*-decisions.md` rather than list it. Prefer a rule
+  that finds its inputs to a list that has to be maintained beside them.
+- **A test fixture that simulates a violation contains the violation.** The provenance check flags
+  third-party copyright lines, and its own test file held one because the fixture wrote it literally — so
+  the fixture now assembles the line at runtime rather than the checker gaining an exemption for the file
+  that tests it. A rule with an exemption for its own test is a rule that stops being true quietly.
 - **No architecture assertion exists anywhere in the repository**, and there is no
   release artifact to assert against — do not invent a `lipo` step.
 - **The public status of this repository has swung three times, and only the latest is

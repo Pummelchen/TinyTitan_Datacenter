@@ -49,7 +49,10 @@ REFERENCE_DOCUMENTS = [".wiki/News.md"]
 # The two that must be present; the wiki is a separate checkout and is gitignored here, so a missing wiki
 # page is reported NOT CHECKED rather than passing — and rather than failing a run that cannot see it.
 REQUIRED = ["README.md", "AGENTS.md"]
-DECISION_FILES = ["docs/m0-decisions.md", "docs/m1-decisions.md", "docs/m2-decisions.md"]
+# Discovered rather than listed. The list was explicit until `D36` — the decision this gate's own
+# repository-decision record introduced — turned up as "cited but undefined" because the file that defines
+# it had not been added here. A gate whose configuration can go stale is a gate that will.
+DECISION_GLOB = "docs/*-decisions.md"
 
 # `**184 tests, 0 skipped, 0 failures**`, `at **184 tests, 2 skipped`, `184 tests, 0 failures`.
 SWIFT_TESTS = re.compile(r"\*\*(\d+) tests?, (\d+) skipped")
@@ -115,8 +118,9 @@ def check(
                     f"{name}:{number}: claims {claimed} Python tests; the suite reports {python_tests}"
                 )
 
+    decision_files = sorted(str(path) for path in root.glob(DECISION_GLOB))
     defined: set[int] = set()
-    for name in DECISION_FILES:
+    for name in decision_files:
         path = root / name
         if not path.exists():
             problems.append(f"{name}: the decision record this gate reads is missing")
@@ -126,7 +130,7 @@ def check(
         problems.append("no decision headings were found at all, so citations cannot be checked")
 
     cited: dict[int, list[str]] = {}
-    for name in CLAIM_DOCUMENTS + REFERENCE_DOCUMENTS + DECISION_FILES:
+    for name in CLAIM_DOCUMENTS + REFERENCE_DOCUMENTS + decision_files:
         path = root / name
         if not path.exists():
             continue
@@ -137,7 +141,7 @@ def check(
         if identifier not in defined:
             problems.append(
                 f"D{identifier} is cited in {', '.join(sorted(set(cited[identifier])))} and has no "
-                f"definition in {', '.join(DECISION_FILES)}"
+                f"definition in any of {', '.join(decision_files)}"
             )
 
     for name in CLAIM_DOCUMENTS:

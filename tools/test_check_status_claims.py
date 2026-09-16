@@ -138,6 +138,13 @@ class StatusClaimTests(unittest.TestCase):
         problems, _, _ = self.run_gate()
         self.assertTrue(any("README.md" in problem for problem in problems), problems)
 
+    def test_a_decision_in_any_record_is_found(self) -> None:
+        """The record that defines the citation is discovered, so adding one cannot leave a dangling id."""
+        build(self.root, agents="the rule in **D7** settles it\n")
+        (self.root / "docs" / "repository-decisions.md").write_text("# Repository\n\n## D7 — later\n")
+        problems, _, _ = self.run_gate()
+        self.assertEqual(problems, [], "a decision defined in a new record must be found")
+
     def test_a_family_without_its_number_is_not_compared(self) -> None:
         build(self.root, readme="**999 tests, 9 skipped, 0 failures**\n")
         problems, _, _ = check(self.root, swift_tests=None, swift_skipped=None, python_tests=200)
