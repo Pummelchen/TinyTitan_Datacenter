@@ -93,6 +93,18 @@ def _install_bytes(install: Path) -> int:
     return total
 
 
+def heavy_preflight() -> None:
+    """Disk, memory and the one-heavy-job lock, before anything loads.
+
+    The install path's measured peak is 348.6 MB (`docs/m1-gate.md`), so 0.35 GB is what this declares —
+    the smallest declared need in the project, and still worth taking the lock: a cluster run's node here
+    plus an install build is the pairing that panicked this machine.
+    """
+    from heavy_job import require_heavy_headroom
+
+    require_heavy_headroom(0.35, purpose="the M3 gate (one node runs here)")
+
+
 def farm_state(loads: dict[str, float | None], threshold: float) -> tuple[list[str], list[str]]:
     """Which nodes are too busy, and which could not be asked at all."""
     busy = [name for name, value in loads.items() if value is not None and value > threshold]
@@ -125,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report", type=Path, default=None)
     args = parser.parse_args(argv)
 
+    heavy_preflight()
     entries = [entry.strip() for entry in args.mesh.split(",") if entry.strip()]
     if len(entries) < 2:
         raise SystemExit("--mesh needs at least two entries, this host first")

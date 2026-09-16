@@ -34,7 +34,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
-from check_disk_headroom import require_headroom  # noqa: E402
+from heavy_job import require_heavy_headroom  # noqa: E402
 PROMPTS = ROOT / "tools" / "m1_prompts.json"
 
 
@@ -85,7 +85,9 @@ def main(argv: list[str] | None = None) -> int:
         help="run a subset of the frozen prompts; the contract side costs about ten times the engine's wall time",
     )
     args = parser.parse_args(argv)
-    require_headroom(purpose="the contract run")
+    # 4.2 GB is the checkpoint path's measured peak RSS (`docs/m1-gate.md`: 4.16 GB), which is the number
+    # that decides whether this machine can carry it at all.
+    require_heavy_headroom(4.2, purpose="the M1 gate on the checkpoint")
 
     prompt_bytes = args.prompts.read_bytes()
     prompt_set = json.loads(prompt_bytes)

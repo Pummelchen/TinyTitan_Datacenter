@@ -115,6 +115,16 @@ python3 tools/check_disk_headroom.py
 
 Clearing `.build/DISK_STOP` is a deliberate act: read it, free space, then `rm` it.
 
+**Memory has a floor too, and heavy jobs take a lock (`D44`).** `tools/heavy_job.py` refuses a job whose
+declared peak exceeds what the machine can use, warns when the machine is already under pressure, and holds
+one heavy-job slot so two cannot run at once — the pairing that panicked this node. `quantize.py`,
+`run_m1_gate.py` and `run_m3_gate.py` call it before they load anything:
+
+```bash
+python3 tools/heavy_job.py --needs-gb 4.2 --purpose "the M1 checkpoint path"   # what would this cost?
+python3 tools/heavy_job.py --release                                          # after reading the holder
+```
+
 ## Layout
 
 - `sources/DatacenterEngine/` — the runtime: `Qwen3Forward`, `Qwen3_5Forward`,
@@ -126,7 +136,7 @@ Clearing `.build/DISK_STOP` is a deliberate act: read it, free space, then `rm` 
 - `tools/` — the Python reference implementation and every gate: `ordered_*.py`
   (the numeric contracts), `run_m0_gate.py`, `run_m1_gate.py`, `trace_capture.py`,
   `trace_diff.py`, `quantize.py`, `disk_watchdog.py`, `check_disk_headroom.py`,
-  the fixture builders and their tests.
+  `heavy_job.py`, `run_all_gates.py`, the fixture builders and their tests.
 - `tests/` — mirrors `sources/` path for path.
 
 ## Build and run
@@ -146,7 +156,7 @@ python3 tools/run_all_gates.py
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 191 --swift-skipped 0 --python-tests 296
+python3 tools/check_status_claims.py --swift-tests 191 --swift-skipped 0 --python-tests 315
 
 # The provenance position: no copied code, and no NOTICE to carry
 python3 tools/check_provenance.py

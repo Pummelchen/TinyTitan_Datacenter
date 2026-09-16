@@ -382,3 +382,63 @@ recurs it will arrive with a name attached.
   "the write eventually fails" is a property of how long the kernel takes, and a test that loops until it
   does is asserting a race. It was removed with that reason written where it stood; the mapping it found
   (both `EPIPE` and `ECONNRESET`) stayed.
+
+## D44 — The memory floor and the one-job lock are enforced too, not just the disk floor
+
+`D41`'s runner made the gates reproducible. This is about the other half of the same problem: the project's
+worst incident was not a gate failing, it was a **machine panicking**. On 2026-09-16 a 35 B engine at ~4.5 GB
+resident ran on a machine with about 4.5 GB usable, *alongside* a 20 GB install build; macOS grew swap to
+thirteen swapfiles, the machine stopped responding for 90 seconds, and the hardware watchdog panicked it.
+Disk had a floor enforced by `check_disk_headroom.py`. Memory and concurrency were **rules in a document**,
+and a rule in a document is what that incident is worth.
+
+`tools/heavy_job.py` adds both, and the split between them is the design:
+
+* **A refusal is deterministic.** A job that declares a peak larger than what the machine can use is
+  refused, with the arithmetic in the message: physical memory less the reserve the project measured
+  (~4.5 GB usable of 8 GB, stated as a number so a reader can disagree with it rather than with a mystery).
+  Free disk cannot make such a job safe.
+* **A warning is not.** What looks *reclaimable right now* is reported, and when it is already below the
+  declared need the job is warned about loudly — but not refused, because macOS's notion of available
+  memory is fuzzy, and a guard that acts on one fuzzy reading is the mistake `disk_watchdog.py` already made
+  once and recorded. What the operator does with the warning is the human-approval rule.
+* **Being alone is a lock, with stale detection.** "One heavy job at a time, never concurrent" is now a file
+  with the holder's purpose, pid and time. A second job refuses and is told how to inspect it. A claim whose
+  process is gone is taken over with a printed notice — because a lock that a crashed job leaves behind
+  would refuse every future run and be deleted by the next person to hit it, which is how a guard becomes a
+  formality.
+
+**Where the claim belongs, learned by getting it wrong.** The first version of the wiring put the preflight
+inside `quantize.build_install` — a *library* function — which made every caller a heavy job. The tests that
+build two-tensor fixtures then took the **production** lock, and refused each other: one test claimed it, the
+next one in the same process was told another heavy job was running. Four tests errored and one failed, and
+the guard was right about all five. The claim belongs to the **entry point**, where a deliberate run begins;
+a library function builds what it is asked to build. The lock's location is also overridable through
+`HEAVY_JOB_LOCK`, read per call — and that moves the lock rather than switching it off, because an
+environment variable that disables a safety check is a foot-gun, and this round is the demonstration.
+
+It runs, on this machine, as:
+
+```
+$ python3 tools/heavy_job.py --needs-gb 4.2 --purpose "the M1 checkpoint path"
+memory: physical 8.59 GB, usable 5.09 GB, reclaimable now 3.73 GB, swap 1.49 of 2.05 GB used
+heavy job warning: the M1 checkpoint path declares 4.20 GB and only 3.73 GB looks reclaimable right now;
+other work is using this machine
+```
+
+The job fits — 4.20 GB against 5.09 GB usable — so it is allowed, and the warning says what the operator
+needs to know instead: the machine is already swapping, because of this round's own ten test runs. And a
+job that cannot fit is refused with the number that decided it:
+
+```
+$ python3 tools/heavy_job.py --needs-gb 9
+refusing to start this check: it declares 9.00 GB and this machine can use 5.09 GB (8.59 GB less a 3.5 GB
+reserve for macOS).
+```
+
+**It is wired into the heavy paths, not left as a tool to remember.** `quantize.py` (the install build),
+`run_m1_gate.py` (the checkpoint path, declaring its **measured** 4.2 GB peak) and `run_m3_gate.py` (the
+install path, declaring its **measured** 0.35 GB) now call it before they load anything. The install build
+declares no memory figure at all, deliberately: what it holds depends on the checkpoint, and inventing a
+number would be a number with nothing behind it. The **lock** is the part that matters there — the machine
+panicked while an install build ran beside an engine.

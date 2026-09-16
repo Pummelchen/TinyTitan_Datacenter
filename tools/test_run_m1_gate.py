@@ -16,6 +16,8 @@ import json
 import shutil
 import subprocess
 import tempfile
+import os
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -112,6 +114,12 @@ class GateInstrumentTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("refusing", result.stderr)
+
+
+# A test that runs a heavy entry point must not take the **production** lock: point it at a temporary
+# file for the whole module. The guard stays enabled; only its location moves.
+_LOCK_DIR = tempfile.TemporaryDirectory()
+os.environ["HEAVY_JOB_LOCK"] = str(Path(_LOCK_DIR.name) / "HEAVY_JOB_LOCK")
 
 
 if __name__ == "__main__":

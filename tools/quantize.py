@@ -36,7 +36,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
-from check_disk_headroom import require_headroom  # noqa: E402
+from heavy_job import require_heavy_headroom  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -541,7 +541,6 @@ def build_install(
     """
     # A 67 GB checkpoint and a 20 GB install will not fit under the floor, and exhausting the
     # disk here means exhausting swap, which panicked this machine twice.
-    require_headroom(purpose="the install build")
     from safetensors_source import SafetensorsSource
 
     handle = SafetensorsSource(snapshot)
@@ -714,6 +713,15 @@ def main(argv: list[str] | None = None) -> int:
     verify = sub.add_parser("verify", help="recompute the payload digests")
     verify.add_argument("install", type=Path)
     args = parser.parse_args(argv)
+
+    # The preflight belongs to the **entry point**, not to `build_install`. Putting it in the function made
+    # every caller a heavy job — including the tests that build two-tensor fixtures, which then fought each
+    # other for the production lock and failed each other. A library function builds what it is asked to
+    # build; deciding that a job is heavy is a decision only a deliberate run makes.
+    # No declared memory figure: what a build holds depends on the checkpoint, and inventing one would be a
+    # number with nothing behind it. The lock is the part that matters — the machine panicked while an
+    # install build ran beside an engine, which is what one-heavy-job-at-a-time prevents.
+    require_heavy_headroom(None, purpose="the install build")
 
     if args.command == "verify":
         manifest = verify_install(args.install)
