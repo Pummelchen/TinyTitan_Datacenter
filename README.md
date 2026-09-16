@@ -12,12 +12,24 @@
 
 A distributed inference engine for large MoE language models on clusters of Mac minis and Mac Studios over LAN/SFP/QSFP and Thunderbolt.
 
-**Status: the code is incomplete, untested and does not run.** `Package.swift`
-declares two executable targets (`datacenter-trace`, `datacenter-generate`) and
-`sources/` holds a partial implementation, but nothing here is finished, nothing is
-covered by a passing test run, and there is no working engine to execute. Treat
-every capability described below as **design intent**, not as something you can run
-today. There are **no releases and no tags**.
+**Status: builds and passes its tests on the toolchain `Package.swift` requires;
+the engine is incomplete.** On **Swift 6.4 / Xcode 27** — what
+`swift-tools-version:6.4` demands — `swift build` reports no diagnostics and
+`swift test --no-parallel` runs **105 tests, 2 skipped, 0 failures**. The two skips
+are the Metal kernel tests, which need a GPU. The 163 Python tests behind the
+numeric contract are standard-library only and run in CI on every push.
+
+What is **not** finished: M0's dense path matches the reference contract bit-for-bit
+at fixture scale, and M1 (Qwen3.6-35B-A3B, 4-bit experts, streamed from SSD) has run
+on the real model — all five frozen prompts exit 0, and two re-runs are
+byte-identical — but **M1's gate is open**, its throughput and cache figures predate
+later changes, and the contract comparison is verified on one prompt of five. Treat
+each capability below as intent plus whatever `docs/` measures. There are **no
+releases and no tags**.
+
+**On a toolchain below 6.4 none of this builds at all**: `swift-tools-version:6.4`
+cannot be parsed by Xcode 26.x, which is what the current `macos-26` CI image
+carries, so the Swift CI job prints a warning and skips. Build and test locally.
 
 ## What it does
 

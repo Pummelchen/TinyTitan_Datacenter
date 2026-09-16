@@ -14,10 +14,14 @@
 
 A distributed inference engine for large MoE language models on a cluster of Mac
 minis and Mac Studios, over LAN/SFP/QSFP and Thunderbolt. The Swift engine under
-**The code here is incomplete, untested and does not run** — `Package.swift`
-declares two executable targets and `sources/` holds a partial implementation, but
-there is no working engine and nothing is covered by a passing test run. There are
-**no releases and no tags**. The design, the plan and the status live in the wiki.
+`sources/` **builds and passes its tests on Swift 6.4 / Xcode 27**, the toolchain
+`swift-tools-version:6.4` requires: `swift build` clean, `swift test --no-parallel`
+at **105 tests, 2 skipped, 0 failures** (the skips are the Metal kernel tests, which
+need a GPU). It is nevertheless **incomplete**: M0's dense path matches the reference
+contract bit-for-bit at fixture scale, M1 has run on the real 35B model with all five
+frozen prompts at exit 0 and two byte-identical re-runs, and M1's gate is still open.
+There are **no releases and no tags**. The design, the plan and the status live in the
+wiki; the measurements live in `docs/`.
 
 ## Scope of this checkout
 
@@ -196,11 +200,14 @@ any failure.
   and skips `swift build` and `swift test`. Run them locally.
 - **No architecture assertion exists anywhere in the repository**, and there is no
   release artifact to assert against — do not invent a `lipo` step.
-- **The public status of this repository has swung twice and both extremes were
-  wrong.** An early revision said there was no source code at all; a later one said
-  the engine runs. The truth is in between: the code exists but is incomplete,
-  untested and does not run. Do not restore either claim without a working engine
-  and a passing test run to point at.
+- **The public status of this repository has swung three times, and only the latest is
+  evidenced.** The first revision said there was no source code; the second said the
+  engine runs; the third said it is "untested and does not run". The first two were
+  wrong, and so is the third as written — on the toolchain the manifest requires, the
+  build is clean and **105 Swift tests pass**, while on the `macos-26` CI image (Xcode
+  26.x, below the 6.4 floor) the manifest does not even parse. **Any status claim must
+  name the toolchain**, because that is the whole difference between "does not build"
+  and "builds and passes". Point at a command and its output, never at an adjective.
 
 <!-- release-rules:begin -->
 ## Releasing
