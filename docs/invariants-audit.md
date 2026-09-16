@@ -33,7 +33,13 @@ difference was exactly those weights. Point the contract at the install — `too
 same dequantiser the Swift reader mirrors — and `trace_diff` reports **IDENTICAL — 83 tensors, 0 differing
 elements, 40 discrete decisions, matching digests `b0d382dbabf36df0…`** (`D56`, verified 2026-09-17). The
 remaining difference against a checkpoint contract is the **declared, measured** cost of int4 (`D55`), not a
-failure of this invariant, and `tools/milestones.json` now states M1's claim in that falsifiable form. M2
+failure of this invariant, and `tools/milestones.json` now states M1's claim in that falsifiable form. **And the checkpoint pair was re-run
+in full on 2026-09-17**: all five frozen prompts, engine against contract, both reading the checkpoint through
+`pread`, every one `IDENTICAL — 83 tensors, 0 elements, 40 discrete decisions`, with the first prompt's digest
+`b8c976c5e7ba8816…` **on both sides** — the same digest the 2026-09-16 stored pair printed. That is the
+strongest form this invariant has been checked in: the engine reproduces its historical bytes on the input
+those bytes came from, after the GPU unpack became the default and every contract matmul went through a
+chooser (`D73`). M2
 produced that same digest from **half the experts on each of two machines**
 (`b0d382dbabf36df0…` for the shared prompt, `docs/m2-decisions.md`), and the four-node mesh reproduced the
 single-node trace exactly. The GPU unpack is asserted **bit-identical** to the scalar one across a grid of
@@ -79,7 +85,8 @@ all-reduce that mixes per-node partials, which `D17`'s measured counterexample (
 **Evidence.** M0's three prompts each matched the reference implementation's argmax index sets while the
 numeric distance stayed near `2e-06`; M1 checked **40 discrete decisions** on the real model, and as of
 2026-09-17 that comparison is **current and passing** with matched weights — `trace_diff` between the engine
-and a contract reading the same install reports every one of the 40 matching (`D56`); M2 and M3
+and a contract reading the same install reports every one of the 40 matching (`D56`), and on 2026-09-17 that was extended from one prompt to all
+**five** frozen ones with the same result (`D73`); M2 and M3
 checked the same decisions per node — and those comparisons are current, because every node reads the
 **same install** (`b0d382db…` on all of them). What int4 *does* move is measured rather than assumed: against
 a bf16 checkpoint contract the router's choices differ in **40 of 1,600 slots**, and at the output the

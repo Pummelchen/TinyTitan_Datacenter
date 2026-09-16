@@ -139,6 +139,11 @@ floor stop it, and the machine recovered to 10 GB free. The remaining step needs
 than this one has, which is what `DC-111` now says: run the **engine on the checkpoint** and the **reference
 on the checkpoint** where both fit, and the two are then comparable without guessing.
 
+**Corrected 2026-09-17: that step has been taken, on this node.** Both sides now read the checkpoint through
+`pread`, and the whole gate passes on all five frozen prompts — the status section below has the numbers. What
+remains specific to a small machine is the **install** path, and the reason is speed rather than size: its
+contract reads cost hours where the engine's cost minutes (`DC-114`, `D70`).
+
 **And this document's own record was inconsistent, which is how it stayed hidden.** Further down, a status
 table lists the trace digest as `b0d382dbabf36df0…` — the value the engine produces today, the value
 `D34`'s record confirms, and the value the M2 and M3 gates report — while the status section above it still
@@ -164,6 +169,44 @@ cache hit rate**. One command runs all three on one checkpoint and writes a repo
 | Throughput | greedy generation with `datacenter-generate`, its own timing parsed into the report |
 | Cache | the engine's expert-traffic counters, written beside each trace in `metrics.json` |
 | Memory | each engine run's **peak resident set size**, from the platform's `/usr/bin/time -l`, because `DC-032`'s gate is a budget and a budget needs a number. It counts clean file-backed pages, so it is an upper bound on the process rather than a claim about private dirty memory |
+
+## Status: passing, re-verified 2026-09-17 on all five frozen prompts
+
+**The whole gate, on the real checkpoint, on this node.** Not one prompt and not a subset: all five of
+`tools/m1_prompts.json`, engine against contract, both reading the same checkpoint through `pread`.
+
+| prompt | tokens | engine | peak RSS | |
+| --- | --- | --- | --- | --- |
+| `capital` | 5 | 34.94 s | 3.79 GB | IDENTICAL |
+| `arithmetic` | 33 | 89.65 s | 3.76 GB | IDENTICAL |
+| `code` | 40 | 115.92 s | 3.63 GB | IDENTICAL |
+| `repeat` | 60 | 128.13 s | 3.60 GB | IDENTICAL |
+| `long` | 67 | 146.26 s | 3.67 GB | IDENTICAL |
+
+`GATE PASSED`, with `IDENTICAL — 83 tensor(s), 0 element(s), 40 discrete decision(s) checked` on every one, and
+the first prompt's digest `b8c976c5e7ba8816…` on **both** sides. Expert traffic runs 2,240 to 8,040 requests
+and 3.5 to 12.6 GB of elements read, with a cache hit rate of **0.0000** on every prompt — `D31`'s finding,
+arriving again from another direction.
+
+**That digest answers the question this document left open.** The narrative above worried that "the drift is on
+the engine's install path", because a fresh engine trace printed `b0d382dbabf36df0…` where the stored pair
+printed `b8c976c5e7ba8816…`. Point the engine at the **same input the stored pair used** — the checkpoint — and
+it prints `b8c976c5e7ba8816…` again, byte for byte, after the GPU unpack became the default and every contract
+matmul went through a chooser. There is no engine drift to find: the two digests are two **inputs**, and `D55`
+measures the distance between them.
+
+**And the gate was not passing the pair of flags this document records as survivable.** `run_m1_gate.py` passed
+**neither** until `D69` added `--stream-experts` and `D73` added `--uncached`, so its checkpoint runs went
+through `safe_open` and **mapped 67 GB** — the hazard this file names two sections above as the thing that drove
+swap to 5.1 GB and disk to 8.0 GB in a minute. Measured after the fix, the contract alone is **66.20 s and
+0.397 GB** peak on the `capital` prompt, so what a checkpoint run spends is the **engine's** trace over bf16
+weights rather than the contract's.
+
+**The declarations follow that measurement, and they differ on purpose.** A checkpoint run declares **4.2 GB**,
+because the engine's trace peaks at 3.60-3.79 GB; an install run declares **1.5 GB**, against a contract
+measured at 1.21 GB (`D69`). The first draft of the fix set the checkpoint figure to 1.5 GB from the contract's
+0.397 GB and the gate's own peak disproved it the same day (`D73`); an under-declared guard admits a job the
+machine cannot take, which is worse than a conservative one.
 
 ## Status: passing, re-established 2026-09-16 after `D15` and `D16`
 
