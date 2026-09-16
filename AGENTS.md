@@ -139,7 +139,7 @@ python3 tools/heavy_job.py --release                                          # 
 - `tools/` — the Python reference implementation and every gate: `ordered_*.py`
   (the numeric contracts), `run_m0_gate.py`, `run_m1_gate.py`, `trace_capture.py`,
   `trace_diff.py`, `quantize.py`, `disk_watchdog.py`, `check_disk_headroom.py`,
-  `heavy_job.py`, `run_all_gates.py`, the fixture builders and their tests.
+  `heavy_job.py`, `run_all_gates.py`, `check_milestones.py`, the fixture builders and their tests.
 - `tests/` — mirrors `sources/` path for path.
 
 ## Build and run
@@ -159,7 +159,7 @@ python3 tools/run_all_gates.py
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 191 --swift-skipped 0 --python-tests 315
+python3 tools/check_status_claims.py --swift-tests 191 --swift-skipped 0 --python-tests 329
 
 # The provenance position: no copied code, and no NOTICE to carry
 python3 tools/check_provenance.py
@@ -171,6 +171,10 @@ python3 tools/check_baselines.py --metrics .build/baseline-check/trace/metrics.j
 # M3's throughput gate. It refuses to run unless the farm is quiet, which is a measurement of the
 # nodes rather than an honour system — see D38.
 python3 tools/run_m3_gate.py --install .build/m1-install --mesh node4@<addr>,node1@<addr>,node2@<addr>,node3@<addr>
+
+# Re-check the milestone claims, not just the repository: which digest the engine produces, and
+# whether it was ever checked against the contract. A divergence that is not declared fails (D46).
+python3 tools/run_all_gates.py --milestones
 
 # Tests for the gate itself
 python3 -m unittest discover -s tools

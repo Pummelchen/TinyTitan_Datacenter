@@ -164,6 +164,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--baselines", action="append", default=[], help="a metrics.json for the baseline gate (repeatable)"
     )
+    parser.add_argument(
+        "--milestones",
+        action="store_true",
+        help="also re-check the milestone claims, which runs one engine trace (~20 s)",
+    )
     args = parser.parse_args(argv)
 
     problems: list[str] = []
@@ -225,6 +230,16 @@ def main(argv: list[str] | None = None) -> int:
             problems.append(f"baselines: {result.stdout.strip()}{result.stderr.strip()}")
     else:
         not_checked.append("baselines (no --metrics given; they need a run to compare against)")
+
+    if args.milestones:
+        result = run([sys.executable, str(TOOLS / "check_milestones.py")])
+        summary.append(("milestones", "OK" if result.returncode == 0 else "FAILED"))
+        if result.returncode != 0:
+            problems.append(f"milestones: {result.stdout.strip()}{result.stderr.strip()}")
+        for line in result.stdout.strip().splitlines():
+            print(f"  {line}")
+    else:
+        not_checked.append("milestones (pass --milestones to re-check them; it runs one engine trace)")
 
     width = max(len(name) for name, _ in summary)
     print("\nGATES")

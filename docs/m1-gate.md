@@ -31,6 +31,13 @@ rebuild. The discriminating step is written down in `DC-111`: run the **engine o
 **reference on the checkpoint** on a machine that can hold it, which separates an install-path drift from a
 checkpoint-path one without guessing.
 
+**And this document's own record was inconsistent, which is how it stayed hidden.** Further down, a status
+table lists the trace digest as `b0d382dbabf36df0…` — the value the engine produces today, the value
+`D34`'s record confirms, and the value the M2 and M3 gates report — while the status section above it still
+calls `b8c976c5e7ba8816…` the current digest. Both were true at different times, and nothing re-checked which
+was true *now*. `tools/check_milestones.py` does exactly that, and it reports this agreement as **stale**
+with its task rather than letting a superseded digest stand as a pass (`D46`).
+
 **Status: passing**, re-established 2026-09-16 after `D15` and `D16`. See the status section below
 for the evidence, and for three claims in this document that the code has since outgrown.
 

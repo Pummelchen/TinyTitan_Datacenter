@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "note": "What each milestone claims, as data a tool can re-check. `engine_digest` is the digest the ENGINE produces on this install for the milestone's prompt; it is what a cheap re-run can confirm. `agreement` records whether that digest was checked against the CONTRACT, and by which run, because the two are different claims: an engine that reproduces its own recorded digest is stable, and an engine that matches the reference is correct. The M1 confusion came from treating the first as the second. `known_mismatch` is a divergence that has been declared and tracked; anything not declared here fails tools/check_milestones.py, so a new drift cannot arrive quietly.",
+  "prompt": {
+    "tokens": [760, 6511, 314, 9338, 369],
+    "id": "capital",
+    "length": 5
+  },
+  "milestones": [
+    {
+      "id": "M0",
+      "claim": "the engine's trace is byte-identical to the contract on Qwen3.5-2B over three prompts",
+      "engine_digest": null,
+      "agreement": "not checked here",
+      "recheck": "needs the 2B checkpoint, which is not cached on this machine and must not be fetched to make a gate pass",
+      "source": "docs/m0-gate.md"
+    },
+    {
+      "id": "M1",
+      "claim": "the engine's trace on the real 35 B model is byte-identical to the reference contract's",
+      "engine_digest": "b0d382dbabf36df0…",
+      "engine_digest_source": "docs/m1-decisions.md, D34's record, and the digest the M2 and M3 gates report for this prompt",
+      "agreement": "stale",
+      "agreement_note": "the stored contract (b8c976c5e7ba8816…) predates the changes that moved the engine's digest to b0d382dbabf36df0…, and the contract has not been re-run since. The engine is stable and self-consistent; whether the CURRENT pair agrees is unknown, and settling it needs a contract run on the checkpoint.",
+      "known_mismatch": "DC-111",
+      "source": "docs/m1-gate.md"
+    },
+    {
+      "id": "M2",
+      "claim": "the same model over two and four machines produces what one node produces",
+      "engine_digest": "b0d382dbabf36df0…",
+      "agreement": "current",
+      "agreement_note": "every node reads the SAME install, so this comparison does not depend on a stored artifact: it is made between machines in one run.",
+      "source": "docs/m2-decisions.md"
+    },
+    {
+      "id": "M3",
+      "claim": "four machines run one forward and produce the single-node trace, and the cluster is accounted for",
+      "engine_digest": "b0d382dbabf36df0…",
+      "agreement": "current",
+      "agreement_note": "as M2: the comparison is between machines reading one install, made in the run itself.",
+      "source": "docs/repository-decisions.md"
+    },
+    {
+      "id": "M4",
+      "claim": "DeepSeek-V4.1 matches its reference at 128K context",
+      "engine_digest": null,
+      "agreement": "not started",
+      "recheck": "the weights do not exist on this farm and cannot fit on a 228 GB node",
+      "source": "docs/repository-layout.md"
+    },
+    {
+      "id": "M5",
+      "claim": "Qwen3.8-Flash-Next matches its reference by the same protocol as M4",
+      "engine_digest": null,
+      "agreement": "not started",
+      "recheck": "as M4: no weights here",
+      "source": "docs/repository-layout.md"
+    }
+  ]
+}

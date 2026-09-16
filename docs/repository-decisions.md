@@ -483,3 +483,33 @@ keeps the old pass on the page with a status update above it rather than deletin
 install, and all four produce `b0d382db…`. The recorded baseline counts still match exactly — the install's
 traffic did not move even though its arithmetic did. What is in question is one claim: that the engine's
 quantised install path reproduces the reference's checkpoint path bit for bit.
+
+## D46 — Milestones are re-checked, and two claims that look alike are kept apart
+
+`DC-111` was found by hand: a manual trace, a manual comparison, thirty seconds of work that nothing in this
+repository was doing. `tools/check_milestones.py` is that work made repeatable, and it exists because the
+failure was not a wrong number — it was a **right number nobody re-checked**.
+
+**Two claims, deliberately not conflated.** `tools/milestones.json` records, for each milestone, the digest
+the **engine** produces on this install and whether that was ever checked against the **contract**:
+
+* *the engine is stable* — it still produces the digest its own record says it does. A single-node trace on
+  the install answers this in twenty seconds, and any new divergence fails.
+* *the engine matches the reference* — the milestone's actual claim. On the 35 B model that means reading the
+  checkpoint, which this machine cannot safely do. So it is reported `stale` or `not checked` **with the
+  reason**, never inferred from the first.
+
+Treating the first as the second is exactly how the M1 confusion happened: the engine has been stable at
+`b0d382dbabf36df0…` — a later table in its own gate document says so, `D34`'s record confirms it, and the M2
+and M3 gates report it — while the status section still quoted `b8c976c5e7ba8816…` from the run that
+preceded the change. Both statements were true at different times, and neither was checked against the other.
+
+**A declared divergence does not fail; an undeclared one does.** A stale agreement must name the task that
+tracks it, or `milestones.json` is refused. A tool that is permanently red is a tool people stop reading, and
+the alternative — reporting the staleness without owning it — is how a fact becomes nobody's. A divergence
+that is *not* declared fails the check, so the next one arrives loudly.
+
+Its first full run, on this repository: **M1** engine reproduces, contract stale (`DC-111`); **M2** and
+**M3** engine reproduces, contract current, because their comparison is between machines reading one install
+and does not depend on a stored artifact at all; **M0**, **M4** and **M5** not checkable here, each with the
+reason. It runs as `python3 tools/run_all_gates.py --milestones`.
