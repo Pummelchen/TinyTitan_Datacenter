@@ -199,9 +199,14 @@ public enum MixtureOfExperts {
     ///
     /// The shared expert is **added**, not ranked: it is not part of the router's top-k, and
     /// its gate is a sigmoid of a projection of the hidden state.
-    public static func block(
-        hidden: [Float], tokens: Int, weights: MixtureWeights, shape: MixtureShape, profiler: Profiler? = nil
-    ) throws -> (output: [Float], indices: [[Int]], weights: [[Float]]) {
+    /// The half of the block that **every node computes identically** — the shared expert and its gate.
+    ///
+    /// It is split out so a sharded node can replace the routed half with a reduction and still finish the
+    /// block with the same expressions in the same order. Two implementations of "the rest of the block"
+    /// would be two chances to differ, which is what `D17` exists to prevent.
+    public static func sharedPart(
+        hidden: [Float], tokens: Int, weights: MixtureWeights, shape: MixtureShape
+    ) -> (shared: [Float], scalar: [Float]) {
         let hiddenSize = shape.hiddenSize
         let shared = Ops.orderedMatmul(
             x: {
@@ -217,6 +222,32 @@ public enum MixtureOfExperts {
             }(),
             w: weights.sharedDown, rows: tokens, k: shape.sharedIntermediate, out: hiddenSize
         )
+        let scalar = Ops.orderedMatmul(
+            x: hidden, w: weights.sharedScalarGate, rows: tokens, k: hiddenSize, out: 1
+        )
+        return (shared, scalar)
+    }
+
+    /// The routed sum plus the gated shared expert, which is how every node finishes the block.
+    public static func combine(
+        routed: [Float], shared: [Float], scalar: [Float], tokens: Int, hiddenSize: Int
+    ) -> [Float] {
+        var output = [Float](repeating: 0, count: routed.count)
+        for token in 0..<tokens {
+            let gate = Ops.sigmoid(scalar[token])
+            for index in 0..<hiddenSize {
+                let position = token * hiddenSize + index
+                output[position] = routed[position] + gate * shared[position]
+            }
+        }
+        return output
+    }
+
+    public static func block(
+        hidden: [Float], tokens: Int, weights: MixtureWeights, shape: MixtureShape, profiler: Profiler? = nil
+    ) throws -> (output: [Float], indices: [[Int]], weights: [[Float]]) {
+        let hiddenSize = shape.hiddenSize
+        let parts = sharedPart(hidden: hidden, tokens: tokens, weights: weights, shape: shape)
         profiler?.mark("mix.shared")
         let (_, indices, chosen) = router(
             hidden: hidden, tokens: tokens, weights: weights.router, experts: shape.experts, topK: shape.topK
@@ -227,17 +258,10 @@ public enum MixtureOfExperts {
             indices: indices, weights: chosen, shape: shape, profiler: profiler
         )
         profiler?.mark("mix.experts")
-        let scalar = Ops.orderedMatmul(
-            x: hidden, w: weights.sharedScalarGate, rows: tokens, k: hiddenSize, out: 1
+        let output = combine(
+            routed: routed, shared: parts.shared, scalar: parts.scalar,
+            tokens: tokens, hiddenSize: hiddenSize
         )
-        var output = [Float](repeating: 0, count: routed.count)
-        for token in 0..<tokens {
-            let gate = Ops.sigmoid(scalar[token])
-            for index in 0..<hiddenSize {
-                let position = token * hiddenSize + index
-                output[position] = routed[position] + gate * shared[position]
-            }
-        }
         profiler?.mark("mix.combine")
         return (output, indices, chosen)
     }

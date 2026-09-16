@@ -21,6 +21,9 @@ public struct Qwen3_5Forward: ForwardPass {
 
     public let spec: IRSpec
     public let config: ModelConfig
+    /// Set when this node is one member of a sharded cluster. Nil is a single-node run, and it is the
+    /// only difference between the two: the arithmetic below is the same code either way.
+    let shard: ShardExecution?
     let source: any WeightSource
     let namesByBlock: [String: [TensorRole: String]]
     let embeddingName: String
@@ -85,19 +88,22 @@ public struct Qwen3_5Forward: ForwardPass {
     /// Open a quantized install. The spec travels inside the artifact, so nothing else is
     /// needed — and the config is reconstructed from it, which is the check that the spec is
     /// genuinely sufficient to run the model (L1).
-    public init(install: URL) throws {
+    public init(install: URL, shard: ShardExecution? = nil) throws {
         let file = try InstallFile(url: install)
         let config = try Qwen3_5Forward.config(from: file.manifest.spec)
-        try self.init(source: file, config: config, spec: file.manifest.spec)
+        try self.init(source: file, config: config, spec: file.manifest.spec, shard: shard)
     }
 
     /// The IR's configuration, in the form the kernels take.
     public static func config(from spec: IRSpec) throws -> ModelConfig { spec.config }
 
-    private init(source: any WeightSource, config: ModelConfig, spec: IRSpec) throws {
+    private init(
+        source: any WeightSource, config: ModelConfig, spec: IRSpec, shard: ShardExecution? = nil
+    ) throws {
         self.source = source
         self.config = config
         self.spec = spec
+        self.shard = shard
 
         var namesByBlock: [String: [TensorRole: String]] = [:]
         for tensor in spec.tensors { namesByBlock[tensor.block, default: [:]][tensor.role] = tensor.name }
@@ -282,6 +288,43 @@ public struct Qwen3_5Forward: ForwardPass {
         try forwardWithDecisions(tokens: tokens).tensors
     }
 
+    /// One node's half of a mixture layer: its own experts' terms, the all-reduce with its peers, and the
+    /// shared expert added back by the same `combine` the single-node path uses.
+    ///
+    /// The router runs here on every node rather than being shipped, because the dense backbone is
+    /// replicated — every node already has what it needs to decide, and a router decision that travelled
+    /// would be a second source of truth for it.
+    private func shardedRouted(
+        hidden: [Float], tokens: Int, weights: MixtureWeights, shape: MixtureShape,
+        shard: ShardExecution, profiler: Profiler?
+    ) throws -> (routed: [Float], indices: [[Int]]) {
+        let (_, indices, chosen) = MixtureOfExperts.router(
+            hidden: hidden, tokens: tokens, weights: weights.router, experts: shape.experts, topK: shape.topK
+        )
+        let owned = OwnedExpertProvider(
+            base: weights.experts, ownership: shard.ownership, node: shard.node
+        )
+        let terms = try MixtureOfExperts.expertContributions(
+            hidden: hidden, tokens: tokens, provider: owned, indices: indices,
+            weights: chosen, shape: shape, profiler: profiler
+        )
+        // One all-reduce per mixture layer, carrying terms rather than partial sums (`D17`).
+        let reduced = try ShardExchange.allReduce(
+            own: terms, peers: shard.peers, indices: indices, tokens: tokens,
+            hiddenSize: shape.hiddenSize, policy: shard.policy
+        )
+        let parts = MixtureOfExperts.sharedPart(
+            hidden: hidden, tokens: tokens, weights: weights, shape: shape
+        )
+        return (
+            MixtureOfExperts.combine(
+                routed: reduced, shared: parts.shared, scalar: parts.scalar,
+                tokens: tokens, hiddenSize: shape.hiddenSize
+            ),
+            indices
+        )
+    }
+
     public func forwardWithDecisions(tokens: [Int]) throws -> ForwardResult {
         guard !tokens.isEmpty else { throw Error.emptyPrompt }
         let length = tokens.count
@@ -360,9 +403,21 @@ public struct Qwen3_5Forward: ForwardPass {
 
             case .mixture(let weights, let provider):
                 let shape = try mixtureShape()
-                let (routed, indices, _) = try MixtureOfExperts.block(
-                    hidden: postNormed, tokens: length, weights: weights, shape: shape, profiler: profiler
-                )
+                let routed: [Float]
+                let indices: [[Int]]
+                if let shard {
+                    (routed, indices) = try shardedRouted(
+                        hidden: postNormed, tokens: length, weights: weights, shape: shape,
+                        shard: shard, profiler: profiler
+                    )
+                } else {
+                    let whole = try MixtureOfExperts.block(
+                        hidden: postNormed, tokens: length, weights: weights, shape: shape,
+                        profiler: profiler
+                    )
+                    routed = whole.output
+                    indices = whole.indices
+                }
                 // Kept so the caller can report a measured hit rate rather than an assurance.
                 // M1's gate asks for the number, and the number is not visible from outside.
                 expertMetrics.append(provider.metrics)

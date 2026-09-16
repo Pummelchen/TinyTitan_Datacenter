@@ -306,3 +306,44 @@ and a second listener on a busy port is refused.
 link (`DC-008`'s other half), and two machines running a forward together (`DC-045`). The engine also does
 not yet *use* any of this: the exchange is exercised by tests, and the next piece is a forward that
 actually shards across it.
+
+## D23 — The engine runs sharded, and the trace is byte-identical
+
+Everything up to here was a contract, a codec, a transport or a test harness. This is the engine: a
+`Qwen3_5Forward` with a `ShardExecution` runs one node of a cluster, and **the trace it produces is
+byte-identical to the single-node one, discrete router decisions included.**
+
+**It is a branch, not a second forward.** The mixture case computes `routed` and `indices` either way and
+the rest of the layer loop is untouched; the sharded branch calls `expertContributions` with an
+`OwnedExpertProvider`, then `ShardExchange.allReduce`, then the **same** `MixtureOfExperts.combine` the
+single-node path uses. `block` was split into `sharedPart` + `combine` so there is exactly one
+implementation of each — a second one would be a second chance to differ, which is what `D17` exists to
+prevent. The split was verified numerically neutral the way that matters: the suite was unchanged and
+green before and after it.
+
+**The router runs on every node, and its decision does not travel.** The dense backbone is replicated, so
+every node can decide for itself; shipping the decision would create a second source of truth for it — and
+I3 makes that decision a claim in its own right, not a number to compare approximately.
+
+**One all-reduce per mixture layer**, inside the layer loop, which is the architecture's line and now also
+the code's.
+
+**The lockstep is real and worth naming.** Each node blocks on its peers inside every layer, so the two
+nodes must make progress *concurrently* — the test runs them on two threads for that reason. This is not a
+test artefact: it is the shape of the run, and it is why the synchronisation budget (`DC-051`) is a real
+question for M3 rather than a detail. The fixture's frames are about a kilobyte and would fit in a socket
+buffer either way; the real model's are tens of kilobytes per layer, where the concurrency is load-bearing
+— and two machines provide it for free.
+
+**Demonstrated, over real sockets.** Two nodes, TCP loopback, two threads: the trace is byte-identical to
+the single-node run on **both** nodes, tensors compared by bit pattern and the router's top-k compared
+exactly (I3). A silent peer makes the *forward* throw rather than producing a trace from whatever experts
+this node happened to own, and the policy's deadline reaches the socket through the forward — the `D19`
+guarantee, at the level a user would meet it. And with no shard context the forward is the one M1's gate
+measured: two single-node runs are identical to each other, which pins that the branch did not disturb the
+original path.
+
+**What it is not.** Two *processes*: the two nodes here are two threads in one address space, each with
+its own `Qwen3_5Forward` and its own `InstallFile`, so nothing is shared but the kernel. And two
+*machines*: that is M2's gate (`DC-045`), and the real model at two nodes does not fit on this 8 GB
+development host, which is why it needs the cluster.
