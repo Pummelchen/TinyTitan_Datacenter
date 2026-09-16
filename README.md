@@ -12,14 +12,16 @@
 
 A distributed inference engine for large MoE language models on clusters of Mac minis and Mac Studios over LAN/SFP/QSFP and Thunderbolt.
 
-**Status: M0 is complete and its gate passed; M1's gate is open.** On the required
+**Status: M0 and M1 are complete and their gates have passed.** On the required
 toolchain — **Xcode 27 with Swift 6.4, and nothing else** — `swift build` is clean and
-`swift test --no-parallel` runs **105 tests, 2 skipped, 0 failures** (the skips are the
+`swift test --no-parallel` runs **110 tests, 2 skipped, 0 failures** (the skips are the
 Metal kernels, which need a GPU), with **174** standard-library Python tests run in CI.
 M0 matched the reference on `Qwen/Qwen3.5-2B`: 40,683,520 bytes of trace data identical
-to the contract, every discrete decision matching. M1 runs the real 35 B model but its
-**throughput and cache-hit figures are historical**, so its gate is not yet closed. There
-are **no releases and no tags**.
+to the contract, every discrete decision matching. M1 runs the real 35 B model on one node
+and its trace is **byte-identical to the contract** — 83 tensors and 40 discrete
+decisions, digest `b8c976c5e7ba8816…` — generating at **0.108 tok/s** cached with
+**348.6 MB** peak memory. Those are current as of 2026-09-16; what M1 leaves open is
+`D12` and an install-path contract (`DC-108`). There are **no releases and no tags**.
 
 News, measurements and the live work list are in the **[wiki](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki)** —
 start with [News](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/News) for what

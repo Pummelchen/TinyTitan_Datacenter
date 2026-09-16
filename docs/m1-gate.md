@@ -1,5 +1,8 @@
 # The M1 gate
 
+**Status: passing**, re-established 2026-09-16 after `D15` and `D16`. See the status section below
+for the evidence, and for three claims in this document that the code has since outgrown.
+
 M1's gate is three things: **correct output**, a **recorded tok/s baseline**, and a **measured
 cache hit rate**. One command runs all three on one checkpoint and writes a report:
 
@@ -15,6 +18,45 @@ cache hit rate**. One command runs all three on one checkpoint and writes a repo
 | Throughput | greedy generation with `datacenter-generate`, its own timing parsed into the report |
 | Cache | the engine's expert-traffic counters, written beside each trace in `metrics.json` |
 | Memory | each engine run's **peak resident set size**, from the platform's `/usr/bin/time -l`, because `DC-032`'s gate is a budget and a budget needs a number. It counts clean file-backed pages, so it is an upper bound on the process rather than a claim about private dirty memory |
+
+## Status: passing, re-established 2026-09-16 after `D15` and `D16`
+
+**M1's gate passes.** The three parts, with evidence measured today rather than quoted from the
+original run, on the frozen `capital` prompt against the pinned checkpoint:
+
+| Part | Result | Evidence |
+| --- | --- | --- |
+| Correct output | **IDENTICAL** | the contract (`ordered_qwen36_trace.py`) was **re-run today** and `trace_diff` reports `IDENTICAL — 83 tensor(s), 0 element(s), 40 discrete decision(s) checked (matching digests)`. Engine and contract digest are both `b8c976c5e7ba8816…` — the *same* digest as the original gate run, which is the evidence that `D15` and `D16` changed no arithmetic, and that `D11`'s flush is install-only and does not touch the checkpoint path |
+| Throughput | **0.108 tok/s** cached (9.25 s/token), 0.0374 uncached | `datacenter-generate` on the install, 4 steps after the 5-token prompt; cold run 37.0 s, warm 22.1 s, and **both paths generate the identical tokens** (`11751,11,264,3177`) |
+| Cache hit rate | **0.0000** over 2,240 requests | structural: the expert banks are rebuilt per forward. `D12` is the open design question about whether one may survive a token; the gate asks for a *measured* rate, and this is it |
+| Memory | **348.6 MB peak RSS** | `/usr/bin/time -l` on the install path, which reads `F_NOCACHE` + `pread` and maps nothing |
+
+**Three claims in this document that the code has outgrown**, each recorded rather than edited away:
+
+1. **"M1 has no KV cache" is no longer true.** `datacenter-generate --cached` decodes one position per
+   token against a per-layer state, and three tests hold it to the same numbers as the sequence path:
+   `testCachedGenerationProducesTheSameTokensAsUncached`,
+   `testCachedAttentionIsBitIdenticalToTheSequenceAttention`, and `testTheCachedPathChoosesTheSameExperts`.
+   The paragraph below said the cache was "the next piece of correctness-preserving work"; it was already
+   there, and this run's identical token list is the model-level confirmation.
+2. **The throughput baseline is 5.6x the historical figure** — 0.0191 tok/s then, **0.108** now — because
+   `D15` and `D16` removed 24 s of hashing and duplicate reads from every forward. The uncached path
+   (0.0374 tok/s) is the honest comparison with the original 0.0191, which was uncached by definition.
+3. **The memory figure is 12x smaller on the install path** — 4.16 GB peak RSS then, **348.6 MB** now —
+   because the checkpoint run mapped safetensors shards and counted their clean file-backed pages as
+   resident, while the install reads uncached and maps nothing. Both numbers are correct for what they
+   measured; they are not the same measurement.
+
+**What is *not* established, and is now an open task rather than a pending gate item.** There is **no
+Python contract for an install trace**: `ordered_qwen36_trace.py` accepts only a checkpoint, and the
+ordered reference has no int4 reader, so the byte-identical claim above is a claim about the
+**checkpoint** path while the M1 install path is covered by the op-level golden tests, the integrity
+digests, and the bit-identical re-runs across bank sizes. Closing that gap is `DC-108`.
+
+**And a resource note for whoever runs this next.** The contract step re-reads the 67 GB checkpoint
+through a cached path, and on the 8 GB development node it drove swap to **402 MB free** before the run
+was stopped. The engine's install path is the safe one here (349 MB peak RSS, uncached reads); the
+checkpoint contract run should be treated as a heavy job that runs alone.
 
 ## THE GATE, on the real model: one prompt, all three parts
 
