@@ -234,3 +234,45 @@ was repointed at the shape check that does the work.
 **What this leaves.** A command-line writer for the plan file is a convenience, not a gap: any node
 generates the same plan deterministically from `(family, experts, nodes, distribution)` and the digest
 proves it. What remains for M2 is the cluster: two real processes on a real link (`DC-045`).
+
+## D21 — Bring-up: the six things nodes must agree about, checked before a token
+
+A cluster run claims that N machines are computing one model together, and every way that claim can be
+false produces numbers with a plausible shape. So the agreement is checked once, up front, on exactly the
+fields whose disagreement would invalidate the run:
+
+| Field | Why it is compared |
+| --- | --- |
+| `schema` | the bring-up protocol itself |
+| `family`, `revision` | the same model, pinned the same way (I6) |
+| `experts`, `hiddenSize`, `topK` | the same geometry, because a plan for another shape is another model |
+| `planDigest` | the same ownership map (`D20`) — the one artifact `D17` says must be pinned |
+
+**What is deliberately not compared: an install digest.** In a sharded run each node holds the experts it
+owns, so the installs differ *by construction* and comparing them would refuse every correct run. This is
+the kind of check that is obvious to add and wrong to add, which is why it is written down.
+
+**A refusal names the field.** `ClusterIdentity.differences(from:)` compares field by field, so a run
+stops with "node 1 disagrees about planDigest" rather than "nodes disagree". A test changes each field in
+turn and requires it to be reported alone.
+
+**The declaration frame carries its own magic (`TTDH`).** A declaration and a contribution frame travel
+over the same connection, so a codec that inferred the type from the payload would eventually read a
+declaration as terms — and a contribution decoded from JSON is exactly the kind of plausible nonsense
+this project keeps having to eliminate. Two tests hold the boundary from both sides: a contribution frame
+is refused as a declaration, and a declaration frame is refused as contributions.
+
+**The peer set is checked, not assumed.** A peer that claims a node twice, a peer claiming a node outside
+this cluster, and a node that never answered are three distinct failures with three messages. The first
+version collapsed all three into one branch and could index an empty array while doing it — caught by
+reading it back, not by a test, which is why the fix arrived with the tests.
+
+**Discovery is data for now, and that is a statement about the network rather than a shortcut.**
+`ClusterConfig` lists endpoints and is validated (this node present, no duplicates, no empty host or
+impossible port). Finding nodes — mDNS, address negotiation, or binding and connecting at all — needs a
+real link, and belongs with the transport measurement (`DC-008`).
+
+**Demonstrated.** Twelve tests over a socket pair: a matching cluster completes bring-up in both
+directions (this node learns its peer, and the peer receives this node's declaration unchanged), and every
+disagreement above is refused with its own error before anything is computed. What is left for M2 is the
+socket that a real machine binds — `DC-008` for the implementation and measurement, `DC-045` for the gate.
