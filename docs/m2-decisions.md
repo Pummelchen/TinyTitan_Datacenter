@@ -106,3 +106,46 @@ Three things the fixture run forced, two of them because the first version was w
 **What remains.** The transport and the wire protocol (`DC-008`, `DC-009`). Nothing above has crossed a
 network, so the cluster's real failure modes — a slow node, a retry, a node that dies mid-run — are still
 untested, and `Q9`-style questions about the ring are answered on paper rather than over a wire.
+
+## D18 — The wire protocol: bit-exact terms, length-framed, hostile input refused before allocation
+
+`D17` decided *what* crosses; this decides *how*, and the encoding is not an implementation detail —
+a codec that rounded, normalised or re-ordered would break I2 while looking like arithmetic.
+
+**The layout**, little-endian and fixed, so two nodes cannot disagree about a byte order:
+
+```
+magic "TTDC" · version u16 · tokens u32 · hiddenSize u32 · count u32
+count × ( token u32 · expert u32 · width u32 · scale f32 · width × f32 )
+```
+
+**Floats travel as their IEEE-754 bit patterns.** Not as decimal, not through a canonicalising step:
+`-0.0` stays `-0.0`, a subnormal stays a subnormal, and a NaN keeps its payload. A test feeds the wire
+`0.0`, `-0.0`, `±leastNonzeroMagnitude`, `±infinity`, a NaN and a NaN *with a payload*, and compares bit
+patterns on the way back — because every other test in the file would pass a codec that cleaned them up.
+
+**Framing is a 32-bit length prefix, and it is a claim rather than a promise.** Both the length prefix
+and every declared dimension and term count are bounded (`2^26` bytes per frame, `2^20` for dimensions
+and terms), and the bound is checked **on the number, before anything is allocated** from it. A decoder
+that trusts a length field is a denial-of-service with extra steps; two tests hand it a `2^31` length and
+a `2^30` width and require the refusal, not an attempt.
+
+**No checksum, deliberately.** `D15` removed per-read hashing from the hot path because it cost 53% of a
+forward to duplicate a guarantee the manifest already provided. A per-frame hash here would be the same
+mistake at a smaller scale: TCP checksums, and a frame that arrived corrupt but *plausible* is caught by
+the completeness guard (`OrderedReduction.isComplete`) and by the trace digest. A third check that
+duplicates both is not worth a millisecond per layer.
+
+**What is demonstrated, and on what.** `ContributionWireTests` runs the fixture's real weights through a
+genuine two-node exchange: each node computes only its own experts' terms, encodes them, sends them over
+a `socketpair`, decodes what arrives, checks `isComplete` against the router's selection, reduces, and
+compares with the single-node forward **bit for bit** — on both nodes. It also checks that two frames
+written before either is read come back one at a time, because a stream does not preserve message
+boundaries and a reader that assumed it did would return one and a half frames.
+
+**What this is not.** It is one host and one process, so the network is a socket pair and the peer cannot
+die mid-frame. A real connection needs the transport measured (`DC-008`), and the failure semantics —
+timeout, retry, a node that stops answering, and the rule that a missing term **fails the run** rather
+than shrinking the sum — are `DC-043`. `SO_NOSIGPIPE` is set on every descriptor, because the alternative
+is that a peer which has gone away kills the process with `SIGPIPE`, and that presents as "the node
+vanished" rather than "the write failed".
