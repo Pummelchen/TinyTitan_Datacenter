@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 
 @testable import DatacenterEngine
@@ -130,6 +131,74 @@ final class TCPTransportTests: XCTestCase {
             return
         }
         XCTAssertEqual(fromClient.count, try fixture.terms(node: 0, nodes: 2).count)
+    }
+
+    // MARK: - `D19`'s failure semantics, over a real socket
+
+    /// One end wrapped in a transport, the other held raw so the test can send half a frame and stop.
+    ///
+    /// The exchange tests prove the *rules* with a counting transport, and they are the right place for
+    /// them — but every one of those peers is a Swift object that can be told to misbehave. These tests
+    /// use a descriptor that really closes and a length prefix that really promises more than arrives, so
+    /// the rules are checked against the thing that produces the bytes.
+    private func socketPair(timeoutMilliseconds: Int = 5_000) throws -> (reader: SocketContributionTransport, peer: Int32) {
+        var descriptors: [Int32] = [0, 0]
+        guard socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else {
+            throw ContributionTransportError.socket("socketpair failed: \(String(cString: strerror(errno)))")
+        }
+        let reader = SocketContributionTransport(
+            fileDescriptor: descriptors[0], closeOnDealloc: true, timeoutMilliseconds: timeoutMilliseconds
+        )
+        return (reader, descriptors[1])
+    }
+
+    private func send(_ bytes: [UInt8], to descriptor: Int32) {
+        _ = bytes.withUnsafeBufferPointer { buffer in
+            write(descriptor, buffer.baseAddress, buffer.count)
+        }
+    }
+
+    /// A frame is announced and the peer goes away before it arrives.
+    func testAPeerThatClosesBetweenFramesReportsClosedRatherThanWaiting() throws {
+        let (reader, peer) = try socketPair()
+        close(peer)
+        XCTAssertThrowsError(try reader.receive()) { error in
+            XCTAssertEqual(
+                error as? ContributionTransportError, .closed,
+                "a peer that is gone must be reported as gone, not waited out until a deadline"
+            )
+        }
+    }
+
+    /// The distinction `D19` draws, produced by a real socket: some of the frame arrived, so the stream is
+    /// desynchronised — a later read would return the *previous* frame's tail.
+    func testAPeerThatClosesMidFrameReportsTruncation() throws {
+        let (reader, peer) = try socketPair()
+        send([16, 0, 0, 0], to: peer)          // a frame of sixteen bytes is announced…
+        send([1, 2, 3, 4, 5], to: peer)        // …and five arrive
+        close(peer)
+        XCTAssertThrowsError(try reader.receive()) { error in
+            XCTAssertEqual(
+                error as? ContributionTransportError, .truncated(needed: 16, got: 5),
+                "a partially delivered frame is not a closed connection, and vice versa"
+            )
+        }
+    }
+
+    /// A peer that stops part-way and says nothing more — the case that must **not** be retried, because
+    /// the bytes after it are not a frame boundary. Asserted on the reason, so the retry rule has a fact
+    /// behind it rather than a hope that the two paths look the same.
+    func testAPeerThatStopsPartWayThroughAFrameReportsThatReason() throws {
+        let (reader, peer) = try socketPair(timeoutMilliseconds: 60)
+        send([64, 0, 0, 0], to: peer)          // sixty-four bytes announced
+        send([9, 9, 9], to: peer)              // three sent, then silence
+        XCTAssertThrowsError(try reader.receive()) { error in
+            XCTAssertEqual(
+                error as? ContributionTransportError, .timedOut(midFrame: true),
+                "mid-frame is what decides whether the exchange retries, so it must be distinguishable"
+            )
+        }
+        close(peer)
     }
 
     func testAcceptTimesOutWhenNobodyConnects() throws {

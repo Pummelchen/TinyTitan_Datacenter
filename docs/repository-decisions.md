@@ -281,3 +281,50 @@ line per suite and the total last, so it now parses the last. And its per-file P
 `-m unittest tools.<file>`, which does not put `tools/` on the path, so nine **first-party** modules were
 reported as missing packages; it now runs each file the way `unittest discover` does. Both are the same
 mistake this project keeps meeting: an instrument that agrees with itself and not with the thing it measures.
+
+## D42 — `D19`'s mid-frame rule did not hold on a real socket: the run hung instead of failing
+
+`D19` says a peer that stops part-way through a frame **fails the run, and is not retried**, because the
+stream is desynchronised. `ShardExchangeTests` asserts that, with a counting transport whose peer is a Swift
+object that can be told to go quiet. This round added the three tests that use a **real socket** instead — a
+descriptor that really closes, and a length prefix that really promises more than arrives — and one of them
+did not fail. It **hung**, and the run had to be killed and sampled to find out where:
+
+```
+SocketContributionTransport.receive()  ContributionTransport.swift:120
+SocketContributionTransport.readExactly(_:midFrame:)  ContributionTransport.swift:131
+NSFileHandle.read(upToCount:) -> -[NSConcreteFileHandle readDataOfLength:] -> read (blocking)
+```
+
+**The poll and the read disagreed about how much they were asking for.** `readExactly` polls until the
+descriptor is readable and then calls `FileHandle.read(upToCount: remaining)`. That method is
+`readDataOfLength:`, which blocks until it has **every** byte it was asked for or the peer closes — so after
+`poll` correctly reported that three bytes had arrived, it waited for the other sixty-one. A peer that stops
+mid-frame therefore produced an **infinite hang** rather than the documented failure, on the one path where
+the deadline exists to prevent exactly that. The count of retries, and the failure itself, never happened.
+
+`read(2)` is the call that matches the poll: it returns what is **there**. The descriptor has just been
+reported readable and nothing else reads from it, so it cannot block, and the loop's next `poll` is what
+enforces the deadline. The test that hung now completes in **0.061 s** against a 60 ms deadline — the
+deadline is the thing being measured, so a passing test with the wrong duration would have been no evidence
+at all.
+
+**Why the unit tests could not find it.** Every `D19` rule is asserted in `ShardExchangeTests`, and those
+tests are right — but their transport is a Swift object that returns immediately, so the *shape* of the
+underlying read never enters them. Only a real socket can block, and only a real socket produced this. It is
+the same lesson as `DC-087`'s diagnostic and the metrics shape that `check_baselines.py` assumed: an
+instrument that agrees with itself rather than with the thing it measures.
+
+**Verified after the change, not before it.** `swift test --no-parallel` is **189 tests, 0 skipped, 0
+failures**, and bit-identity was re-established on four real machines with the fixed transport: every node
+produced the baseline's tokens, `[11751, 11, 264, 3177]`, against a single-node baseline of 6.112 s/step.
+The throughput ratio, 1.06x, is recorded as an **observation** because the farm was busy and four steps is
+not a measurement (`D38`).
+
+**A harness that looked like a hang was a data migration.** The mesh run appeared to hang for ten minutes
+with no output. It was `scp`-ing the 20 GB install to every peer, because `--remote-install` was not given —
+the harness documents that flag, and its `stage_remote` says in so many words that "a 20 GB install is not
+copied here". It is right; the caller was wrong. It now **announces what it is about to copy** before it
+starts, which is the difference between a mystery and a message. And the run's output was invisible because
+it was piped into `tail`, which buffers: the pipeline lesson recorded in the previous round, applied one
+round late.

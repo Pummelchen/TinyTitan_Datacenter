@@ -65,6 +65,15 @@ def load_average(target: str, local: bool = False, timeout: int = 15) -> float |
     return float(match.group(1)) if match else None
 
 
+def _install_bytes(install: Path) -> int:
+    """The size of an install, for the one message that says how much is about to be copied."""
+    total = 0
+    for path in install.rglob("*"):
+        if path.is_file():
+            total += path.stat().st_size
+    return total
+
+
 def farm_state(loads: dict[str, float | None], threshold: float) -> tuple[list[str], list[str]]:
     """Which nodes are too busy, and which could not be asked at all."""
     busy = [name for name, value in loads.items() if value is not None and value > threshold]
@@ -167,6 +176,17 @@ def main(argv: list[str] | None = None) -> int:
     print(f"      staged on {len(entries) - 1} peer(s)")
 
     processes: list[tuple[int, subprocess.Popen]] = []
+    # Say what is about to cross the LAN **before** it does. Without `--remote-install` this copies the
+    # whole install to every node — minutes per node, silently, which reads as a hang: that is exactly how
+    # it was debugged, by finding an `scp` of 20 GB mid-flight. The installs are usually already there.
+    for entry in addresses[1:]:
+        already = args.remote_install is not None
+        print(
+            f"[3/4] staging to {entry}: the binary and the plan"
+            + (" (the install is already on the peer)" if already else
+               f", plus the {_install_bytes(args.install) / 1e9:.1f} GB install"
+               " because --remote-install was not given")
+        )
     for index, host in enumerate(addresses):
         install = str(args.install) if index == 0 else (args.remote_install or "./install")
         if index == 0:

@@ -126,12 +126,7 @@ public final class SocketContributionTransport: ContributionTransport {
         var data = Data()
         while data.count < count {
             try waitForReadable(alreadyHave: data.count, midFrame: midFrame)
-            let chunk: Data?
-            do {
-                chunk = try handle.read(upToCount: count - data.count)
-            } catch {
-                throw ContributionTransportError.socket("\(error)")
-            }
+            let chunk = try readChunk(upTo: count - data.count)
             guard let chunk, !chunk.isEmpty else {
                 throw data.isEmpty
                     ? ContributionTransportError.closed
@@ -140,6 +135,26 @@ public final class SocketContributionTransport: ContributionTransport {
             data.append(chunk)
         }
         return data
+    }
+
+    /// Up to `count` bytes, returning what is **there** rather than what was asked for.
+    ///
+    /// `FileHandle.read(upToCount:)` is `readDataOfLength:`, which blocks until it has every byte it was
+    /// asked for or the peer closes. After `poll` reported that one byte had arrived it therefore waited for
+    /// the other sixty, and `D19`'s rule — *a peer that stops part-way through a frame fails the run, because
+    /// the stream is desynchronised* — did not happen on a real socket: the run **hung** instead. What
+    /// exposes it is the pair of them disagreeing, `poll` then a read that is broader than the poll.
+    ///
+    /// `read(2)` returns as soon as there is anything, which is exactly what the poll was for, and it cannot
+    /// block here: the descriptor was just reported readable and nothing else reads from it.
+    private func readChunk(upTo count: Int) throws -> Data? {
+        var buffer = [UInt8](repeating: 0, count: min(count, 1 << 16))
+        let got = buffer.withUnsafeMutableBytes { raw in
+            read(handle.fileDescriptor, raw.baseAddress, raw.count)
+        }
+        if got > 0 { return Data(buffer[0..<got]) }
+        if got == 0 { return nil }
+        throw ContributionTransportError.socket("read failed: \(String(cString: strerror(errno)))")
     }
 
     private func waitForReadable(alreadyHave: Int, midFrame: Bool) throws {
