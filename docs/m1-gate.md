@@ -1,5 +1,36 @@
 # The M1 gate
 
+**Status update, 2026-09-17: the gate is NOT current.** Re-running it against today's artifacts, the
+engine and the contract **differ — 40 discrete decisions and 1 float** — so the milestone cannot be called
+passing until it is re-established. The recorded pass below is real and was real; it belongs to the
+artifacts of 16 September 01:5x, and both the install and the engine have changed since. Nothing here has
+been rewritten: the pass is kept, and this is what a re-check found.
+
+The evidence, measured today:
+
+| comparison | result |
+| --- | --- |
+| the stored contract vs the stored engine trace (both 2026-09-16 01:5x) | `IDENTICAL — 83 tensors, 0 elements, 40 discrete` |
+| a **fresh engine trace** vs the **stored engine trace** | `DIFFERENT — 40 discrete, 1 float` |
+| a fresh engine trace vs the **stored contract** | `DIFFERENT — 40 discrete, 1 float` |
+
+The first row is why the other two mean something: the two stored traces have **byte-identical**
+`data.bin` (`a7c77b63…`), so they agreed when they were written. Today's engine trace has
+`data.bin f52ca4c3…` and prints digest `b0d382dbabf36df0…`, where the stored pair prints `b8c976c5e7ba8816…`.
+
+**The contract is not the stale side.** The reference's only change since the stored contract is **two
+lines** adding a headroom guard (`d26b419`), and its arithmetic is untouched; it reads the **checkpoint**,
+which has not changed. So the drift is on the engine's **install** path, and the candidates are exactly the
+changes that landed after 01:5x: the install was **rebuilt at 04:50**, and the dequantiser's zero and NaN
+canonicalisation landed with `D34` at 23:36.
+
+**Why this is not settled here.** Re-running the reference is a **GB-scale streaming read of the 67 GB
+checkpoint on this node** — the operation that took free disk from 17 GB to 2.96 GB in half a minute and
+helped panic it once already. The checkpoint exists on no other node, and no node can hold it beside a
+rebuild. The discriminating step is written down in `DC-111`: run the **engine on the checkpoint** and the
+**reference on the checkpoint** on a machine that can hold it, which separates an install-path drift from a
+checkpoint-path one without guessing.
+
 **Status: passing**, re-established 2026-09-16 after `D15` and `D16`. See the status section below
 for the evidence, and for three claims in this document that the code has since outgrown.
 

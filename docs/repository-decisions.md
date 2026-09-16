@@ -442,3 +442,44 @@ install path, declaring its **measured** 0.35 GB) now call it before they load a
 declares no memory figure at all, deliberately: what it holds depends on the checkpoint, and inventing a
 number would be a number with nothing behind it. The **lock** is the part that matters there — the machine
 panicked while an install build ran beside an engine.
+
+## D45 — The M1 gate is not current, and verifying against a stored artifact is not verifying
+
+`DC-111` came from the habit this project uses on everything else: check the instrument before believing the
+finding. The verification was cheap — a fresh engine trace on today's install, compared with `trace_diff`
+against the stored contract — and it does not pass:
+
+```
+the stored contract vs the stored engine trace (2026-09-16 01:5x)   IDENTICAL — 83 tensors, 0 elements, 40 discrete
+a fresh engine trace vs the stored engine trace                     DIFFERENT — 40 discrete, 1 float
+a fresh engine trace vs the stored contract                         DIFFERENT — 40 discrete, 1 float
+```
+
+The first row is the one that makes the other two evidence: the two stored traces have **byte-identical**
+`data.bin` (`a7c77b63…`), so they agreed when they were written. Today's has `f52ca4c3…` and prints digest
+`b0d382dbabf36df0…` where the stored pair prints `b8c976c5e7ba8816…`.
+
+**Which side moved, and how I know it was not a guess.** The reference's only change since the stored
+contract is **two lines** adding a headroom guard (`d26b419`) — its arithmetic is untouched — and it reads
+the **checkpoint**, which has not changed at all. The engine reads an install that was **rebuilt at 04:50**,
+and the dequantiser's zero-and-NaN canonicalisation landed with `D34` at 23:36. So the drift is on the
+install path, and the candidates are enumerable.
+
+**Why it stops here rather than being settled.** Re-running the reference is a **GB-scale streaming read of
+the 67 GB checkpoint on this node**, which is the operation that took free disk from 17 GB to 2.96 GB in
+half a minute and helped panic it once. The checkpoint exists on no other node, and no node can hold it
+beside a rebuild. Saying "not current" and naming the discriminating step is worth more than a run that
+risks the machine for a diagnosis — and the discriminating step is exact: run the **engine on the
+checkpoint** and the **reference on the checkpoint**, which separates an install-path drift from a
+checkpoint-path one.
+
+**The lesson, which is the general one.** A stored trace is evidence only while **both** sides that produced
+it are unchanged. It is a photograph of an agreement, not the agreement itself; here the contract side was
+frozen and the engine side was not, and three rounds of recorded digests quietly became history. The
+project's habit of re-running a gate rather than trusting its report is what caught it, and `docs/m1-gate.md`
+keeps the old pass on the page with a status update above it rather than deleting it.
+
+**What did not change.** M2 and M3 remain current: their comparisons are between nodes reading the **same**
+install, and all four produce `b0d382db…`. The recorded baseline counts still match exactly — the install's
+traffic did not move even though its arithmetic did. What is in question is one claim: that the engine's
+quantised install path reproduces the reference's checkpoint path bit for bit.

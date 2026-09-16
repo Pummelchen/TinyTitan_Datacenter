@@ -24,9 +24,11 @@ exists and some evidence does not; `not applicable yet` — the model or phase i
 **The claim**: the same input produces the same bytes, runs and components alike.
 
 **Evidence.** M0 matched the reference implementation on `Qwen/Qwen3.5-2B` with **40,683,520 bytes
-identical** over three frozen prompts (`docs/m0-gate.md`). M1's trace on the real 35 B model is
-**byte-identical to the contract** — 83 tensors, 40 discrete decisions, digest `b8c976c5e7ba8816…`
-(`docs/m1-gate.md`). M2 produced that same digest from **half the experts on each of two machines**
+identical** over three frozen prompts (`docs/m0-gate.md`). M1's trace on the real 35 B model **was**
+byte-identical to the contract — 83 tensors, 40 discrete decisions, digest `b8c976c5e7ba8816…`
+(`docs/m1-gate.md`) — and a re-check on 2026-09-17 found today's engine differing by 40 discrete decisions
+and 1 float. That evidence is therefore **historical until `DC-111` re-establishes it**, and this audit says
+so rather than counting a stale pass. M2 produced that same digest from **half the experts on each of two machines**
 (`b0d382dbabf36df0…` for the shared prompt, `docs/m2-decisions.md`), and the four-node mesh reproduced the
 single-node trace exactly. The GPU unpack is asserted **bit-identical** to the scalar one across a grid of
 shapes (`MetalUnpackTests`), and the reduction is asserted to be bit-identical across arrival orders and
@@ -66,8 +68,9 @@ all-reduce that mixes per-node partials, which `D17`'s measured counterexample (
 **The claim**: the router's argmax and top-k **index sets** match, not merely the numbers they come from.
 
 **Evidence.** M0's three prompts each matched the reference implementation's argmax index sets while the
-numeric distance stayed near `2e-06`; M1 checked **40 discrete decisions** on the real model; M2 and M3
-checked the same decisions per node. The comparison is a **separate assertion** from the numeric one, so a
+numeric distance stayed near `2e-06`; M1 checked **40 discrete decisions** on the real model (historical, per `DC-111`); M2 and M3
+checked the same decisions per node — and *those* comparisons are current, because every node reads the
+**same install** (`b0d382db…` on all of them). The comparison is a **separate assertion** from the numeric one, so a
 marginal flip cannot hide behind a tolerance (`tools/trace_diff.py` reports both). Routers are kept at bf16
 with the reason recorded in `tools/quant_policy.json`, because a router divergence leaves "every per-tensor
 check still green".

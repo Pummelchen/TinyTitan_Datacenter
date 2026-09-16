@@ -19,10 +19,13 @@ minis and Mac Studios, over LAN/SFP/QSFP and Thunderbolt. The Swift engine under
 at **191 tests, 0 skipped, 0 failures** — the Metal kernel tests run on the node's GPU
 since `D34`. **M0, M1 and M2 are done and their gates have passed** — M0 on `Qwen/Qwen3.5-2B`
 (three frozen prompts, **40,683,520 bytes identical** to the contract, every discrete
-decision matching: `docs/m0-gate.md`), M1 on the real 35 B model, whose trace is
+decision matching: `docs/m0-gate.md`), M1 on the real 35 B model, whose trace was
 **byte-identical to the contract** (83 tensors, 40 discrete decisions, digest
 `b8c976c5e7ba8816…`) with generation at **0.108 tok/s** cached and **348.6 MB** peak
-memory (`docs/m1-gate.md`, re-established 2026-09-16). It is nevertheless **incomplete**:
+memory (`docs/m1-gate.md`, re-established 2026-09-16) — **but that pass is not current**: re-checked on
+2026-09-17, today's engine trace differs from the contract by **40 discrete decisions and 1 float**, because
+the install was rebuilt and the dequantiser changed after the gate ran. Re-establishing it is `DC-111`,
+blocked on a machine that can hold the checkpoint (`docs/m1-gate.md` has the evidence). It is nevertheless **incomplete**:
 `D12` was an open design question and is now decided from a measurement (`D31`: the expert slot bank
 is sized from a budget, one slot, because the measured hit rate is 0 at every size), and
 **M2 shards the real model across two machines**: the reduction contract (`D17`), the wire protocol (`D18`), the failure semantics
