@@ -1291,3 +1291,46 @@ byte-identical (`D56`), and generated tokens that are identical between the two 
 **One process note.** The first run of this verification lost the token line to `tail -3`, and the claim I was
 checking was on that line. The repository already records what a `| tail` does to an exit status; this is the
 same lesson one step further on — **a claim being verified has to be captured in full, not summarised**.
+
+## D66 — The cluster claims were not gate-checked either: I2 and M2 re-established on the current engine
+
+`D65` found one claim that had been checked by hand once and had drifted. Asking the same question of the rest
+of the repository finds a larger one: **`check_milestones.py` re-runs the single-node trace and nothing else**,
+so the cluster claims — `I2` ("sharding is semantically free"), M2 and M3's functional half — rest on manual
+runs made **before** the engine changed. Since those runs the GPU unpack became the default and every contract
+matmul went through a chooser, and both are asserted bit-identical, which is exactly the sort of assertion
+that wants re-checking rather than trusting.
+
+**Re-run, two machines, real model, current binaries.** `tools/run_m2_gate.py --remote node3@… --install
+.build/m1-install --remote-install /Users/node3/Downloads/m1-install` — the peer's own install, so this is a
+functional test and not a data migration:
+
+```
+[2/4] reference, one node here     83 tensors  40 discrete  digest b0d382dbabf36df0…   16.0 s
+[3/4] node 1 on the peer machine   83 tensors  40 discrete  digest b0d382dbabf36df0…   14.4 s
+      node 0 here                  83 tensors  40 discrete  digest b0d382dbabf36df0…   13.9 s
+[5/5] node 0 IDENTICAL — 83 tensors, 0 differing elements, 40 discrete decisions
+      node 1 IDENTICAL — 83 tensors, 0 differing elements, 40 discrete decisions
+```
+
+A 256-expert plan over two contiguous halves, one node on another machine reached over TCP, each node reading
+**its own half** — 2,053,044,736 bytes on one and 2,051,226,112 on the other — with the reduction contract
+exercised 40 times per node over 797 and 803 terms. Both traces are **byte-identical to the single-node
+reference**, digests included, on binaries that contain the GPU unpack default and the matmul chooser. `I2` and
+`M2` are therefore re-established rather than inherited, and the audit's `I2` evidence now cites this run.
+
+**One observation, deliberately not a claim.** The all-reduce cost differed by a factor of three between the
+two nodes — 1.497 s here against 0.477 s on the peer. That is not a defect and not a finding: the local node
+is the one that *connects*, it was also running the single-node reference immediately beforehand, and this host
+is the 8 GB machine of the pair. The numbers are recorded because a later timing phase will want them, not
+asserted, because a functional gate is not a benchmark (`D40`).
+
+**What deliberately did not run is the four-node mesh**, which is M3's distinctive functional claim. One peer
+is at load 14, and borrowing a busy machine's time to re-check a claim whose two-machine half is now
+re-established is not worth it. The mesh and the throughput gate both belong to the quiet window the operator
+has already reserved for them, and `DC-053` carries them.
+
+**The method is the point, and it is the second time it has paid.** The single-node claims are all
+gate-checked — `check_milestones` re-runs the trace, the claims gate re-reads the numbers, `test_run_m1_gate`
+drives the gate itself on a fixture. The cluster claims were the ones resting on memory. Asking "what has *not*
+been re-checked?" is now two for two.

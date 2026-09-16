@@ -54,7 +54,10 @@ budget that would have swapped the node. Each is now either defined in the contr
 
 **Evidence.** `tools/run_m2_gate.py --remote …` on the real 35 B install: reference, node 0 and node 1 all
 digest `b0d382dbabf36df0…`, with `trace_diff` reporting **IDENTICAL — 83 tensors, 0 elements, 40 discrete
-decisions** on both nodes (`docs/m2-decisions.md`, `D26`). The four-node mesh (`--mesh`) produced the same
+decisions** on both nodes (`docs/m2-decisions.md`, `D26`). **Re-run on 2026-09-17** against the current
+binaries — the ones with the GPU unpack default and the matmul chooser — with one node on a peer machine over
+TCP and each node reading its own install half: both nodes **IDENTICAL** to the single-node reference again,
+same digests, 40 reductions per node over 797 and 803 terms (`D66`). The four-node mesh (`--mesh`) produced the same
 trace from all four machines (`D27`), and sharded **generation** produced the single-node tokens and digest
 (`D28`), with the fixture and the real model both checked.
 
