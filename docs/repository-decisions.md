@@ -698,3 +698,40 @@ That is where the next capture goes, and the chunk of code is not small: the int
 `exp(-inf)` masking, the cumulative decay prefix sum, the per-chunk state decay, and the state update. It is
 also code that has been wrong before — `DC-038` records the grouped-query repeat being fixed in this very
 path, and the repeat is a stage the reference spells out with `np.repeat(..., axis=2)`.
+
+## D52 — Reading the chunked rule to the end: every stage corresponds, and reading has hit its limit
+
+The hunt is inside `chunk_gated_delta_rule` — one function, five suspects. This round read the whole function
+against the engine's `chunkedDeltaRule`, stage by stage, and **every stage corresponds**.
+
+| stage | reference | engine | verdict |
+| --- | --- | --- | --- |
+| query scale | `query * np.float32(d ** -0.5)` (float64, then rounded) | `query * (1 / Float(d).squareRoot())` | equal for every dimension the model uses |
+| `l2norm` | ordered sum of squares, `1/sqrt`, scale | same | identical |
+| triangular solve | forward substitution, rows in order, `acc - (lower·sol)` | same order, same fused step | identical |
+| `v_new`, `inter`, output | `… - ordered_matmul(key_cumdecay, stateᵀ)` | same | identical |
+| state update | `state · chunk_decay + ordered_matmul(keyᵀ, v_newᵀ)` | same | identical |
+| grouped-query repeat | `np.repeat(q, factor, axis=2)` | `(head · repeats + i) · headK` | interleaved in both |
+| projection / conv order | `matmul(hidden, in_proj_qkv)` then conv | same | identical |
+
+The query scale was worth checking by **number** rather than by eye, because the two spellings genuinely can
+differ in the last bit: `d ** -0.5` is evaluated in float64 and then rounded, while `1 / sqrt(d)` rounds twice.
+For every dimension this model uses they agree — and for a power of two the answer is exact — so it is out,
+and the check cost a second. The triangular solve was the other one worth a close look, because its docstring
+says in as many words that **the order the rows are eliminated in is what the contract fixes**; both eliminate
+in ascending row order with one subtraction of a product per step.
+
+**What this means, and it is the useful part.** After the convolution, the decay gate, the input norm,
+`silu`/`sigmoid`, the scale, `l2norm`, the solve, the state update, the output, the repeat and the ordering,
+there is no stage left that reads as different — and the outputs differ systematically. Two conclusions
+follow, and both point the same way:
+
+* the difference is in something a **side-by-side read cannot see**: a rounding that both spellings produce
+  "the same way" while the values differ (a cast, a fused multiply-add, a `Float`-vs-`np.float32` evaluation
+  order), or an input to this function that I have only verified *by reading* rather than *by number*;
+* therefore the next step is **numeric capture inside `chunk_gated_delta_rule` and around the gated norm**,
+  which is the instrument `D50` built and which has already turned "inside layer 0" into "the attention half"
+  in one run.
+
+Reading eliminated ten candidates at the cost of no runs at all. Knowing when it has stopped paying is the
+other half of that: the next comparison has to be of numbers, not of code.
