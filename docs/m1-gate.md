@@ -443,6 +443,54 @@ rather than edited out of it.
 of the forward itself rather than more arithmetic about it — the pattern that has been wrong three times
 now when it replaced a measurement.
 
+## The forward, profiled: what the 39.5 s was, and one 2x speedup
+
+`DC-105` asked where a five-token forward's time goes. `SHARD_PROFILE=1` now times the real code path
+(`Profiler` in `ForwardPass.swift`, marks in the forward and inside the mixture), and the trace writes
+the phases into `metrics.json` beside the trace. The phases sum to the run: **39.82 s of a 39.9 s
+wall clock**, so this is a profile and not arithmetic about one.
+
+| phase | seconds | share |
+| --- | --- | --- |
+| `mix.read` — the expert fetch | **25.53** | **64%** |
+| `attn.core` | 3.91 | 10% |
+| `head` | 3.76 | 9% |
+| `load` — a layer's dense weights | 3.26 | 8% |
+| `embed` | 1.59 | 4% |
+| `mix.gateup` (matmul) | 1.03 | 3% |
+| `mix.down` (matmul) | 0.49 | 1% |
+| everything else | 0.25 | 1% |
+
+**`DC-106`'s hypothesis was wrong, and the profile says so.** The dense weights re-read per forward
+were 8%, not the missing 3.5x; it is a real inefficiency but a small one. The expert fetch was the
+cost, and splitting it open inside the reader (`SourceTiming`) named the reason: **SHA-256 slab
+verification on every read, 21.04 s — 53% of the whole forward** — against 0.82 s of actual reads and
+4.06 s of unpacking. `D15` records the decision: verification is now a parameter, off by default,
+established out of band by `tools/quantize.py verify`.
+
+**Verified, same prompt, same install:**
+
+| | before | after |
+| --- | --- | --- |
+| wall clock | 39.9 s | **19.9 s** |
+| `mix.read` | 25.53 s | 6.28 s |
+| digest seconds | 21.04 s | **0** |
+| read seconds | 0.82 s (cache-assisted) | **3.04 s** |
+| unpack seconds | 4.06 s | 3.63 s |
+| trace digest | `b0d382dbabf36df0…` | **`b0d382dbabf36df0…`** (unchanged) |
+
+**Two independent confirmations came out of it.** The reads now measure **3.04 s for 3.06 GB =
+1.0 GB/s**, which reproduces the standalone cold read-path measurement of 997 MB/s from a different
+direction — so the engine's read path is doing what the disk can do. And the 3.06 GB is the measured
+install traffic of one five-token forward: 2.02 GB of expert payloads (1,109 fetches at 1,818,624
+bytes, bounded by the total) plus ~1.04 GB of dense weights, the head included.
+
+**What is left, and where the next work is.** After the fix the largest components are `attn.core`
+(3.91 s), the expert unpack (3.63 s) and the head (3.20 s) — none of them I/O. The prefill rate is now
+**0.251 tok/s** (19.9 s for five tokens) against 0.127 before; the gate's *generation* baseline is
+still a separate measurement, because generation re-runs the sequence without a KV cache and is not
+this number.
+
 ## Running the sweep
 
 The sweep is a script, not a sequence typed from memory, because it is a heavy run on a node that has

@@ -65,4 +65,39 @@ final class SourceBytesTests: XCTestCase {
             "the safetensors path does not count reads, and zero means not counted"
         )
     }
+
+    /// Slab verification is **opt-in**, and this pins both halves of the decision.
+    ///
+    /// On the real 35 B model it cost **21.04 s of a 39.8 s forward** — 82% of the expert fetch —
+    /// because it re-hashes every expert payload the model reads, while the disk itself was 0.82 s.
+    /// Integrity is established out of band (per-tensor and per-slab digests in the manifest,
+    /// `tools/quantize.py verify` for the whole install), so the default reader must not hash, and a
+    /// caller who asks must be able to see what it cost.
+    func testSlabVerificationIsOptInAndItsCostIsVisible() throws {
+        let install = try install()
+        let manifest = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: install.appendingPathComponent("install.json"))
+        ) as? [String: Any]
+        let tensors = try XCTUnwrap(manifest?["tensors"] as? [[String: Any]])
+        let stacked = try XCTUnwrap(
+            tensors.first { $0["role"] as? String == "expert.stack_gate_up" },
+            "the fixture must have a stacked expert tensor"
+        )
+        let name = try XCTUnwrap(stacked["name"] as? String)
+
+        let unverified = try InstallFile(url: install)
+        _ = try unverified.rows(named: name, range: 0..<1)
+        XCTAssertEqual(
+            unverified.sourceTiming.digestSeconds, 0,
+            "the default reader must not hash the hot path; that cost is what made a forward 40 s"
+        )
+        XCTAssertGreaterThan(unverified.bytesReadFromSource, 0, "it still read the payload")
+
+        let verified = try InstallFile(url: install, verifySlabs: true)
+        _ = try verified.rows(named: name, range: 0..<1)
+        XCTAssertGreaterThan(
+            verified.sourceTiming.digestSeconds, 0,
+            "asking for verification must verify, and the cost must be visible rather than asserted"
+        )
+    }
 }

@@ -31,6 +31,9 @@ public struct Qwen3_5Forward: ForwardPass {
     /// figure M1's gate needs, rather than one derived from element counts.
     public var sourceBytesRead: Int { source.bytesReadFromSource }
 
+    /// `ForwardPass`: what the reading, verifying and unpacking cost, in seconds.
+    public var sourceTiming: SourceTiming { source.sourceTiming }
+
     public enum Error: Swift.Error, CustomStringConvertible {
         case missingTensor(block: String, role: TensorRole)
         case noEmbedding
@@ -132,6 +135,10 @@ public struct Qwen3_5Forward: ForwardPass {
     /// forward is a race. Read once, so a sweep is one process per setting — which is how a
     /// measurement should work anyway, since two bank sizes in one process would share banks.
     public static let expertSlotsPerLayer = slotsFrom(environment: ProcessInfo.processInfo.environment)
+
+    /// Whether to time the forward's phases. Immutable, so Swift 6's concurrency checking is satisfied
+    /// and a profile cannot change under a running forward. `SHARD_PROFILE=1` turns it on.
+    public static let profilingEnabled = ProcessInfo.processInfo.environment["SHARD_PROFILE"] == "1"
 
     /// The parse, separated so it can be tested without a process.
     static func slotsFrom(environment: [String: String]) -> Int {
@@ -282,6 +289,9 @@ public struct Qwen3_5Forward: ForwardPass {
         var captured: [TraceWriter.Tensor] = []
         var discrete: [TraceWriter.Discrete] = []
         var expertMetrics: [ExpertProviderMetrics] = []
+        // A profile of the real path, off unless asked for. The marks sit *after* the work they name,
+        // so a phase's seconds are the time since the previous mark and the phases sum to the run.
+        let profiler = Self.profilingEnabled ? Profiler() : nil
 
         var hidden = [Float](repeating: 0, count: length * hiddenSize)
         for (row, token) in tokens.enumerated() {
@@ -290,6 +300,7 @@ public struct Qwen3_5Forward: ForwardPass {
             for index in 0..<hiddenSize { hidden[row * hiddenSize + index] = values[index] }
         }
         captured.append(TraceWriter.Tensor(name: "embed.out", shape: [length, hiddenSize], values: hidden))
+        profiler?.mark("embed")
 
         let tables = ropeTables(positions: (0..<length).map(Double.init))
         var mask = [Float](repeating: 0, count: length * length)
@@ -304,10 +315,12 @@ public struct Qwen3_5Forward: ForwardPass {
             captured.append(TraceWriter.Tensor(name: "\(tag).hidden_in", shape: [length, hiddenSize], values: hidden))
 
             let layer = try loadLayer(index)
+            profiler?.mark("load")
             let normed = rmsNorm(
                 hidden, weight: layer.weights[.attnNorm]!, rows: length, width: hiddenSize,
                 eps: Float(config.rmsNormEps)
             )
+            profiler?.mark("attn.norm")
             let mixed: [Float]
             if let gdn = layer.gdn {
                 mixed = GatedDeltaNet.layer(
@@ -318,13 +331,16 @@ public struct Qwen3_5Forward: ForwardPass {
                     normed, weights: layer.weights, length: length, tables: tables, mask: mask
                 )
             }
+            profiler?.mark("attn.core")
             hidden = add(hidden, mixed)
+            profiler?.mark("attn.add")
 
             let residual = hidden
             let postNormed = rmsNorm(
                 hidden, weight: layer.weights[.mlpNorm]!, rows: length, width: hiddenSize,
                 eps: Float(config.rmsNormEps)
             )
+            profiler?.mark("ff.norm")
             switch layer.feedForward {
             case .dense(let gate, let up, let down):
                 let projectedGate = Ops.orderedMatmul(
@@ -345,7 +361,7 @@ public struct Qwen3_5Forward: ForwardPass {
             case .mixture(let weights, let provider):
                 let shape = try mixtureShape()
                 let (routed, indices, _) = try MixtureOfExperts.block(
-                    hidden: postNormed, tokens: length, weights: weights, shape: shape
+                    hidden: postNormed, tokens: length, weights: weights, shape: shape, profiler: profiler
                 )
                 // Kept so the caller can report a measured hit rate rather than an assurance.
                 // M1's gate asks for the number, and the number is not visible from outside.
@@ -361,12 +377,15 @@ public struct Qwen3_5Forward: ForwardPass {
                     )
                 )
             }
+            profiler?.mark("ff")
             captured.append(TraceWriter.Tensor(name: "\(tag).hidden_out", shape: [length, hiddenSize], values: hidden))
+            profiler?.mark("trace.copy")
         }
 
         let finalWeight = try source.tensor(named: finalNormName)
         hidden = rmsNorm(hidden, weight: finalWeight, rows: length, width: hiddenSize, eps: Float(config.rmsNormEps))
         captured.append(TraceWriter.Tensor(name: "final_norm.out", shape: [length, hiddenSize], values: hidden))
+        profiler?.mark("final_norm")
 
         // The head, one block of vocabulary rows at a time: the same matrix as the embedding,
         // and materialising it whole is the thing this design exists to avoid.
@@ -388,7 +407,11 @@ public struct Qwen3_5Forward: ForwardPass {
         captured.append(
             TraceWriter.Tensor(name: "logits", shape: [length, config.vocabSize], values: logits)
         )
-        return ForwardResult(tensors: captured, discrete: discrete, expertMetrics: expertMetrics)
+        profiler?.mark("head")
+        return ForwardResult(
+            tensors: captured, discrete: discrete, expertMetrics: expertMetrics,
+            profile: profiler?.report(layers: config.numLayers)
+        )
     }
 
     func attention(

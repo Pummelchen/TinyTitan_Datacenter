@@ -617,3 +617,38 @@ commit. The source checkpoints are far larger than RAM, but this project already
 peak** with free disk steady. Hashing source files is the same shape of work. **`data.bin` does not
 change**, so no install must be rebuilt and no trace regenerated: only the manifest gains fields, which
 makes this a safe change to batch with the next real-model run rather than a reason for one.
+
+## D15 — Per-read slab verification is opt-in, because it cost 21 s of a 40 s forward
+
+`DC-088` added per-slab SHA-256 verification to the row-range read so a tampered install is caught
+before it can become plausible numbers. It ran on **every** read. A phase profile of a real forward
+(`SHARD_PROFILE=1`) then measured what that cost:
+
+| phase | seconds | share of the forward |
+| --- | --- | --- |
+| the expert fetch (`mix.read`) | 25.53 | 64% |
+| — of which **digest verification** | **21.04** | **53%** |
+| — of which unpacking | 4.06 | 10% |
+| — of which the actual reads | 0.82 | 2% |
+
+**The integrity check was over half the model's runtime, and the disk was 2% of it.** The decision:
+`InstallFile(url:verifySlabs:)` is a parameter, **false by default**, and a caller who wants
+verification asks for it. Integrity is established out of band — the manifest carries a digest per
+tensor *and* per slab, and `tools/quantize.py verify` checks the whole install once, uncached, at a
+34 MB peak (measured). Re-hashing every payload the model reads is not a stronger guarantee than
+checking the install once; it is the same guarantee at 53% of the runtime.
+
+The trap this avoids in the other direction: with verification off, falling through to
+`digestMatches(entry)` would read and hash the **whole** entry — 310 MB — to answer a question about
+one expert, which is `DC-088`'s bug in reverse. The gated block falls through to nothing, not to the
+whole-entry check.
+
+**The cost is visible and tested rather than asserted.** `InstallFile.sourceTiming` reports bytes,
+read seconds, digest seconds and unpack seconds; a test pins that the default reader records
+**exactly zero** digest seconds and that a caller who asks records more than zero. Writing that test
+found a flaw in the instrument itself: the clock had started outside the branch, so the default
+"cost nothing" reading was 4.2e-08 s of the branch test rather than zero.
+
+Verified on the real 35 B model: the same prompt, **39.9 s → 19.9 s**, `mix.read` 25.53 s → 6.28 s,
+digest seconds 0, and the trace digest **unchanged** (`b0d382dbabf36df0…`) — the option is a
+performance change with no numerical effect, which is what I1 demands of one.

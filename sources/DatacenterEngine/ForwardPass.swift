@@ -12,14 +12,18 @@ public struct ForwardResult {
     /// measured cache hit rate, and a number that is not returned by the forward pass is a
     /// number nobody can reproduce.
     public let expertMetrics: [ExpertProviderMetrics]
+    /// Phase timings, present only when `SHARD_PROFILE=1` asked for them. Nil means *not measured*,
+    /// which is not the same as zero.
+    public let profile: ProfileReport?
 
     public init(
         tensors: [TraceWriter.Tensor], discrete: [TraceWriter.Discrete] = [],
-        expertMetrics: [ExpertProviderMetrics] = []
+        expertMetrics: [ExpertProviderMetrics] = [], profile: ProfileReport? = nil
     ) {
         self.tensors = tensors
         self.discrete = discrete
         self.expertMetrics = expertMetrics
+        self.profile = profile
     }
 
     /// Expert-slice reads served from memory over all mixture layers, or zero when there were
@@ -31,6 +35,40 @@ public struct ForwardResult {
     }
 
     public var expertElementsRead: Int { expertMetrics.reduce(0) { $0 + $1.elementsRead } }
+}
+
+/// Phase timings for one forward, in seconds, when `SHARD_PROFILE=1`.
+///
+/// A profile of the real code path rather than arithmetic about it. This session produced three
+/// wrong readings of where a token's time goes — an estimate of SSD bytes, a division by that
+/// estimate, and a read benchmark that was answered by cache — and each was replaced by a
+/// measurement. This is the instrument that was missing.
+public struct ProfileReport: Sendable {
+    /// Seconds per phase, accumulated over every layer, so a phase's share is a division by the total.
+    public let seconds: [String: Double]
+    /// How many layers the accumulation covers, so a per-layer average is derived rather than guessed.
+    public let layers: Int
+}
+
+/// Accumulates phase timings between `mark` calls. Allocated only when profiling is on, so the
+/// instrument costs nothing when it is off.
+public final class Profiler {
+    private var last: UInt64
+    private var seconds: [String: Double] = [:]
+
+    public init() { last = DispatchTime.now().uptimeNanoseconds }
+
+    /// Close the phase that just ended. The name describes the work between the previous mark and
+    /// this one, which is why the marks sit *after* the work rather than around it.
+    public func mark(_ phase: String) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        seconds[phase, default: 0] += Double(now &- last) / 1e9
+        last = now
+    }
+
+    public func report(layers: Int) -> ProfileReport {
+        ProfileReport(seconds: seconds, layers: layers)
+    }
 }
 
 /// A model that can be run for a token sequence and asked to generate.
@@ -58,10 +96,13 @@ public protocol ForwardPass {
     /// the default and the figure would look measured while being a constant. Zero means *not
     /// counted* — the dense family holds its weights from open time.
     var sourceBytesRead: Int { get }
+    /// Where the source's time went — reading, verifying, unpacking — when it counts it.
+    var sourceTiming: SourceTiming { get }
 }
 
 extension ForwardPass {
     public var sourceBytesRead: Int { 0 }
+    public var sourceTiming: SourceTiming { SourceTiming() }
 }
 
 extension ForwardPass {

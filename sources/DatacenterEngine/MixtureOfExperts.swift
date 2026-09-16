@@ -117,7 +117,7 @@ public enum MixtureOfExperts {
     /// order, and the order is the thing the contract pins.
     public static func experts(
         hidden: [Float], tokens: Int, provider: any ExpertWeightProvider,
-        indices: [[Int]], weights: [[Float]], shape: MixtureShape
+        indices: [[Int]], weights: [[Float]], shape: MixtureShape, profiler: Profiler? = nil
     ) throws -> [Float] {
         let hiddenSize = shape.hiddenSize
         let intermediate = shape.intermediate
@@ -136,15 +136,18 @@ public enum MixtureOfExperts {
             let assignments = pairs[expert]!
             let gateUp = try provider.gateUp(expert: expert, shape: shape)
             let down = try provider.down(expert: expert, shape: shape)
+            profiler?.mark("mix.read")
             var current = [Float](repeating: 0, count: assignments.count * hiddenSize)
             for (position, assignment) in assignments.enumerated() {
                 for index in 0..<hiddenSize {
                     current[position * hiddenSize + index] = hidden[assignment.token * hiddenSize + index]
                 }
             }
+            profiler?.mark("mix.gather")
             let fused = Ops.orderedMatmul(
                 x: current, w: gateUp, rows: assignments.count, k: hiddenSize, out: 2 * intermediate
             )
+            profiler?.mark("mix.gateup")
             var activated = [Float](repeating: 0, count: assignments.count * intermediate)
             for row in 0..<assignments.count {
                 for index in 0..<intermediate {
@@ -153,9 +156,11 @@ public enum MixtureOfExperts {
                     activated[row * intermediate + index] = Ops.silu(gate) * up
                 }
             }
+            profiler?.mark("mix.act")
             let projected = Ops.orderedMatmul(
                 x: activated, w: down, rows: assignments.count, k: intermediate, out: hiddenSize
             )
+            profiler?.mark("mix.down")
             for (position, assignment) in assignments.enumerated() {
                 let scale = weights[assignment.token][assignment.rank]
                 for index in 0..<hiddenSize {
@@ -163,6 +168,7 @@ public enum MixtureOfExperts {
                     output[target] = output[target] + projected[position * hiddenSize + index] * scale
                 }
             }
+            profiler?.mark("mix.acc")
         }
         return output
     }
@@ -172,7 +178,7 @@ public enum MixtureOfExperts {
     /// The shared expert is **added**, not ranked: it is not part of the router's top-k, and
     /// its gate is a sigmoid of a projection of the hidden state.
     public static func block(
-        hidden: [Float], tokens: Int, weights: MixtureWeights, shape: MixtureShape
+        hidden: [Float], tokens: Int, weights: MixtureWeights, shape: MixtureShape, profiler: Profiler? = nil
     ) throws -> (output: [Float], indices: [[Int]], weights: [[Float]]) {
         let hiddenSize = shape.hiddenSize
         let shared = Ops.orderedMatmul(
@@ -189,13 +195,16 @@ public enum MixtureOfExperts {
             }(),
             w: weights.sharedDown, rows: tokens, k: shape.sharedIntermediate, out: hiddenSize
         )
+        profiler?.mark("mix.shared")
         let (_, indices, chosen) = router(
             hidden: hidden, tokens: tokens, weights: weights.router, experts: shape.experts, topK: shape.topK
         )
+        profiler?.mark("mix.router")
         let routed = try experts(
             hidden: hidden, tokens: tokens, provider: weights.experts,
-            indices: indices, weights: chosen, shape: shape
+            indices: indices, weights: chosen, shape: shape, profiler: profiler
         )
+        profiler?.mark("mix.experts")
         let scalar = Ops.orderedMatmul(
             x: hidden, w: weights.sharedScalarGate, rows: tokens, k: hiddenSize, out: 1
         )
@@ -207,6 +216,7 @@ public enum MixtureOfExperts {
                 output[position] = routed[position] + gate * shared[position]
             }
         }
+        profiler?.mark("mix.combine")
         return (output, indices, chosen)
     }
 }

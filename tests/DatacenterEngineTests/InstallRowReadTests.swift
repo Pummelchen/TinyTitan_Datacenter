@@ -116,7 +116,7 @@ final class InstallRowReadTests: XCTestCase {
                 at: fixture.appendingPathComponent(file), to: directory.appendingPathComponent(file)
             )
         }
-        let clean = try InstallFile(url: fixture)
+        let clean = try InstallFile(url: fixture, verifySlabs: true)
         let name = try XCTUnwrap(stackedExperts(clean).first)
         let entry = try clean.entry(name)
         let slabs = try XCTUnwrap(entry.slab_sha256, "the fixture must carry per-slab digests")
@@ -127,7 +127,7 @@ final class InstallRowReadTests: XCTestCase {
         bytes[at] = bytes[at] ^ 0xFF
         try bytes.write(to: directory.appendingPathComponent("data.bin"))
 
-        let tampered = try InstallFile(url: directory)
+        let tampered = try InstallFile(url: directory, verifySlabs: true)
         _ = try tampered.rows(named: name, range: 0..<1)  // the first expert is untouched
         XCTAssertThrowsError(try tampered.rows(named: name, range: (slabs.count - 1)..<slabs.count)) { error in
             guard case InstallFile.Error.digestMismatch = error else {

@@ -104,10 +104,24 @@ if !result.expertMetrics.isEmpty {
     // (4-bit codes with group-64 scales and zeros), where the estimate gave 2.0.
     metrics["install_bytes_read_this_forward"] = bytesThisForward
     metrics["install_bytes_read_total"] = forward.sourceBytesRead
+    if forward.sourceTiming.counted {
+        // Where the fetch's seconds went. `mix.read` was 65% of a real forward while the disk
+        // measures ~1 GB/s, so read-versus-unpack is the difference between an I/O problem and a
+        // kernel problem — and only the reader can say which.
+        metrics["install_read_seconds"] = forward.sourceTiming.readSeconds
+        metrics["install_digest_seconds"] = forward.sourceTiming.digestSeconds
+        metrics["install_unpack_seconds"] = forward.sourceTiming.unpackSeconds
+    }
     metrics["expert_bytes_in_memory"] = result.expertElementsRead * 4
     metrics["expert_hit_rate"] = result.expertHitRate
     metrics["expert_distinct"] = Set(result.discrete.flatMap { $0.values }).count
     metrics["layers"] = result.expertMetrics.count
+    if let profile = result.profile {
+        // `SHARD_PROFILE=1` asked for these. Seconds per phase, accumulated over every layer, so a
+        // share is a division by the sum rather than a claim about where time goes.
+        metrics["profile_seconds"] = profile.seconds
+        metrics["profile_layers"] = profile.layers
+    }
     let directory = output
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     if let data = try? JSONSerialization.data(withJSONObject: metrics, options: [.prettyPrinted, .sortedKeys]) {

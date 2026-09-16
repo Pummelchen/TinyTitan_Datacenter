@@ -25,10 +25,27 @@ public protocol WeightSource {
     /// that as zero traffic. That confusion is exactly what made `expert_bytes_from_ssd` an
     /// estimate — `elementsRead * 2`, which is 3.5x too large for a 4-bit install.
     var bytesReadFromSource: Int { get }
+    /// Where the time goes inside this source, when it counts it.
+    var sourceTiming: SourceTiming { get }
+}
+
+/// A source's own account of its cost: bytes read, and the seconds spent reading, verifying and
+/// unpacking them. Fractions of 1.0 sum to the time the caller spent inside the source.
+public struct SourceTiming: Sendable {
+    public var counted = false
+    public var bytes = 0
+    public var readSeconds = 0.0
+    public var digestSeconds = 0.0
+    public var unpackSeconds = 0.0
+
+    public init() {}
+
+    public var accountedSeconds: Double { readSeconds + digestSeconds + unpackSeconds }
 }
 
 extension WeightSource {
     public var bytesReadFromSource: Int { 0 }
+    public var sourceTiming: SourceTiming { SourceTiming() }
 }
 
 extension WeightSource {
@@ -103,9 +120,24 @@ public struct InstallFile: WeightSource {
         /// expert of a stacked tensor does not cost the whole stack, which is the difference
         /// between streaming and not streaming.
         var bytesRead = 0
+        /// Where the time went. `mix.read` was 65% of a real forward and the disk is measured at
+        /// ~1 GB/s, so the caller needs to know whether those seconds are the device or the
+        /// unpacking — a distinction arithmetic cannot settle.
+        var readSeconds = 0.0
+        var digestSeconds = 0.0
+        var unpackSeconds = 0.0
     }
 
     private let state = ReadState()
+
+    /// Whether to verify each slab's digest **on every read**. Off by default, and that default is a
+    /// measurement: on the real 35 B model the verification cost **21.04 s of a 39.8 s forward**, 82%
+    /// of the expert fetch, because it re-hashes every expert payload the model reads. Integrity is
+    /// established out of band — the manifest carries a digest per tensor and per slab and
+    /// `tools/quantize.py verify` checks the whole install — so the hot path is the wrong place for
+    /// it. `SHARD_VERIFY_SLABS` is not a switch; a caller asks explicitly, which keeps the capability
+    /// tested instead of deleting it.
+    public let verifySlabs: Bool
 
     /// Payload bytes read through this instance.
     public var bytesRead: Int { state.bytesRead }
@@ -113,6 +145,17 @@ public struct InstallFile: WeightSource {
     /// `WeightSource`: the same counter, so a caller can report measured traffic rather than an
     /// estimate derived from element counts.
     public var bytesReadFromSource: Int { bytesRead }
+
+    /// `WeightSource`: what the reading, verifying and unpacking cost, in seconds.
+    public var sourceTiming: SourceTiming {
+        var timing = SourceTiming()
+        timing.counted = true
+        timing.bytes = state.bytesRead
+        timing.readSeconds = state.readSeconds
+        timing.digestSeconds = state.digestSeconds
+        timing.unpackSeconds = state.unpackSeconds
+        return timing
+    }
 
     /// Open an install.
     ///
@@ -123,7 +166,8 @@ public struct InstallFile: WeightSource {
     /// is not weakened by moving it — each payload is checked the first time it is read, so a
     /// tampered tensor still cannot produce plausible numbers (I6) — and `verifyAll()` restores
     /// the eager check for a gate that wants to make it explicit.
-    public init(url: URL, verify: Bool = false) throws {
+    public init(url: URL, verify: Bool = false, verifySlabs: Bool = false) throws {
+        self.verifySlabs = verifySlabs
         let manifestData = try Data(contentsOf: url.appendingPathComponent("install.json"))
         let manifest = try JSONDecoder().decode(Manifest.self, from: manifestData)
         self.manifest = manifest
@@ -168,14 +212,18 @@ public struct InstallFile: WeightSource {
     /// A bounded read that is counted, so the cost of a row range is observable rather than
     /// asserted.
     private func readCounted(offset: Int, byteCount: Int) throws -> Data {
+        let started = DispatchTime.now().uptimeNanoseconds
         let data = try blob.readData(offset: offset, byteCount: byteCount)
+        state.readSeconds += Double(DispatchTime.now().uptimeNanoseconds &- started) / 1e9
         state.bytesRead += data.count
         return data
     }
 
     private func payload(_ entry: Entry) throws -> Data {
         guard try digestMatches(entry) else { throw Error.digestMismatch(entry.name) }
+        let started = DispatchTime.now().uptimeNanoseconds
         let data = try blob.readData(offset: entry.offset, byteCount: entry.nbytes)
+        state.readSeconds += Double(DispatchTime.now().uptimeNanoseconds &- started) / 1e9
         state.bytesRead += data.count
         return data
     }
@@ -249,20 +297,37 @@ public struct InstallFile: WeightSource {
         // 3. The slice offsets are **local to the buffers just read** (`index * inner`), while the
         //    digest to compare against is indexed **globally** (`range.lowerBound + index`). Using
         //    the global index for both sliced past the end of a one-expert buffer and trapped.
-        if let slabs = entry.slab_sha256, inner > 0, range.lowerBound + range.count <= slabs.count {
-            for index in 0..<range.count {
-                let low = index * inner, high = low + inner
-                var hasher = SHA256()
-                hasher.update(data: codes[(low * codesPerRow)..<(high * codesPerRow)])
-                hasher.update(data: scales[(low * groupsPerRow * 4)..<(high * groupsPerRow * 4)])
-                hasher.update(data: zeros[(low * groupsPerRow)..<(high * groupsPerRow)])
-                let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-                guard digest == slabs[range.lowerBound + index] else { throw Error.digestMismatch(entry.name) }
+        // Off by default: see `verifySlabs`. The fallback matters as much as the loop — with
+        // verification off, falling through to `digestMatches` would read and hash the **whole**
+        // entry to answer a question about one expert, which is the `DC-088` bug in reverse.
+        //
+        // The clock starts *inside* the branch: started outside it, the phase booked the cost of the
+        // branch test itself (4.2e-08 s) as verification, and a test that pins "off costs nothing"
+        // caught it. A phase has to mean what it says.
+        if verifySlabs {
+            let digestStarted = DispatchTime.now().uptimeNanoseconds
+            if let slabs = entry.slab_sha256, inner > 0, range.lowerBound + range.count <= slabs.count {
+                for index in 0..<range.count {
+                    let low = index * inner, high = low + inner
+                    var hasher = SHA256()
+                    hasher.update(data: codes[(low * codesPerRow)..<(high * codesPerRow)])
+                    hasher.update(data: scales[(low * groupsPerRow * 4)..<(high * groupsPerRow * 4)])
+                    hasher.update(data: zeros[(low * groupsPerRow)..<(high * groupsPerRow)])
+                    let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+                    guard digest == slabs[range.lowerBound + index] else { throw Error.digestMismatch(entry.name) }
+                }
+            } else {
+                guard try digestMatches(entry) else { throw Error.digestMismatch(entry.name) }
             }
-        } else {
-            guard try digestMatches(entry) else { throw Error.digestMismatch(entry.name) }
+            state.digestSeconds += Double(DispatchTime.now().uptimeNanoseconds &- digestStarted) / 1e9
         }
-        return try Self.dequantizeInt4(codes + scales + zeros, entry: entry, rowCount: payloadRows)
+        // The concatenation is inside the unpack timing on purpose: `codes + scales + zeros` copies
+        // the payload before the decoder sees it, and a copy of the payload is part of what the
+        // caller experiences as "fetching an expert".
+        let unpackStarted = DispatchTime.now().uptimeNanoseconds
+        let decoded = try Self.dequantizeInt4(codes + scales + zeros, entry: entry, rowCount: payloadRows)
+        state.unpackSeconds += Double(DispatchTime.now().uptimeNanoseconds &- unpackStarted) / 1e9
+        return decoded
     }
 
     static func elementSize(_ dtype: String) -> Int {
