@@ -17,7 +17,7 @@ exists and some evidence does not; `not applicable yet` — the model or phase i
 | `I3` discrete decisions match exactly | `verified` | the M0/M1 gates' index sets |
 | `I4` policy is data | `verified` | `tools/quant_policy.json`, `D20` |
 | `I5` transcode, do not requantize | `not applicable yet` | the checkpoint is bf16 |
-| `I6` provenance in the artifact | `partly` | `tools/verify_install.py` names the gaps |
+| `I6` provenance in the artifact | `verified` | 26 source-shard digests in `install.json`, `D57` |
 
 ## I1 — bit-reproducibility — `verified`
 
@@ -27,9 +27,14 @@ exists and some evidence does not; `not applicable yet` — the model or phase i
 identical** over three frozen prompts (`docs/m0-gate.md`). M1's trace on the real 35 B model **was**
 byte-identical to the contract — 83 tensors, 40 discrete decisions, digest `b8c976c5e7ba8816…`
 (`docs/m1-gate.md`) — and a re-check on 2026-09-17, against a contract **re-run** on the current
-artifacts, found the engine differing by 40 discrete decisions and 1 float: a real divergence, not a stale
-comparison. That evidence is therefore **failing**, and this audit says so rather than counting it
-(`DC-111`). M2 produced that same digest from **half the experts on each of two machines**
+artifacts, found the engine differing by 40 discrete decisions and 1 float. That was **not** an arithmetic
+divergence: the engine read an **install** and the contract a **bf16 checkpoint**, and `D55` showed the
+difference was exactly those weights. Point the contract at the install — `tools/install_source.py`, the
+same dequantiser the Swift reader mirrors — and `trace_diff` reports **IDENTICAL — 83 tensors, 0 differing
+elements, 40 discrete decisions, matching digests `b0d382dbabf36df0…`** (`D56`, verified 2026-09-17). The
+remaining difference against a checkpoint contract is the **declared, measured** cost of int4 (`D55`), not a
+failure of this invariant, and `tools/milestones.json` now states M1's claim in that falsifiable form. M2
+produced that same digest from **half the experts on each of two machines**
 (`b0d382dbabf36df0…` for the shared prompt, `docs/m2-decisions.md`), and the four-node mesh reproduced the
 single-node trace exactly. The GPU unpack is asserted **bit-identical** to the scalar one across a grid of
 shapes (`MetalUnpackTests`), and the reduction is asserted to be bit-identical across arrival orders and
@@ -69,9 +74,14 @@ all-reduce that mixes per-node partials, which `D17`'s measured counterexample (
 **The claim**: the router's argmax and top-k **index sets** match, not merely the numbers they come from.
 
 **Evidence.** M0's three prompts each matched the reference implementation's argmax index sets while the
-numeric distance stayed near `2e-06`; M1 checked **40 discrete decisions** on the real model (historical, per `DC-111`); M2 and M3
-checked the same decisions per node — and *those* comparisons are current, because every node reads the
-**same install** (`b0d382db…` on all of them). The comparison is a **separate assertion** from the numeric one, so a
+numeric distance stayed near `2e-06`; M1 checked **40 discrete decisions** on the real model, and as of
+2026-09-17 that comparison is **current and passing** with matched weights — `trace_diff` between the engine
+and a contract reading the same install reports every one of the 40 matching (`D56`); M2 and M3
+checked the same decisions per node — and those comparisons are current, because every node reads the
+**same install** (`b0d382db…` on all of them). What int4 *does* move is measured rather than assumed: against
+a bf16 checkpoint contract the router's choices differ in **40 of 1,600 slots**, and at the output the
+**argmax of the logits is unchanged on all five positions** — with the smallest margin **0.27** and top-8
+overlap of **5–8 of 8**, which is a pass that is honest about being narrow (`DC-112`). The comparison is a **separate assertion** from the numeric one, so a
 marginal flip cannot hide behind a tolerance (`tools/trace_diff.py` reports both). Routers are kept at bf16
 with the reason recorded in `tools/quant_policy.json`, because a router divergence leaves "every per-tensor
 check still green".
@@ -108,7 +118,7 @@ unverified but *unreachable* here.
 **What would falsify it**: at M4, an on-disk 4-bit layout chosen for convenience rather than for closeness to
 the vendor's block scaling.
 
-## I6 — provenance in the artifact — `partly`
+## I6 — provenance in the artifact — `verified`
 
 **The claim**: the converted artifact says which weights it came from.
 
@@ -117,19 +127,26 @@ the vendor's block scaling.
 `"local"` "reads like an answer and is not one". `digest_snapshot` hashes every source weight file, through
 the uncached descriptor, so a 67 GiB checkpoint does not become page cache.
 
-**What the artifact on disk actually says.** The M1 install predates both fixes:
+**What the artifact on disk said, and what it says now.** The M1 install predated both fixes, and
+`tools/verify_install.py` reported exactly that:
 
 ```
   provenance: source.revision is 'local', which reads like an answer and is a placeholder
   provenance: source.files is empty, so the source weights cannot be traced to their digests
-  provenance: source.repo holds a commit hash (995ad96eacd9…) while source.revision is a placeholder,
-              so the two look swapped — which is what the M1 install records
+  provenance: source.repo holds a commit hash (995ad96eacd9…) while source.revision is a placeholder
 ```
 
-Those three lines are `tools/verify_install.py`'s output on `--install .build/m1-install`, which is why the
-status is `partly` rather than `verified` or `not yet`: the mechanism is right, the shipped artifact is
-older than it, and **nothing checked the artifact until this audit**. The verifier now reports provenance on
-every run and the packer warns when the two inputs look swapped, so the same mistake cannot be silent again.
+That is why the status was `partly`: the mechanism was right and the shipped artifact was older than it.
+`tools/repair_install_provenance.py` repaired the metadata — **not the payload** — on 2026-09-17, and both
+values turned out to be **discoverable** from the cache layout rather than needing a human:
+`models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96e…` names the repo and the revision. The repair records
+`files` as **26 source-shard digests**, sets `repo` to `Qwen/Qwen3.6-35B-A3B` and `revision` to the commit,
+appends a `provenance-repair` pass so the artifact describes its own history, and can only change `source`
+and `passes` — every other key is compared canonical-JSON-equal before it writes. The verifier now reports
+`source.files records 26 file digest(s)`, the engine's trace digest is **unchanged** (`b0d382dbabf36df0…`,
+so every recorded digest still stands), and the cost was 1m19s with the disk flat at 9 GB through the
+uncached reader (`D57`). The verifier reports provenance on every run and the packer warns when the two
+inputs look swapped, so the same mistake cannot be silent again.
 
 **What would close it**: rebuilding the install with `--repo` and `--revision` (and the snapshot present for
 `digest_snapshot`), then re-staging it to the farm — a 21.7 GB rebuild and three 21.7 GB copies, which is a

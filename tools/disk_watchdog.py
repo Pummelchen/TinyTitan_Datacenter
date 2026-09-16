@@ -52,6 +52,7 @@ HEAVY_PATTERNS = (
     "tools/check_engine_contract.py",
     "tools/check_engine_generation.py",
     "tools/make_tiny",
+    "tools/repair_install_provenance.py",
 )
 
 

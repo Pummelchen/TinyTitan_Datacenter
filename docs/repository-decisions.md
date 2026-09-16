@@ -917,3 +917,33 @@ checkpoint contract the same engine is `DIFFERENT — 40 discrete, 1 float`, whi
 `D55` measured and `DC-112` tracks. **The engine implements the contract exactly**; what differed was never
 the arithmetic. The cost was real but affordable: 1,600 expert fetches, and at the twenty-minute mark 878 MB
 of real memory and 19.5 minutes of CPU, with the disk flat at 9 GB and both guards live.
+
+## D57 — I6 is closed: the artifact can name its source, and the repair touches metadata only
+
+`I6` was the last `partly`. The mechanism existed — `tools/quantize.py` digests every source weight file and
+records the repo and revision as inputs — but the shipped M1 install **predated it**: `source.files` was
+empty, `source.repo` held a commit hash, and `source.revision` said `"local"`. So the artifact that every
+gate reads could not answer "which weights is this".
+
+Both missing values turned out to be **discoverable** rather than needing a human, which the audit had not
+assumed: the cache path `…/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96e…/` names the repo and the
+revision. `tools/repair_install_provenance.py` repairs the metadata in place, with three rules that make it a
+repair rather than a rewrite:
+
+1. **The payload is provably untouched.** The manifest is rebuilt with only `source` and `passes` changed, and
+   every other key is compared in canonical JSON before anything is written. A repair that could move a tensor
+   digest would not be one.
+2. **A repair is recorded as a pass.** `provenance-repair` is appended, so the artifact describes its own
+   history instead of pretending it was built that way.
+3. **A disagreement is refused, not overwritten.** An install that already carries file digests is compared
+   against the recomputed ones: equal is a no-op, different is an error for a human, because it means the
+   artifact and the weights on disk are not the same pair.
+
+**Result.** `files` 0 → **26 source-shard digests**, `repo` → `Qwen/Qwen3.6-35B-A3B`, `revision` → the commit.
+`tools/verify_install.py` now reports `provenance: source.files records 26 file digest(s)` and the three
+complaints are gone, and **the engine's trace is unchanged** — still `b0d382dbabf36df0…` after the repair —
+so every digest recorded in `docs/` and on the wiki still stands. The cost was 1m19s with the disk flat at
+9 GB the whole way, because the digest path is the uncached one; the tool has joined `disk_watchdog.py`'s
+`HEAVY_PATTERNS` so a future run is guarded like the other multi-gigabyte reads.
+
+`I6` therefore moves from `partly` to **`verified`**, and the audit says so with the evidence.

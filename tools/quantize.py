@@ -679,9 +679,11 @@ def provenance_warnings(repo: str | None, revision: str | None, files: dict) -> 
 def digest_snapshot(snapshot: Path) -> dict[str, str]:
     """`I6`: the sha256 of every source weight file, keyed by name.
 
-    The artifact recorded `{}` here — in the real install and in both committed fixtures — so a
+    The artifact used to record `{}` here — in the real install and in both committed fixtures — so a
     converted model could not be traced to the weights it came from, which is the one question a
-    provenance header exists to answer. `revision` was `"local"` too; that half is `DC-098`'s other
+    provenance header exists to answer. The committed fixtures still do; the real install was repaired in
+    place on 2026-09-17 and now carries 26 source-shard digests (`D57`,
+    `tools/repair_install_provenance.py`). `revision` was `"local"` too; that half is `DC-098`'s other
     edge and needs the commit, which a build does not know.
 
     Reads through the uncached descriptor, one window at a time, so a 67 GiB checkpoint does not become
