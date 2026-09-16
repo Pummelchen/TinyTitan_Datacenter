@@ -280,6 +280,25 @@ class Install:
         for row in range(count):
             yield widened[row * padded : (row + 1) * padded]
 
+    def row_range(self, tensor: Tensor, start: int, end: int, row_block: int = 32) -> list[list[float]]:
+        """Rows `[start, end)` as the engine would read them, without walking the rows before `start`.
+
+        `rows()` is sequential, which is right for a scan and wrong for a shard: fetching expert 255 should
+        not dequantise the 254 experts in front of it. The block helpers already take a `start`, so this is
+        the same work with the offset passed through rather than iterated to.
+        """
+        rows_total, padded = tensor.geometry()
+        if not 0 <= start <= end <= rows_total:
+            raise InstallError(f"rows {start}..{end} outside 0..{rows_total} for {tensor.name}")
+        out: list[list[float]] = []
+        for block_start in range(start, end, row_block):
+            count = min(row_block, end - block_start)
+            if tensor.is_int4:
+                out.extend(self._int4_block(tensor, rows_total, padded, block_start, count))
+            else:
+                out.extend(self._dense_block(tensor, padded, block_start, count))
+        return out
+
     def dequantize(self, tensor: Tensor, row_block: int = 64) -> list[float]:
         """The whole tensor, as the engine would read it. Only for tensors that fit in memory."""
         out: list[float] = []

@@ -25,14 +25,16 @@ decision matching: `docs/m0-gate.md`), M1 on the real 35 B model, whose trace wa
 memory (`docs/m1-gate.md`, re-established 2026-09-16) — **but that pass does not hold today.** Re-checked on
 2026-09-17 against a contract **re-run** on the current artifacts (the reference can now read the checkpoint
 without mapping it, and fetch experts by index, so the run costs two minutes here instead of the node's
-safety), the engine differs by **40 discrete decisions and 1 float** — and the cause is now **known and
-proved, and it is not an engine bug**. The install holds the Gated DeltaNet's three projections
-(`linear.in_qkv`, `linear.in_z`, `linear.out`) and `attn.q/k/v/o` as **int4-affine**, which is what
-`tools/quant_policy.json` says, while the contract is generated from the **checkpoint's bf16**. Fed the
-install's own values, the reference reproduces the engine's layer-0 attention output **byte for byte**
-(`D55`); with the checkpoint's weights it differs by 24.5% median relative, and that compounds through forty
-layers. The milestone and the quantisation policy are therefore **in conflict**, which is a decision and not a
-bug: `DC-112` carries it. `docs/m1-gate.md` has the evidence. It is nevertheless **incomplete**:
+safety), the engine differs by **40 discrete decisions and 1 float** — and that is now **resolved with
+evidence, and it was never the arithmetic**. The install holds the Gated DeltaNet's three projections
+(`linear.in_qkv`, `linear.in_z`, `linear.out`) and `attn.q/k/v/o` as **int4-affine**, by
+`tools/quant_policy.json`, while the contract was generated from the **checkpoint's bf16**: the two sides
+were reading different weights. Point the contract at the **install** — `tools/install_source.py`, which reads
+through the same dequantiser the Swift reader mirrors — and the pair is **byte-identical**: `trace_diff`
+reports **83 tensors, 0 differing elements, 40 discrete decisions, matching digests `b0d382dbabf36df0…`**
+(`D56`). Against the checkpoint contract the difference is the **declared, measured** cost of int4 — `D55`:
+0.0156 max / 24.5% median relative at layer 0 — tracked in `DC-112`. M1's claim is restated in
+`tools/milestones.json` to the form that can be falsified, and `docs/m1-gate.md` has the evidence. It is nevertheless **incomplete**:
 `D12` was an open design question and is now decided from a measurement (`D31`: the expert slot bank
 is sized from a budget, one slot, because the measured hit rate is 0 at every size), and
 **M2 shards the real model across two machines**: the reduction contract (`D17`), the wire protocol (`D18`), the failure semantics
@@ -133,6 +135,11 @@ one heavy-job slot so two cannot run at once — the pairing that panicked this 
 ```bash
 python3 tools/heavy_job.py --needs-gb 4.2 --purpose "the M1 checkpoint path"   # what would this cost?
 python3 tools/heavy_job.py --release                                          # after reading the holder
+
+# And the ceiling on real memory is enforced too (D54), because a declared need is a promise and resident
+# size is a measurement: `rss`, three readings in a row, then SIGTERM/SIGKILL and a MEMORY_STOP marker.
+python3 tools/memory_watchdog.py --limit-gb 4 --interval 5
+python3 tools/memory_watchdog.py --once --limit-gb 4        # a single check, safe to run beside a job
 ```
 
 ## Layout
@@ -166,7 +173,7 @@ python3 tools/run_all_gates.py
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 191 --swift-skipped 0 --python-tests 349
+python3 tools/check_status_claims.py --swift-tests 191 --swift-skipped 0 --python-tests 359
 
 # The provenance position: no copied code, and no NOTICE to carry
 python3 tools/check_provenance.py

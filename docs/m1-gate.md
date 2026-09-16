@@ -18,6 +18,23 @@ discrete  layer.00.router.topk missing [231, 71], unexpected [72, 19]  (and 39 m
 there the router flips and the decisions cascade for all forty layers, which is exactly the failure mode
 `I3` exists to catch.
 
+**Resolved, with matched weights (`D56`).** The gate's claim was being tested with two different inputs: the
+engine read the install and the contract read the checkpoint. `tools/install_source.py` points the contract at
+the **install**, through the same dequantiser the Swift reader mirrors, and then the comparison is about
+arithmetic and nothing else:
+
+```
+trace_diff  engine (install)  vs  contract (install)     IDENTICAL — 83 tensors, 0 elements, 40 discrete
+                                                         decisions, matching digests b0d382dbabf36df0…
+trace_diff  engine (install)  vs  contract (checkpoint)   DIFFERENT — 40 discrete, 1 float
+```
+
+**The engine is correct, end to end**, not merely at layer 0: byte-identical traces and identical digests over
+all 83 tensors and all 40 router decisions. The second line is the **declared, measured** effect of the
+install's quantisation — the same 40 and 1 that `D50`–`D55` chased — and it is tracked in `DC-112` rather
+than hidden. `tools/milestones.json` now carries the claim in this falsifiable form, so the milestone check
+re-verifies the right thing.
+
 **Root cause, proved bit-exactly (`D55`).** The two sides are not running the same weights. The install
 holds the Gated DeltaNet's three projections — `linear.in_qkv`, `linear.in_z`, `linear.out` — and
 `attn.q/k/v/o` as **int4-affine**, by `tools/quant_policy.json`; the contract is generated from the

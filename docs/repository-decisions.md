@@ -867,3 +867,53 @@ decisions are a consequence of a 24.5% median difference at layer 0 compounding 
 The rebuild that would test the bf16 policy needs roughly 25 GB free and this node has 9.5 GB, so it is
 **blocked here** and must not be attempted on this machine in any case: it is a GB-scale job of the kind that
 panicked it. `DC-112` carries that.
+
+## D56 — The gate had two inputs, so it could not be tested; now it has one
+
+`D55` ended with an awkward fact: the claim M1's gate makes — *the engine reproduces the contract* — was being
+checked with **two different inputs**. The engine read an install and the contract read a checkpoint, and the
+entire divergence turned out to be that difference. A claim of that shape cannot be falsified by the
+comparison it was using, because any disagreement is ambiguous between "the arithmetic differs" and "the
+weights differ", and the second is not a bug.
+
+`tools/install_source.py` removes the ambiguity. It exposes the same two methods the contract's forward asks a
+source for — `tensor(name)` and `rows(name, start, end)` — and fills them from the **install**, through the
+same dequantiser the Swift reader mirrors. An install-backed contract run and an install-backed engine run
+therefore differ only if the arithmetic differs, which is what the milestone is actually about. Two deliberate
+refusals keep it honest: an expert stack is never materialised whole (the streaming path exists for it, and a
+dequantised stack is gigabytes), and an absent name is an error rather than a default.
+
+**The finding worth keeping is the row space.** An install flattens a tensor's trailing dimensions into the
+row length, so the real `expert.stack_gate_up` is stored as **262,144 rows of 2,048** — geometry
+`(262144, 2048)` — and **one expert is 1,024 consecutive install rows**, not one. `D32`'s "one expert is one
+row" is true of the **checkpoint**; it is not true of the install, and a source that assumed it returned
+2,048 values where an expert needs 2,097,152. That is a thousandth of an expert, and it failed **loudly** on
+the reshape rather than silently producing a plausible trace, which is the only reason it was cheap to find.
+The test that guards it now uses a stack whose padded width is *narrower* than its row — the case a naive
+fixture misses, and the shape the real install has.
+
+`Install.row_range` came with it: `rows()` walks from the beginning, which is right for a scan and wrong for a
+shard, so fetching expert 255 no longer dequantises the 254 experts in front of it. Ten tests cover the
+mapping, the refusals, the padding trim, the three-dimensional tensor that is *not* a stack (`linear.conv` is
+`(8192, 1, 4)` and is read whole) and the equivalence `row_range(a, b) == rows()[a:b]` that keeps the fast
+path and the scan path from becoming two implementations of one thing.
+
+**What is not claimed yet.** The full-model run is in flight, and it is not a quick one: the contract fetches
+**1,600 experts** (40 layers, 8 per token, 5 tokens) through a per-value Python dequantiser. Measured at
+about twenty minutes in: **19.5 minutes of CPU, 878 MB of real memory**, disk flat at 9 GB free, with both
+guards live. It is safe and it is running; its outcome is the gate's outcome, and it will be recorded when it
+is measured rather than before. `memory_watchdog.py --once` was run against it while it ran and reported "no
+heavy job over 4.0 GB", which is the first live use of `D54`'s guard.
+
+**Result.** The run finished and it settles the milestone. `trace_diff` between the engine and the contract,
+both reading the install:
+
+```
+IDENTICAL — 83 tensor(s), 0 element(s), 40 discrete decision(s) checked (matching digests)
+```
+
+All 83 tensors, all 40 router decisions, and the two digests agree (`b0d382dbabf36df0…`). Against the
+checkpoint contract the same engine is `DIFFERENT — 40 discrete, 1 float`, which is the quantisation effect
+`D55` measured and `DC-112` tracks. **The engine implements the contract exactly**; what differed was never
+the arithmetic. The cost was real but affordable: 1,600 expert fetches, and at the twenty-minute mark 878 MB
+of real memory and 19.5 minutes of CPU, with the disk flat at 9 GB and both guards live.

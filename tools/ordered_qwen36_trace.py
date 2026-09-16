@@ -81,7 +81,14 @@ def main(argv: list[str] | None = None) -> int:
 
     spec = json.loads(args.spec.read_text())
     tokens = [int(part) for part in args.tokens.replace(" ", "").split(",") if part]
-    if args.uncached:
+    # An install directory is read through the install's own dequantiser, which is what the Swift reader
+    # mirrors. That is how the gate's real question gets asked: same weights on both sides, so a difference
+    # is a difference in arithmetic rather than in what was quantised (`D55`).
+    if (args.snapshot / "install.json").exists():
+        from install_source import InstallSource
+
+        source = InstallSource(args.snapshot)
+    elif args.uncached:
         from uncached_safetensors import UncachedSafetensorsSource
 
         source = UncachedSafetensorsSource(args.snapshot)

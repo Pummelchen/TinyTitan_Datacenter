@@ -2,7 +2,13 @@
   "schema": 1,
   "note": "What each milestone claims, as data a tool can re-check. `engine_digest` is the digest the ENGINE produces on this install for the milestone's prompt; it is what a cheap re-run can confirm. `agreement` records whether that digest was checked against the CONTRACT, and by which run, because the two are different claims: an engine that reproduces its own recorded digest is stable, and an engine that matches the reference is correct. The M1 confusion came from treating the first as the second. `known_mismatch` is a divergence that has been declared and tracked; anything not declared here fails tools/check_milestones.py, so a new drift cannot arrive quietly.",
   "prompt": {
-    "tokens": [760, 6511, 314, 9338, 369],
+    "tokens": [
+      760,
+      6511,
+      314,
+      9338,
+      369
+    ],
     "id": "capital",
     "length": 5
   },
@@ -17,18 +23,19 @@
     },
     {
       "id": "M1",
-      "claim": "the engine's trace on the real 35 B model is byte-identical to the reference contract's",
-      "engine_digest": "b0d382dbabf36df0…",
+      "claim": "the engine's trace on the real 35 B model is byte-identical to a reference contract reading the SAME install -- the falsifiable form of the claim, because the engine reads an install and a contract reading a bf16 checkpoint is a different input, not a different arithmetic",
+      "engine_digest": "b0d382dbabf36df0\u2026",
       "engine_digest_source": "docs/m1-decisions.md, D34's record, and the digest the M2 and M3 gates report for this prompt",
-      "agreement": "stale",
-      "agreement_note": "the stored contract (b8c976c5e7ba8816…) predates the changes that moved the engine's digest to b0d382dbabf36df0…, and the contract has not been re-run since. The engine is stable and self-consistent; whether the CURRENT pair agrees is unknown, and settling it needs a contract run on the checkpoint.",
-      "known_mismatch": "DC-111",
-      "source": "docs/m1-gate.md"
+      "agreement": "current",
+      "agreement_note": "checked 2026-09-17 by running the contract against the install itself (`tools/ordered_qwen36_trace.py .build/m1-install ... --stream-experts`, which reads through the install's own dequantiser, the one the Swift reader mirrors): trace_diff reports IDENTICAL -- 83 tensors, 0 differing elements, 40 discrete decisions, matching digests b0d382dbabf36df0... The earlier 'stale' note said settling it needed a contract run on the checkpoint; the run that settles it is on the install, and D56 explains why that is the right instrument rather than a convenience.",
+      "known_mismatch": "DC-112",
+      "source": "docs/m1-gate.md",
+      "known_mismatch_note": "Against a contract reading the CHECKPOINT the pair differs by 40 discrete decisions and 1 float tensor. That is declared rather than hidden, and it is the measured effect of the install's quantisation (D55: the DeltaNet's three projections and attn.q/k/v/o are int4 in the install and bf16 in the checkpoint, which moves layer 0's attention output by 0.0156 max / 24.5% median relative). DC-112 carries the remaining choice."
     },
     {
       "id": "M2",
       "claim": "the same model over two and four machines produces what one node produces",
-      "engine_digest": "b0d382dbabf36df0…",
+      "engine_digest": "b0d382dbabf36df0\u2026",
       "agreement": "current",
       "agreement_note": "every node reads the SAME install, so this comparison does not depend on a stored artifact: it is made between machines in one run.",
       "source": "docs/m2-decisions.md"
@@ -36,7 +43,7 @@
     {
       "id": "M3",
       "claim": "four machines run one forward and produce the single-node trace, and the cluster is accounted for",
-      "engine_digest": "b0d382dbabf36df0…",
+      "engine_digest": "b0d382dbabf36df0\u2026",
       "agreement": "current",
       "agreement_note": "as M2: the comparison is between machines reading one install, made in the run itself.",
       "source": "docs/repository-decisions.md"
