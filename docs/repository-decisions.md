@@ -513,3 +513,32 @@ Its first full run, on this repository: **M1** engine reproduces, contract stale
 **M3** engine reproduces, contract current, because their comparison is between machines reading one install
 and does not depend on a stored artifact at all; **M0**, **M4** and **M5** not checkable here, each with the
 reason. It runs as `python3 tools/run_all_gates.py --milestones`.
+
+## D47 — The reference can read a checkpoint without mapping it, and that was not the whole problem
+
+The M1 gate could not be re-established here for a reason that had never been tested: the reference reads the
+checkpoint through `safetensors.safe_open`, which **memory-maps** the shard, and a 67 GB mapping on an 8 GB
+node is the mechanism behind this project's two panics. That was an inference from the documented incident, so
+it was checked — `safe_open` maps, `SafetensorsSource` has no other path — and then **fixed**.
+
+`tools/uncached_safetensors.py` has the same interface (`tensor`, `rows`) and serves both by `pread`-ing
+exactly the bytes asked for through the same `F_NOCACHE` path the install reader uses. Nothing is mapped, so
+nothing accumulates in the page cache, and the peak cost of a read is the array it returns rather than the
+file it came from. It is not taken on trust: **byte-identity with `safe_open` is tested on a real 4 GB shard
+of this checkpoint** — a row slice of the 1074 MB expert tensor and a one-dimensional norm — as well as on a
+file the tests build themselves, where every dtype, a NaN, both infinities and a signed zero are constructed
+and carried through. The reference takes it behind `--uncached`, so the authority's default reader changes
+only deliberately.
+
+**And the gate still cannot be re-established here, which the fix is what revealed.** With the uncached reader
+active, one attempt drove swap from 2048 MB to **5120 MB** and took free disk from 11.8 GB to **8.0 GB** in
+sixty seconds. The page cache was out of the picture, so the growth was the **process's own anonymous
+memory**: one `gate_up_proj` is 1074 MB of bf16 that the reference materialises as **2 GB of fp32**, before
+the layer's other tensors and its activations, against a node with about 4.5 GB usable. It was stopped
+deliberately at 8 GB free rather than letting the disk floor stop it, and it recovered to 10 GB.
+
+**Two lessons, and the second is the one worth keeping.** A documented hazard is a hypothesis about *which*
+resource runs out first, and fixing the named one does not fix the run: the page cache was real, and removing
+it exposed the memory underneath. The way to settle a blocker is to attempt the thing and watch it, not to
+reason about which of its parts is fatal — the attempt cost ninety seconds and produced a better blocker than
+three rounds of inference.

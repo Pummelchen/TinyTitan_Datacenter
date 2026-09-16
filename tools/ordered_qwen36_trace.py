@@ -46,12 +46,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tokens", required=True, help="comma-separated token ids")
     parser.add_argument("--model", default="")
     parser.add_argument("--revision", default="")
+    parser.add_argument(
+        "--uncached",
+        action="store_true",
+        help=(
+            "read the checkpoint through pread instead of `safe_open`'s mmap. The default is unchanged, "
+            "because the contract is the authority and its reader should change only deliberately; this "
+            "exists because a 67 GB mapping on an 8 GB node is the mechanism behind two panics, and it is "
+            "byte-identical to the mapped reader (tools/test_uncached_safetensors.py checks that on a real "
+            "shard of this checkpoint)."
+        ),
+    )
     args = parser.parse_args(argv)
     require_headroom(purpose="the contract run")
 
     spec = json.loads(args.spec.read_text())
     tokens = [int(part) for part in args.tokens.replace(" ", "").split(",") if part]
-    source = SafetensorsSource(args.snapshot)
+    if args.uncached:
+        from uncached_safetensors import UncachedSafetensorsSource
+
+        source = UncachedSafetensorsSource(args.snapshot)
+    else:
+        source = SafetensorsSource(args.snapshot)
 
     captured: dict[str, np.ndarray] = {}
     decisions: dict[str, np.ndarray] = {}

@@ -24,12 +24,29 @@ which has not changed. So the drift is on the engine's **install** path, and the
 changes that landed after 01:5x: the install was **rebuilt at 04:50**, and the dequantiser's zero and NaN
 canonicalisation landed with `D34` at 23:36.
 
-**Why this is not settled here.** Re-running the reference is a **GB-scale streaming read of the 67 GB
-checkpoint on this node** — the operation that took free disk from 17 GB to 2.96 GB in half a minute and
-helped panic it once already. The checkpoint exists on no other node, and no node can hold it beside a
-rebuild. The discriminating step is written down in `DC-111`: run the **engine on the checkpoint** and the
-**reference on the checkpoint** on a machine that can hold it, which separates an install-path drift from a
-checkpoint-path one without guessing.
+**Why this is not settled here, corrected by measurement.** The first answer was "the reference's read is a
+page-cache hazard", and that half is now **fixed rather than assumed**: `tools/uncached_safetensors.py` reads
+the shards through `pread` and never maps them, and it is **byte-identical to `safe_open` on a real 4 GB shard
+of this checkpoint** — a row slice of the 1074 MB expert tensor and a one-dimensional norm, with every dtype
+the checkpoint uses. The reference takes it behind an explicit `--uncached` flag, because the contract is the
+authority and its reader should change only deliberately.
+
+**And the run still cannot finish here, for a different reason — measured, not assumed.** With the uncached
+reader active, on this node, one attempt produced:
+
+```
+t+20s   swap total = 4096.00M  used = 2400.44M   disk free 9.0 GB
+t+40s   swap total = 4096.00M  used = 3412.38M   disk free 9.0 GB
+t+60s   swap total = 5120.00M  used = 3825.75M   disk free 8.0 GB
+```
+
+Swap grew from 2048 MB to **5120 MB** and free disk fell from 11.8 GB to **8.0 GB** in sixty seconds, with
+the page cache out of the picture — so the binding constraint is the **reference's own working set**: one
+`gate_up_proj` is 1074 MB of bf16 that the reference materialises as **2 GB of fp32**, before the layer's
+other tensors and its activations. It was stopped deliberately at 8 GB free rather than letting the disk
+floor stop it, and the machine recovered to 10 GB free. The remaining step needs a machine with more memory
+than this one has, which is what `DC-111` now says: run the **engine on the checkpoint** and the **reference
+on the checkpoint** where both fit, and the two are then comparable without guessing.
 
 **And this document's own record was inconsistent, which is how it stayed hidden.** Further down, a status
 table lists the trace digest as `b0d382dbabf36df0…` — the value the engine produces today, the value
