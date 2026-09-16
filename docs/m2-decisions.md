@@ -384,3 +384,43 @@ plan covers any N, but the CLI takes exactly one `--listen` or `--connect`, and 
 than appearing to support four nodes and hanging. The run is the **fixture**, because the real model at two
 nodes does not fit on this 8 GB host — `--install` points the same harness at the real install on the
 cluster, which is `DC-045`.
+
+## D25 — M2's gate, on two machines
+
+`DC-045` is M2's real gate and two threads on one host cannot satisfy it. With `--remote node1@node1` the
+harness stages a node binary and the fixture on a **second machine**, runs node 1 there and node 0 here,
+and fetches the remote trace back so the project's own differ judges both against the single-node
+reference:
+
+```
+[3/4] two machines: node 1 listening on node1@node1, node 0 connecting from here
+      node 1 bound port 55252 on 100.66.125.48 (the farm's names take the VPN)
+      node 1: BRINGUP ok: node 1 of 2, plan 25d34fe36d62d793…
+      node 1: wrote /Users/node1/m2-gate/node-1: 7 tensors, 2 discrete, digest 58518422914cfe2b…
+      node 0: BRINGUP ok: node 0 of 2, plan 25d34fe36d62d793…
+      node 0: wrote …/node-0: 7 tensors, 2 discrete, digest 58518422914cfe2b…
+      fetched node 1's trace from the other machine (3 files)
+[4/4] node 0: IDENTICAL — 7 tensor(s), 0 element(s), 2 discrete decision(s) checked (matching digests)
+      node 1: IDENTICAL — 7 tensor(s), 0 element(s), 2 discrete decision(s) checked (matching digests)
+M2 GATE (fixture scale) PASSED: node 0 here and node 1 on node1@node1, one plan, one trace
+```
+
+**What this establishes.** Two machines, a real link, a plan both read from the same bytes, a handshake
+that refuses disagreement, one all-reduce per mixture layer, and a trace byte-identical to the
+single-node run — on both nodes, router decisions included. The binary is built here and copied: ad-hoc
+signing survives `scp`, so a peer needs no checkout and no build, which is what makes one `scp` of an
+arm64 binary enough to turn a machine into a cluster node.
+
+**Why it is the fixture and not the 35 B model, stated plainly.** The real model would need its **20 GB
+install staged on the peer**, and the farm's other nodes are in active use by other work: the standing
+instruction for this phase is *functional tests, not benchmarks*, and moving 20 GB onto a shared machine
+to re-prove a property the fixture already proves is neither. When the timing phase opens, `--install`
+points the same harness at a staged install and the same command becomes the real gate — and that run
+will want the Ethernet path rather than the VPN one the names resolve to (a trap the Testbed records).
+
+**Three harness bugs, all from assuming the local case.** The first version left node 0 listening on this
+host *and* started a listener on the remote, so two nodes waited for a peer that was never coming; the
+roles invert when the peer is remote, and only one node may listen. The second copied the remote trace
+without `-r`, which `scp` reported as "not a regular file" — a trace is a directory. The third labelled
+output by process index rather than node id, so a passing run read as though node 0 had written node 1's
+file.

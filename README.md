@@ -21,7 +21,11 @@ to the contract, every discrete decision matching. M1 runs the real 35 B model o
 and its trace is **byte-identical to the contract** — 83 tensors and 40 discrete
 decisions, digest `b8c976c5e7ba8816…` — generating at **0.108 tok/s** cached with
 **348.6 MB** peak memory. Those are current as of 2026-09-16; what M1 leaves open is
-`D12` and an install-path contract (`DC-108`). There are **no releases and no tags**.
+`D12` and an install-path contract (`DC-108`). **M2 runs sharded across two machines**:
+`tools/run_m2_gate.py --remote node1@node1` stages a node on a peer and `trace_diff` reports the
+N-node trace **IDENTICAL** to the single-node one on both nodes. That is M2's gate as a functional
+test on the fixture — the 35 B model across two nodes needs its install staged on a peer and belongs
+to the timing phase. There are **no releases and no tags**.
 
 News, measurements and the live work list are in the **[wiki](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki)** —
 start with [News](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/News) for what

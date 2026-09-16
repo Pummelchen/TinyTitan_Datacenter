@@ -28,10 +28,11 @@ no Python contract reads an install (`DC-108`), `D12` is an open design question
 (`D19`), the shard plan as data (`D20`), bring-up (`D21`) and a transport that binds and connects
 (`D22`) are implemented and demonstrated — a two-node exchange driven by a **loaded plan file** is
 bit-identical to the single-node forward, over a socket pair **and over TCP**. The engine **runs
-sharded end to end**: `tools/run_m2_gate.py` starts two `datacenter-node` **processes** over TCP and
-`trace_diff` reports IDENTICAL on both against the single-node trace. What remains for M2 is the cluster
-itself (`DC-045`), which needs two machines — the real model does not fit on this 8 GB host at two nodes.
-**M3–M5 have not started**.
+sharded end to end across two machines**: `tools/run_m2_gate.py --remote node1@node1` stages a node on a
+peer and `trace_diff` reports IDENTICAL on both against the single-node trace — M2's gate as a functional
+test on the fixture. The farm's nodes are shared with other work, so cluster runs are functional rather
+than benchmarked until the timing phase, and the 35 B model across two nodes needs its 20 GB install
+staged on a peer. **M3–M5 have not started**.
 There are **no releases and no tags**. The design, the plan and the status live in the
 wiki; the measurements live in `docs/`.
 
@@ -221,6 +222,12 @@ any failure.
   pattern could never match and it took its skip branch on every runner it ever saw;
   `tools/check_toolchain.py` parses the output properly and its tests pin both halves of
   that mistake. Run the gates locally, on Xcode 27.
+- **A patch script that aborts leaves the code committed without the documentation.** Twice in one
+  session a documentation patch stopped on a failed anchor, the shell carried on past it, and a commit
+  went out with code whose message described documents that were never written. The pattern is not the
+  mistake — an assert that refuses to guess is right — the mistake is a commit that is not **gated on the
+  documentation step**. Write the docs with asserts, check the exit status, and only then commit; and if
+  it does happen, land the documentation in its own commit that says so rather than rewriting history.
 - **No architecture assertion exists anywhere in the repository**, and there is no
   release artifact to assert against — do not invent a `lipo` step.
 - **The public status of this repository has swung three times, and only the latest is
