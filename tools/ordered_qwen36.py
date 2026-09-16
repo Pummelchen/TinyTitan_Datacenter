@@ -70,6 +70,7 @@ def mixer_weights(names: dict, materialise, provider=None) -> dict:
 def moe_decoder_layer(
     hidden: np.ndarray, weights: dict, config: SpecConfig, layer_index: int,
     cos: np.ndarray, sin: np.ndarray, mask: np.ndarray, discrete: dict | None = None,
+    capture: dict | None = None, tag: str | None = None, internals: bool = False,
 ) -> np.ndarray:
     """`Qwen3_5MoeDecoderLayer.forward:945`: residual, mixer, residual, mixture."""
     hidden = f32(hidden)
@@ -80,19 +81,26 @@ def moe_decoder_layer(
     else:
         mixed = q35.gated_delta_net_layer(normed[None], weights["linear_attn"], config)[0]
     hidden = f32(residual + mixed)
+    # The mixture's input, which is also the router's input after its norm. Recording it is opt-in because
+    # the trace's digest covers its tensor list, so a trace with extra tensors is a different artifact.
+    if internals and capture is not None and tag is not None:
+        capture[f"{tag}.attn_out"] = hidden
 
     residual = hidden
     normed = q35.rms_norm(hidden, weights["post_attention_layernorm"], config.rms_norm_eps)
     output, indices, _ = moe.sparse_moe_block(
         normed, top_k=config.num_experts_per_tok, **weights["mlp"]
     )
+    if internals and capture is not None and tag is not None:
+        capture[f"{tag}.ff_out"] = output
     if discrete is not None:
         discrete[f"layer.{layer_index:02d}.router.topk"] = indices
     return f32(residual + output)
 
 
 def text_model_forward(
-    weights: dict, config: SpecConfig, tokens, capture: dict | None = None, discrete: dict | None = None
+    weights: dict, config: SpecConfig, tokens, capture: dict | None = None, discrete: dict | None = None,
+    internals: bool = False,
 ) -> np.ndarray:
     """The text tower end to end from in-memory weights, returning the logits.
 
@@ -111,7 +119,10 @@ def text_model_forward(
     for index, layer in enumerate(weights["layers"]):
         if capture is not None:
             capture[f"layer.{index:02d}.hidden_in"] = hidden
-        hidden = moe_decoder_layer(hidden, layer, config, index, cos, sin, mask, discrete)
+        hidden = moe_decoder_layer(
+            hidden, layer, config, index, cos, sin, mask, discrete,
+            capture=capture, tag=f"layer.{index:02d}", internals=internals,
+        )
         if capture is not None:
             capture[f"layer.{index:02d}.hidden_out"] = hidden
 
@@ -127,7 +138,7 @@ def text_model_forward(
 
 def streamed_text_forward(
     spec: dict, source, tokens, capture: dict | None = None, discrete: dict | None = None,
-    head_block: int = 8192, stream_experts: bool = False
+    head_block: int = 8192, stream_experts: bool = False, internals: bool = False
 ) -> np.ndarray:
     """The text tower, one layer resident at a time, recording the router's decisions.
 
@@ -176,7 +187,10 @@ def streamed_text_forward(
         if capture is not None:
             capture[f"{block}.hidden_in"] = hidden
         weights = mixer_weights(names[block], materialise, provider if stream_experts else None)
-        hidden = moe_decoder_layer(hidden, weights, config, index, cos, sin, mask, discrete)
+        hidden = moe_decoder_layer(
+            hidden, weights, config, index, cos, sin, mask, discrete,
+            capture=capture, tag=block, internals=internals,
+        )
         if capture is not None:
             capture[f"{block}.hidden_out"] = hidden
         del weights  # released before the next layer is read, as the engine does

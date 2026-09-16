@@ -18,6 +18,25 @@ discrete  layer.00.router.topk missing [231, 71], unexpected [72, 19]  (and 39 m
 there the router flips and the decisions cascade for all forty layers, which is exactly the failure mode
 `I3` exists to catch.
 
+**Narrowed further, with capture points inside the layer.** The trace captures layer boundaries only, so
+both sides gained an **opt-in** internals capture — `SHARD_TRACE_INTERNALS=1` for the engine,
+`--capture-internals` for the reference — recording `attn_out` (the mixture's input, after the attention
+residual) and `ff_out` (the feed-forward's output) per layer. Off by default and it has to be: the digest
+covers the tensor list, so a trace with extra tensors is a different artifact. The check that it is genuinely
+opt-in is that the default trace is still **83 tensors with digest `b0d382dbabf36df0…`**, byte for byte.
+
+With 163 tensors captured on each side, the first divergence is:
+
+```
+layer.00.hidden_in   identical
+layer.00.attn_out    differs — all 10240 values
+layer.00.ff_out      differs
+```
+
+So the divergence is in the **attention half of layer 0** — the input norm and the Gated DeltaNet — and the
+router, the mixture and every layer after it are **downstream consequences**. That eliminates the whole
+mixture path as a cause, and the router's marginal flip is now explained rather than suspected.
+
 **Correction, same day, to how that first line was read.** "1 float" in the differ's output means one float
 **tensor**, not one element: **all 10240 values** of `layer.00.hidden_out` differ, and the single value quoted
 is merely the first of them. The earlier reading — "one element, 0.0014 absolute, a boundary difference" —

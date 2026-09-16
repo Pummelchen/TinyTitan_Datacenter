@@ -47,6 +47,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default="")
     parser.add_argument("--revision", default="")
     parser.add_argument(
+        "--capture-internals",
+        action="store_true",
+        help=(
+            "also record what is inside each layer (attn_out, ff_out), not just at its boundaries. Off by "
+            "default because the trace's digest covers its tensor list: a trace with extra tensors is a "
+            "different artifact."
+        ),
+    )
+    parser.add_argument(
         "--stream-experts",
         action="store_true",
         help=(
@@ -82,7 +91,8 @@ def main(argv: list[str] | None = None) -> int:
     captured: dict[str, np.ndarray] = {}
     decisions: dict[str, np.ndarray] = {}
     q36.streamed_text_forward(
-        spec, source, tokens, capture=captured, discrete=decisions, stream_experts=args.stream_experts
+        spec, source, tokens, capture=captured, discrete=decisions,
+        stream_experts=args.stream_experts, internals=args.capture_internals,
     )
 
     tensors = [(name, "f32", values.shape, values.tobytes()) for name, values in captured.items()]

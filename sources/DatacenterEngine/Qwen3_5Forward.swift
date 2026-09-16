@@ -185,6 +185,15 @@ public struct Qwen3_5Forward: ForwardPass {
     /// and a profile cannot change under a running forward. `SHARD_PROFILE=1` turns it on.
     public static let profilingEnabled = ProcessInfo.processInfo.environment["SHARD_PROFILE"] == "1"
 
+    /// Whether the trace records what is *inside* a decoder layer as well as at its boundaries.
+    ///
+    /// Off by default, and it has to be: the trace's digest covers the tensor list, so a trace with extra
+    /// tensors is a different artifact and every recorded digest would move. `SHARD_TRACE_INTERNALS=1` turns
+    /// it on. It exists because a divergence localised to "inside layer 0" cannot be bisected from
+    /// boundaries alone, and the first attempt to bisect it without these points produced a number that
+    /// disagreed with the reference's own record — a broken instrument rather than a finding.
+    public static let tracingInternals = ProcessInfo.processInfo.environment["SHARD_TRACE_INTERNALS"] == "1"
+
     /// The feed-forward half of a decoder layer. The reference branches inside its decoder
     /// layer between `Qwen3_5MLP` and `Qwen3_5SparseMoeBlock`, and so does this.
     enum FeedForward {
@@ -434,6 +443,13 @@ public struct Qwen3_5Forward: ForwardPass {
             }
             profiler?.mark("attn.core")
             hidden = add(hidden, mixed)
+            // The mixture's input, which is also the router's input after its norm: the quantity whose
+            // divergence would explain everything downstream of it.
+            if Self.tracingInternals {
+                captured.append(
+                    TraceWriter.Tensor(name: "\(tag).attn_out", shape: [length, hiddenSize], values: hidden)
+                )
+            }
             profiler?.mark("attn.add")
 
             let residual = hidden
@@ -457,6 +473,13 @@ public struct Qwen3_5Forward: ForwardPass {
                 let downProjected = Ops.orderedMatmul(
                     x: activated, w: down, rows: length, k: config.intermediateSize, out: hiddenSize
                 )
+                if Self.tracingInternals {
+                    captured.append(
+                        TraceWriter.Tensor(
+                            name: "\(tag).ff_out", shape: [length, hiddenSize], values: downProjected
+                        )
+                    )
+                }
                 hidden = add(residual, downProjected)
 
             case .mixture(let weights, let provider):
@@ -467,6 +490,11 @@ public struct Qwen3_5Forward: ForwardPass {
                 // Kept so the caller can report a measured hit rate rather than an assurance.
                 // M1's gate asks for the number, and the number is not visible from outside.
                 expertMetrics.append(provider.metrics)
+                if Self.tracingInternals {
+                    captured.append(
+                        TraceWriter.Tensor(name: "\(tag).ff_out", shape: [length, hiddenSize], values: routed)
+                    )
+                }
                 hidden = add(residual, routed)
                 // The router's decision, recorded as its own kind of thing rather than as a
                 // tensor: I3 asserts it apart from any tolerance, and the trace's digest

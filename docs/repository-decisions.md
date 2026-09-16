@@ -619,3 +619,42 @@ kind of difference that is invisible on a tiny fixture and systematic on a real 
 `tap · x[source]` in ascending tap order, zero-pad on the left, and apply silu. Same arithmetic, same order,
 same boundary. Both cite `causal_conv1d_fn:270`, and for once the two implementations agree with each other
 and with the comment.
+
+## D50 — The divergence is in layer 0's attention half, and the instrument that showed it
+
+`D49` left a bisect needing capture points inside the layer, because the trace records boundaries only. Both
+sides now have them, **opt-in**: `SHARD_TRACE_INTERNALS=1` for the engine (the same pattern as
+`SHARD_PROFILE=1`), `--capture-internals` for the reference. They record `attn_out` — the mixture's input,
+after the attention residual — and `ff_out`, the feed-forward's output, per layer: 163 tensors instead of 83.
+
+**Opt-in is not a courtesy, it is a requirement.** The trace's digest covers its tensor list, so a trace with
+extra tensors is a *different artifact* — every recorded digest would move. The check that the switch is
+genuinely off by default is not the code, it is the output: the default trace is still **83 tensors with
+digest `b0d382dbabf36df0…`**, byte for byte.
+
+**What one comparison bought.** With 163 tensors on each side:
+
+```
+layer.00.hidden_in   identical
+layer.00.attn_out    differs — all 10240 values
+layer.00.ff_out      differs
+```
+
+The divergence is in the **attention half** of layer 0 — the input norm and the Gated DeltaNet — and
+everything after it, including the router flip and all forty layers of discrete decisions, is a
+**consequence**. That is the whole mixture path eliminated as a cause, from one run and one diff.
+
+**Eliminated by reading, and one near miss.** The convolution (identical index arithmetic, order and
+padding). The decay gate: the reference computes `-exp(A_log) · softplus(a + dt_bias)` and the engine computes
+`-Ops.exp32(aLog) * softplus(a + dtBias)` — same formula, same order, negation outside the exponential in both,
+which the reference's own comment flags as the subtle part. What remains inside the attention half is the
+chunked delta rule (a five-token prompt is one chunk), the projections and their L2 norms, and the **gated
+RMSNorm** — where the engine's own comment records that its bf16 oracle rounds the normalised value before the
+weight multiply and that an all-fp32 contract does not. That comment is the most specific lead the codebase
+contains, and it is now the next thing to read.
+
+**One process note worth keeping.** My first attempt to add the reference's capture points patched the
+*wrong call site* — the non-streamed forward — so the run produced 83 tensors and a digest identical to the
+contract, looking exactly like a successful capture of nothing. What caught it was comparing the tensor
+count against the one the engine had produced for the same change. A capture that silently captures nothing
+is the same failure as a diagnostic narrower than its gate.
