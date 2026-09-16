@@ -129,8 +129,17 @@ every run and the packer warns when the two inputs look swapped, so the same mis
 
 **What would close it**: rebuilding the install with `--repo` and `--revision` (and the snapshot present for
 `digest_snapshot`), then re-staging it to the farm — a 21.7 GB rebuild and three 21.7 GB copies, which is a
-deliberate operation rather than a side effect of an audit. Until then the gap is named, in the verifier's
-output and here.
+deliberate operation rather than a side effect of an audit.
+
+**Where that is blocked, measured rather than assumed.** The first version of this paragraph said the
+checkpoint was absent. It is not: the 67 GB snapshot the install was built from is present under
+`.build/hf-cache`. The blocker is space, and it is arithmetic — a build reads the snapshot and writes a new
+21.7 GB install **at the same time**, so it needs about 89 GB on one machine. The machine that holds the
+snapshot has **8.6 GB** free, and the other three have **23 GB, 44 GB and 57 GB** (after the staging this
+project did itself). No machine on this farm can hold both, and the snapshot cannot be deleted to make room
+because it is the only copy and the thing the rebuild reads. Closing `I6` therefore needs either more disk
+on one node or a rebuild that streams the snapshot from elsewhere — a deliberate infrastructure decision,
+not a test that was skipped. Until then the gap is named, in the verifier's output and here.
 
 **What would falsify it**: an artifact whose `source` block is absent, which the verifier now reports as a
 **problem** rather than a note.
