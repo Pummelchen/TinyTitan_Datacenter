@@ -38,7 +38,6 @@ final class MetalUnpackTests: XCTestCase {
         // guess at a fix, the kernel is not called by anything, this test states the known defect
         // instead of hiding it, and the task names the grid it must pass. The two tests below
         // still run, and the throughput report is what says whether the kernel is worth the work.
-        try XCTSkipIf(true, "DC-087: the GPU unpack is not bit-identical to the scalar one yet")
         try XCTSkipUnless(MetalUnpack.isAvailable, "no Metal device (CI runners have none)")
         var compared = 0
         for columns in [1, 4, 16, 64, 128] {
@@ -74,7 +73,6 @@ final class MetalUnpackTests: XCTestCase {
     /// that column rather than to guess. Until it is fixed the GPU path is **not used** by the
     /// engine, which is what `D10` says a kernel has to earn first.
     func testKnownDivergenceOnAPartlyFilledFinalGroup() throws {
-        try XCTSkipIf(true, "DC-087: the GPU disagrees with the CPU on a partly filled final group")
         let entry = try entry(rows: 3, columns: 65, padded: 68, group: 4)
         let body = payload(rows: 3, padded: 68, group: 4)
         let scalar = try InstallFile.dequantizeInt4Scalar(body, entry: entry)
@@ -136,10 +134,14 @@ extension MetalUnpackTests {
     /// "many rows" is the trigger on its own.
     func testWhichShapesDisagreeDiagnostic() throws {
         try XCTSkipUnless(MetalUnpack.isAvailable, "no Metal device")
-        for columns in [4, 16, 64] {
+        // The grid is deliberately **at least as wide as the test that fails**, because an instrument
+        // narrower than the thing it diagnoses reports "identical" while the gate stays red — which is
+        // what this one did until `D34`.
+        for columns in [1, 4, 16, 64, 128] {
             for group in [1, 4, 8, 64] {
-                for rows in [1, 2] {
-                    let padded = columns + (group - columns % group) % group
+                for rows in [1, 2, 3] {
+                    var padded = columns + (group - columns % group) % group
+                    if padded % 2 == 1 { padded += group }
                     let entry = try entry(rows: rows, columns: columns, padded: padded, group: group)
                     let body = payload(rows: rows, padded: padded, group: group)
                     let scalar = try InstallFile.dequantizeInt4Scalar(body, entry: entry)

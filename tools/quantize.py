@@ -230,7 +230,16 @@ def dequantize_tensor(entry: dict) -> np.ndarray:
     scale = np.frombuffer(entry["scales"], dtype=np.float32).reshape(rows, groups)
     scale = flush_denormals(scale)
     zero = np.frombuffer(entry["zeros"], dtype=np.int8).reshape(rows, groups).astype(np.float32)
+    # `D34`: a zero is `+0.0`. `DC-087`'s residue was the sign of zero — the CPU produced `-0.0` where
+    # Metal produced `+0.0`, on one index of one shape out of twenty-four — so the contract says a
+    # computed zero carries no sign. Adding `+0.0` is the normalisation: IEEE round-to-nearest maps
+    # `-0.0 + 0.0` to `+0.0` and leaves every other value untouched.
     blocks = (codes.reshape(rows, groups, group).astype(np.float32) - zero[..., None]) * scale[..., None]
+    # `D34`: a zero carries no sign and a NaN is canonical. Both are written as selections rather than as
+    # `+ 0.0`, because the Metal compiler folded that addition away and left nine values of 195 as `-0.0` —
+    # an expression the reference must not depend on being kept.
+    blocks = np.where(blocks == np.float32(0.0), np.float32(0.0), blocks)
+    blocks = np.where(np.isnan(blocks), np.float32(np.nan), blocks)
     flat = blocks.reshape(rows, padded)[:, :columns].astype(np.float32)
     return flat.reshape(shape) if len(shape) > 2 else flat
 

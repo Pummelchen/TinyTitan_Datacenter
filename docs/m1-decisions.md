@@ -814,3 +814,49 @@ decode path would save a pass and give the gate a second implementation of the t
 resident bytes. The instrument stays — a request count per tensor is cheap, it caught a wrong claim in its
 own author's record within a round of that claim being written, and it is the observability the tracker's
 `DC-081` asks for.
+
+## D34 — What a zero is, and what a NaN is: the GPU/CPU contract settled
+
+`DC-087`'s residue was recorded as "the sign of zero", fully diagnosed, with the denormal half resolved by
+`D11`. Working it to the end found **three** distinct divergences, and the record was wrong about one.
+
+**1. The GPU had never implemented `D11`.** `MetalUnpack` uploaded the scales raw, while the scalar path and
+`tools/quantize.py` both read a denormal scale as zero — and **0.722705 %** of the real install's scales
+are denormal, 41 % of one first-layer tensor by itself. The record said `D11` had settled the denormal
+question on both sides; it had settled it on the CPU and the reference. The GPU was answering a *different
+question*, not rounding differently, which is why the difference never looked like a rounding error. It now
+flushes through the same `InstallFile.flushed` the CPU uses.
+
+**2. The sign of zero is emergent on both sides.** The record said "the GPU normalises some zero results; the
+CPU does not". Once the CPU was normalised, the same disagreement appeared **in the other direction** — so
+neither side was the reference, and the contract had to say what a zero *is*: **a computed zero carries no
+sign**.
+
+**3. A NaN had no definition at all.** A zero code times an infinite scale is an indeterminate form the
+unpack can produce, and numpy propagated a payload (`0x7FF80035`) where Metal canonicalised
+(`0x7FC00000`). The contract now says: **a NaN is the canonical quiet NaN**, on every side.
+
+**And the rule had to be a branch.** The first form was the additive idiom — `value + 0.0f` — which is
+correct IEEE and was **folded away by the Metal compiler**, leaving nine values of 195 as `-0.0`. A `+ 0.0`
+normalisation is not a normalisation if the optimiser is entitled to remove it. It is now a comparison with
+a bit-pattern result: in the CPU's scalar and vector paths, in the shader, and in the reference.
+
+**Two CPU implementations, one of them missed.** The first fix went into `dequantizeInt4`; the comparison
+test uses `dequantizeInt4Scalar`, a second implementation that exists so the Metal kernel has something to
+compare against — and it kept the old behaviour for two shapes out of sixty. One rule, one implementation
+now, including a `SIMD4` overload for the paths that compute four and eight values at a time.
+
+**The evidence that none of it changed the model.** The real 35 B install, same prompt:
+
+```
+wrote .build/d34-final: 83 tensors, 40 discrete, digest b0d382dbabf36df0…
+```
+
+`b0d382dbabf36df0…` is **the digest the M2 gate recorded for this prompt**, byte for byte, so the refinement
+is invisible on real weights — which is what a *definition* should be when the data never exercised the
+ambiguity.
+
+**And the skips are gone.** `swift test --no-parallel` now runs **184 tests with 0 skipped**, the Metal
+kernel tests included, on the GPU this node has. The instrument mattered: the divergence diagnostic had a
+**narrower grid than the test that failed**, so it reported "identical" while the gate stayed red. It now
+covers at least the test's grid, which is how the last two shapes were named.

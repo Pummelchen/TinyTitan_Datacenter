@@ -622,18 +622,18 @@ public struct InstallFile: WeightSource {
                     if layout.group % 8 == 0 {
                         while offset + 8 <= inGroup {
                             let word = rowCodes.loadUnaligned(fromByteOffset: (index + offset) / 2, as: UInt32.self)
-                            let low = SIMD4<Float>(
+                            let low = Self.withoutSignedZero(SIMD4<Float>(
                                 Float(signed(Int(word & 0x0F)) - zero),
                                 Float(signed(Int((word >> 4) & 0x0F)) - zero),
                                 Float(signed(Int((word >> 8) & 0x0F)) - zero),
                                 Float(signed(Int((word >> 12) & 0x0F)) - zero)
-                            ) * scaleGroup
-                            let high = SIMD4<Float>(
+                            ) * scaleGroup)
+                            let high = Self.withoutSignedZero(SIMD4<Float>(
                                 Float(signed(Int((word >> 16) & 0x0F)) - zero),
                                 Float(signed(Int((word >> 20) & 0x0F)) - zero),
                                 Float(signed(Int((word >> 24) & 0x0F)) - zero),
                                 Float(signed(Int((word >> 28) & 0x0F)) - zero)
-                            ) * scaleGroup
+                            ) * scaleGroup)
                             let base = rowValues + index + offset
                             values[base + 0] = low[0]
                             values[base + 1] = low[1]
@@ -655,7 +655,7 @@ public struct InstallFile: WeightSource {
                             Float(signed(Int((pair >> 8) & 0x0F)) - zero),
                             Float(signed(Int((pair >> 12) & 0x0F)) - zero)
                         )
-                        let product = lanes * SIMD4<Float>(repeating: scale)
+                        let product = Self.withoutSignedZero(lanes * SIMD4<Float>(repeating: scale))
                         values[rowValues + index + offset + 0] = product[0]
                         values[rowValues + index + offset + 1] = product[1]
                         values[rowValues + index + offset + 2] = product[2]
@@ -666,7 +666,9 @@ public struct InstallFile: WeightSource {
                         let position = index + offset
                         let byte = rowCodes.loadUnaligned(fromByteOffset: position / 2, as: UInt8.self)
                         let nibble = position % 2 == 0 ? (byte & 0x0F) : (byte >> 4)
-                        values[rowValues + position] = Float(signed(Int(nibble)) - zero) * scale
+                        values[rowValues + position] = Self.withoutSignedZero(
+                            Float(signed(Int(nibble)) - zero) * scale
+                        )
                         offset += 1
                     }
                     index += inGroup
@@ -674,6 +676,42 @@ public struct InstallFile: WeightSource {
             }
         }
         return values
+    }
+
+    /// `D34`: **a zero is `+0.0`**, on every path.
+    ///
+    /// `DC-087`'s residue was one shape out of twenty-four where the GPU and the CPU disagreed on a
+    /// single index, and the whole of the difference was the **sign of zero**: the CPU produced
+    /// `0x80000000` where the GPU produced `0x00000000`. It is not an arithmetic difference — every
+    /// non-zero value agrees — it is a difference in what a zero *is*, and bit-identity has no opinion
+    /// until the contract does.
+    ///
+    /// So it does: a computed zero carries no sign. Adding `+0.0` is the normalisation, because IEEE
+    /// round-to-nearest maps `-0.0 + 0.0` to `+0.0` and leaves every other value, including an infinity,
+    /// exactly as it was. It costs one addition per value and it makes the GPU's behaviour the
+    /// definition rather than the anomaly — the same move as `D11`, one bit over.
+    @inline(__always)
+    static func withoutSignedZero(_ value: Float) -> Float {
+        // Written as a branch on purpose. The first version was `value + 0`, which the **Metal** compiler
+        // folded away under its default fast-math flags — leaving nine values of 195 as `-0.0` — and a
+        // release build of this file is entitled to do the same. A comparison cannot be folded, and the
+        // literal result is `+0.0` by definition. The NaN clause is the other half: `+ 0` preserves a NaN
+        // payload while the GPU canonicalises, and a zero code times an infinite scale is an indeterminate
+        // form the contract has to answer rather than a rounding question either side may decide.
+        if value.isNaN { return Float.nan }
+        if value == 0 { return 0 }
+        return value
+    }
+
+    /// The same rule for a lane group, because the vector paths compute four or eight at a time — and the
+    /// additive idiom (`+ SIMD4(repeating: 0)`) that first stood in for this neither canonicalises a NaN
+    /// nor survives a compiler that folds it. The rule is a rule; it gets one implementation.
+    @inline(__always)
+    static func withoutSignedZero(_ value: SIMD4<Float>) -> SIMD4<Float> {
+        SIMD4(
+            withoutSignedZero(value[0]), withoutSignedZero(value[1]),
+            withoutSignedZero(value[2]), withoutSignedZero(value[3])
+        )
     }
 
     /// `D11`: a denormal scale is read as zero, on both the CPU and (already) the GPU.
@@ -723,8 +761,14 @@ public struct InstallFile: WeightSource {
                     let zero = zeros.loadUnaligned(fromByteOffset: groupIndex, as: UInt8.self)
                     let zeroValue = Int(zero >= 128 ? Int(zero) - 256 : Int(zero))
                     if index < columns {
-                        values[row * columns + index] =
-                            Float(code - zeroValue) * Self.flushed(Float(bitPattern: UInt32(littleEndian: scale)))
+                        // The same `D34` normalisation as the vector path: a zero carries no sign and a NaN
+                        // is canonical. This scalar variant exists so the Metal kernel has something to be
+                        // compared against, and it was the one place the rule was missing — which the
+                        // comparison found, two shapes out of sixty, one index each.
+                        values[row * columns + index] = Self.withoutSignedZero(
+                            Float(code - zeroValue)
+                                * Self.flushed(Float(bitPattern: UInt32(littleEndian: scale)))
+                        )
                     }
                 }
             }

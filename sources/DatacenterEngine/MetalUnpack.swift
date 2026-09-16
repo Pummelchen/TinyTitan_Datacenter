@@ -65,7 +65,22 @@ public enum MetalUnpack {
         guard values > 0 else { return [] }
 
         let codes = payload.subdata(in: 0..<layout.codeBytes)
-        let scales = payload.subdata(in: layout.codeBytes..<(layout.codeBytes + layout.scaleBytes))
+        let rawScales = payload.subdata(in: layout.codeBytes..<(layout.codeBytes + layout.scaleBytes))
+        // `D11` on the GPU, which this kernel did not do: a denormal scale reads as zero, exactly as the
+        // scalar path and `tools/quantize.py` both do. The divergence `DC-087` recorded as "the sign of
+        // zero" was therefore two things — the sign, and a rule this path had never implemented at all.
+        // Flushing here is one pass per dispatch instead of a branch per value, and it routes through the
+        // same `flushed` the CPU uses, so the rule cannot drift between them.
+        var flushedScales = [Float](repeating: 0, count: layout.rows * layout.groups)
+        rawScales.withUnsafeBytes { raw in
+            for index in 0..<flushedScales.count {
+                let bits = raw.loadUnaligned(fromByteOffset: index * 4, as: UInt32.self)
+                flushedScales[index] = InstallFile.flushed(
+                    Float(bitPattern: UInt32(littleEndian: bits))
+                )
+            }
+        }
+        let scales = Data(bytes: flushedScales, count: flushedScales.count * 4)
         let zeros = payload.subdata(
             in: (layout.codeBytes + layout.scaleBytes)..<(layout.codeBytes + layout.scaleBytes + layout.rows * layout.groups)
         )
@@ -127,7 +142,22 @@ public enum MetalUnpack {
         uchar byte = codes[row * (padded / 2) + column / 2];
         uint nibble = (column % 2 == 0) ? (byte & 0x0F) : (byte >> 4);
         int code = nibble >= 8 ? int(nibble) - 16 : int(nibble);
-        out[gid] = float(code - zero) * scale;
+        // `D34`: a zero carries no sign. `DC-087`'s residue was one index of one shape out of
+        // twenty-four where this kernel produced `+0.0` and the scalar path produced `-0.0` — and, once
+        // the scalar path was normalised, the same disagreement in the other direction, which is why
+        // both sides define it rather than one matching the other. `+ 0.0f` is exact here because fast
+        // math is off (above): it maps `-0.0` to `+0.0` and leaves every other value alone, and LLVM may
+        // only fold it away under `nsz`, which off is not.
+        float value = float(code - zero) * scale;
+        // `D34`, and the reason these are branches rather than `value + 0.0f`: the Metal compiler folded
+        // that addition away — correctly, under the fast-math flags it defaults to, whatever the intent of
+        // the options here — so nine values out of 195 still came out as `-0.0` while the scalar path
+        // produced `+0.0`. A branch on a comparison cannot be folded, and the replacement is written from
+        // the **bit pattern** so that no arithmetic rule can reinterpret it. A zero code times an infinite
+        // scale is the only NaN this kernel can make, and the canonical quiet NaN is the agreed value.
+        if (value == 0.0f) { value = as_type<float>(0u); }
+        if (isnan(value)) { value = as_type<float>(0x7FC00000u); }
+        out[gid] = value;
     }
     """
 }

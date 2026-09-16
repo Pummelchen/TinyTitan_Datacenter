@@ -16,8 +16,8 @@ A distributed inference engine for large MoE language models on a cluster of Mac
 minis and Mac Studios, over LAN/SFP/QSFP and Thunderbolt. The Swift engine under
 `sources/` **builds and passes its tests on Swift 6.4 / Xcode 27**, the toolchain
 `swift-tools-version:6.4` requires: `swift build` clean, `swift test --no-parallel`
-at **184 tests, 2 skipped, 0 failures** (the skips are the Metal kernel tests, which
-need a GPU). **M0, M1 and M2 are done and their gates have passed** — M0 on `Qwen/Qwen3.5-2B`
+at **184 tests, 0 skipped, 0 failures** — the Metal kernel tests run on the node's GPU
+since `D34`. **M0, M1 and M2 are done and their gates have passed** — M0 on `Qwen/Qwen3.5-2B`
 (three frozen prompts, **40,683,520 bytes identical** to the contract, every discrete
 decision matching: `docs/m0-gate.md`), M1 on the real 35 B model, whose trace is
 **byte-identical to the contract** (83 tensors, 40 discrete decisions, digest
@@ -234,6 +234,15 @@ any failure.
   mistake — an assert that refuses to guess is right — the mistake is a commit that is not **gated on the
   documentation step**. Write the docs with asserts, check the exit status, and only then commit; and if
   it does happen, land the documentation in its own commit that says so rather than rewriting history.
+- **A `+ 0.0` normalisation is not a normalisation if the optimiser may fold it.** `D34` needed a zero to
+  carry no sign on the CPU, the GPU and the Python reference. The additive idiom (`value + 0.0f`) is correct
+  IEEE and the Metal compiler **folded it away**, so nine values of 195 still came back as `-0.0` while the
+  test looked like it was checking the rule. Write the rule as a comparison with a bit-pattern result, and
+  remember that a "two implementations agree today" test is what finds the second implementation you forgot:
+  a fix in `dequantizeInt4` was silently absent from `dequantizeInt4Scalar` for two shapes out of sixty.
+- **An instrument narrower than the thing it diagnoses reports success.** `DC-087`'s divergence diagnostic
+  covered fewer shapes than the test that failed, so it printed "identical" while the gate stayed red. When
+  a diagnostic and a gate disagree, widen the diagnostic to at least the gate's range before believing it.
 - **No architecture assertion exists anywhere in the repository**, and there is no
   release artifact to assert against — do not invent a `lipo` step.
 - **The public status of this repository has swung three times, and only the latest is
