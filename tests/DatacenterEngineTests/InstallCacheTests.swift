@@ -114,3 +114,53 @@ final class InstallCacheTests: XCTestCase {
         )
     }
 }
+
+/// `DC-106`'s follow-up: the request counter that checked up on the cache's own numbers.
+///
+/// `D32` claimed the cache-off run's traffic meant tensors were read twice **inside one forward**. The
+/// counter says otherwise — it is one read per forward, and a generation is eight forwards — so the
+/// claim was corrected and these tests keep the instrument honest.
+extension InstallCacheTests {
+    func testEveryPayloadRequestIsCountedEvenWhenTheCacheAnswersIt() throws {
+        let forward = try Qwen3_5Forward(install: try installURL())
+        let source = try XCTUnwrap(forward.source as? InstallFile)
+        let tokens = [1, 2, 3]
+
+        _ = try forward.forwardWithDecisions(tokens: tokens)
+        let afterFirst = Dictionary(
+            uniqueKeysWithValues: source.payloadRequestCounts.map { ($0.name, $0.count) }
+        )
+        XCTAssertFalse(afterFirst.isEmpty, "the first forward requests whole tensors")
+        XCTAssertEqual(
+            source.payloadCacheMetrics.hits, 0,
+            "nothing can be answered from the cache before it holds anything — which is also the audit's "
+                + "finding, that a forward does not ask for the same tensor twice"
+        )
+
+        _ = try forward.forwardWithDecisions(tokens: tokens)
+        XCTAssertGreaterThan(
+            source.payloadCacheMetrics.hits, 0,
+            "a request the cache answers must still be counted as a request, or the counter would hide "
+                + "exactly the repetition it exists to find"
+        )
+        for (name, count) in source.payloadRequestCounts {
+            guard let first = afterFirst[name] else { continue }
+            XCTAssertEqual(
+                count, 2 * first,
+                "\(name) was requested \(first) time(s) in the first forward and \(count) in two"
+            )
+        }
+    }
+
+    func testTheMostRequestedTensorsComeFirst() throws {
+        let forward = try Qwen3_5Forward(install: try installURL())
+        let source = try XCTUnwrap(forward.source as? InstallFile)
+        _ = try forward.forwardWithDecisions(tokens: [1, 2, 3])
+        let counts = source.payloadRequestCounts.map(\.count)
+        XCTAssertEqual(counts, counts.sorted(by: >), "the report is ordered by how often, not by name")
+        XCTAssertEqual(
+            Set(source.payloadRequestCounts.map(\.name)).count, source.payloadRequestCounts.count,
+            "a tensor appears once in the report"
+        )
+    }
+}

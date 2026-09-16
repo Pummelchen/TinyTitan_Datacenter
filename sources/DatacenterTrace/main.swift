@@ -114,6 +114,13 @@ if !result.expertMetrics.isEmpty {
     }
     metrics["expert_bytes_in_memory"] = result.expertElementsRead * 4
     metrics["expert_hit_rate"] = result.expertHitRate
+    // `DC-106`'s audit: a whole tensor asked for twice inside one forward is disk traffic nothing
+    // explains. Reported only when it happens, so a clean run stays quiet.
+    let repeated = forward.payloadRequestCounts.filter { $0.count > 1 }
+    if !repeated.isEmpty {
+        metrics["payload_repeated_tensors"] = repeated.count
+        metrics["payload_most_requested"] = repeated.prefix(5).map { "\($0.name)=\($0.count)" }
+    }
     metrics["expert_distinct"] = Set(result.discrete.flatMap { $0.values }).count
     metrics["layers"] = result.expertMetrics.count
     if let profile = result.profile {

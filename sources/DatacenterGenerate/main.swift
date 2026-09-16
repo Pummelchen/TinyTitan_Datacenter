@@ -175,6 +175,15 @@ do {
     // come from disk. A generation is several forwards over the same layers, so with residency on this
     // should be near one forward's worth rather than one per token.
     let cache = forward.payloadCacheMetrics
+    // The repeat-read audit (`DC-106`): a whole tensor asked for twice inside one forward is traffic
+    // nothing explains, and a *generation* is where it showed up.
+    let repeated = forward.payloadRequestCounts.filter { $0.count > 1 }
+    if !repeated.isEmpty {
+        print("repeat reads: \(repeated.count) tensor(s) asked for more than once, worst:")
+        for entry in repeated.prefix(5) {
+            print("    \(entry.name) x\(entry.count)")
+        }
+    }
     print(
         "dense payload: \(cache.bytesRead) B read from disk, \(cache.hits) read(s) served from "
             + "\(cache.bytesHeld) B resident"

@@ -29,6 +29,8 @@ public protocol WeightSource {
     var sourceTiming: SourceTiming { get }
     /// The payload cache's counters; a source without one reports zeroes.
     var payloadCacheMetrics: PayloadCacheMetrics { get }
+    /// Whole-tensor requests per tensor, most-requested first — the `DC-106` repeat-read audit.
+    var payloadRequestCounts: [(name: String, count: Int)] { get }
 }
 
 /// A source's own account of its cost: bytes read, and the seconds spent reading, verifying and
@@ -70,6 +72,7 @@ extension WeightSource {
     public var bytesReadFromSource: Int { 0 }
     public var sourceTiming: SourceTiming { SourceTiming() }
     public var payloadCacheMetrics: PayloadCacheMetrics { PayloadCacheMetrics() }
+    public var payloadRequestCounts: [(name: String, count: Int)] { [] }
 }
 
 extension WeightSource {
@@ -157,6 +160,10 @@ public struct InstallFile: WeightSource {
         /// Whole-tensor payload bytes (`DC-106`): the dense backbone's share, and the figure a second
         /// forward must drive to zero. Row-range reads are deliberately not here.
         var payloadBytesRead = 0
+        /// How many times each tensor's payload was asked for, whether or not the disk was touched.
+        /// `DC-106`'s measurement found a run reading more than one forward's worth of payload per step,
+        /// which can only mean a tensor was asked for twice; this is what names it.
+        var payloadRequests: [String: Int] = [:]
         /// The cache's budget, read once from the environment so a measurement is a series of processes.
         static let payloadCacheBudgetValue = InstallFile.payloadCacheBudget(
             environment: ProcessInfo.processInfo.environment
@@ -357,7 +364,16 @@ public struct InstallFile: WeightSource {
         return megabytes * 1_048_576
     }
 
+    /// Whole-tensor requests per tensor, most-requested first. A tensor here with a count above one was
+    /// asked for more than once in this source's life, which within one forward is a repeat read.
+    public var payloadRequestCounts: [(name: String, count: Int)] {
+        state.payloadRequests.sorted { left, right in
+            left.value == right.value ? left.key < right.key : left.value > right.value
+        }.map { (name: $0.key, count: $0.value) }
+    }
+
     private func payload(_ entry: Entry) throws -> Data {
+        state.payloadRequests[entry.name, default: 0] += 1
         if let cached = payloadCache.value(for: entry.name) { return cached }
         let data: Data
         if verifyOnFirstUse {

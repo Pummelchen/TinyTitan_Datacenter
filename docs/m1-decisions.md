@@ -772,11 +772,45 @@ row is the point of the whole exercise: residency changes what is read, never wh
 untouched. The 1.04 GB is one forward's distinct set, which means forwards two and three read **no**
 whole-tensor payload at all — the fixture test asserts that zero directly.
 
-**One thing the numbers said that the design did not expect**: with the cache off the run read 8.35 GB over
-three steps, or 2.78 GB per step, against a 1.04 GB distinct set. The same tensors were being read **more
-than once inside a single forward**. Residency therefore saves more than "N forwards instead of one": it
-also deduplicates within one. Where those repeat reads come from is a profile question, and `DC-107` owns
-the per-phase seconds.
+**One thing the numbers said, and the correction it needed.** This paragraph first claimed that 2.78 GB per
+step against a 1.04 GB distinct set meant tensors were read **twice inside one forward**. That was a
+hypothesis written as a finding, and it is **wrong**: `D33`'s per-tensor request counter shows one read per
+forward across eight forwards (8 × 1,043,708,416 = 8,349,667,328, the total to the byte). The correction is
+in `D33`; this paragraph is kept and marked rather than rewritten, because a record that quietly edits its
+own mistakes is worth less than one that names them.
 
 **No timings are claimed.** The runs log wall clocks (15.4 s and 16.6 s) because a log without them is hard
 to read, and this phase is functional tests on a shared farm. The claim is the byte count.
+
+## D33 — The repeat-read audit, and a correction to `D32`
+
+`D32` ended with a hypothesis written as a finding: that the cache-off run reading 2.78 GB per step against
+a 1.04 GB distinct set meant "the same tensors were being read more than once inside a single forward".
+It was a guess with a number attached, which is the thing this repository is supposed to be worst at, so
+the next thing built was an instrument to check it: a per-tensor count of whole-tensor payload requests,
+reported by `datacenter-trace` and `datacenter-generate` whenever a tensor is asked for more than once.
+
+**The instrument says the guess was wrong.** A three-step cached generation on the real install:
+
+```
+repeat reads: 611 tensor(s) asked for more than once, worst:
+    model.language_model.layers.0.input_layernorm.weight x8
+    model.language_model.layers.0.linear_attn.A_log x8
+    … every one of layer 0's dense tensors x8
+dense payload: 8,349,667,328 B read from disk, 0 read(s) served from 0 B resident
+```
+
+**Eight is the number of forwards**, not a duplicate: a cached generation replays the five-token prompt
+through the decode path and then decodes three tokens, so every dense tensor is read once per forward.
+The arithmetic closes exactly — **8 × 1,043,708,416 = 8,349,667,328**, which is the cache-off total to the
+byte, and 1,043,708,416 is also the whole of what the cache holds. There is no unexplained traffic.
+
+**And the prompt's two passes are not a defect either.** `ModelCache` documents the choice: the prompt's
+*outputs* come from the verified sequence path, which is what M1's gate compares against the contract, and
+the *state* is built by replaying the same tokens through the decode path. Deriving the outputs from the
+decode path would save a pass and give the gate a second implementation of the thing it checks.
+
+**So the cache's 8× is fully accounted for**: one read per forward, eight forwards, one forward's worth of
+resident bytes. The instrument stays — a request count per tensor is cheap, it caught a wrong claim in its
+own author's record within a round of that claim being written, and it is the observability the tracker's
+`DC-081` asks for.

@@ -98,6 +98,8 @@ public protocol ForwardPass {
     var sourceBytesRead: Int { get }
     /// The payload cache's counters, on the same footing as `sourceBytesRead` (`DC-106`).
     var payloadCacheMetrics: PayloadCacheMetrics { get }
+    /// Whole-tensor requests per tensor, most-requested first — the `DC-106` repeat-read audit.
+    var payloadRequestCounts: [(name: String, count: Int)] { get }
     /// Where the source's time went — reading, verifying, unpacking — when it counts it.
     var sourceTiming: SourceTiming { get }
 }
@@ -105,6 +107,7 @@ public protocol ForwardPass {
 extension ForwardPass {
     public var sourceBytesRead: Int { 0 }
     public var payloadCacheMetrics: PayloadCacheMetrics { PayloadCacheMetrics() }
+    public var payloadRequestCounts: [(name: String, count: Int)] { [] }
     public var sourceTiming: SourceTiming { SourceTiming() }
 }
 
