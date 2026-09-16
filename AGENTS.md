@@ -32,7 +32,8 @@ across two machines, on the real 35 B model**: a 256-expert plan over two contig
 a peer and one here, and `trace_diff` reports **83 tensors, 0 differing elements, 40 discrete decisions,
 matching digests `b0d382dbabf36df0…`** — the same digest as the single-node M1 baseline. The farm's nodes
 are shared with other work, so cluster runs are functional rather than benchmarked until the timing phase;
-a sharded generation CLI (`DC-109`) is what the tok/s gates will need. **M3 is under way**: all four
+generation shards as well (`datacenter-generate --plan/--config/--node`), which is the instrument the
+tok/s gates will use. **M3 is under way**: all four
 machines run one forward in a full mesh and produce the single-node trace exactly (`--mesh`), and
 `datacenter-generate` shards, so a two-machine cached generation produced the reference's tokens and
 digest. Its ≥3× throughput gate is a deliberate measurement for a quiet farm. **M4–M5 have not
