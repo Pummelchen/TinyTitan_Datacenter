@@ -137,10 +137,14 @@ swift test --no-parallel
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 186 --swift-skipped 0 --python-tests 223
+python3 tools/check_status_claims.py --swift-tests 186 --swift-skipped 0 --python-tests 234
 
 # The provenance position: no copied code, and no NOTICE to carry
 python3 tools/check_provenance.py
+
+# M3's throughput gate. It refuses to run unless the farm is quiet, which is a measurement of the
+# nodes rather than an honour system — see D38.
+python3 tools/run_m3_gate.py --install .build/m1-install --mesh node4@<addr>,node1@<addr>,node2@<addr>,node3@<addr>
 
 # Tests for the gate itself
 python3 -m unittest discover -s tools

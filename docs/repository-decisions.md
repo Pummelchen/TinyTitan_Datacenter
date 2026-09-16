@@ -111,3 +111,39 @@ job makes about the wiki's tables.
 **What these numbers are not.** `step_seconds` and `exchange_seconds` are raw observations of one run on a
 shared farm. They are instrumentation, not a throughput claim: `DC-053` is where the ≥3× claim lives and it
 needs a quiet farm. Every number above is measured and labelled as an observation rather than a result.
+
+## D38 — M3's gate is built, and it refuses to run on a busy farm
+
+`DC-053` asks for ≥3× the single-node throughput on four nodes. The number cannot be taken on a shared farm
+and still mean anything, so the gate's first step is a **measurement of the farm itself**: it asks each node
+for its one-minute load average and stops if any is above the threshold, naming what it saw. Today:
+
+```
+M3 GATE REFUSED: the farm is not quiet — node4 at 3.00, node1 at 5.58, node2 at 2.44, node3 at 2.25.
+A throughput figure from a busy farm is a different measurement, not a weak one.
+```
+
+Note `node1 at 5.58`: the gate detected the load my own install staging was putting on that node, which is
+the instrument working rather than a coincidence.
+
+**The gate is built and not passed.** That distinction is the whole point of writing it down: `--allow-busy-farm`
+records an **observation** and cannot pass the gate — the ratio is printed, the threshold is not asserted, and
+the exit status depends only on bit-identity. A quiet farm is a decision someone makes, not a flag to work
+around.
+
+Three rules are built into it:
+
+* **Correctness is asserted before speed, and never traded for it** — every node's tokens *and* trace digest
+  must equal the single-node baseline's, or the run fails no matter how fast it was;
+* **the ratio uses the slowest node**, because a cluster step finishes when its slowest member does; an
+  average over nodes would report a speed no user of the cluster can obtain;
+* **a node nobody could ask is NOT CHECKED, not quiet** — the same distinction the CI job makes about the
+  wiki's tables and the harness makes about a missing `metrics.json`.
+
+Its own numbers come from each node's `metrics.json` (`D37`), so the join and the staging are not counted as
+compute. The tests cover the gate's judgement — which node decides the ratio, what counts as quiet, and that
+`None` is not zero — because the measurement itself needs four idle machines and a 21.7 GB install.
+
+**The farm, provisioned.** The gate needs the verified install on every node, so it was staged on the two
+that lacked it: node1 had **91 GB** free and node2 **70 GB**, against a 21.7 GB install, so neither came near
+the 5 GB floor. The copies run over the LAN in the background while the rest of this round proceeds.
