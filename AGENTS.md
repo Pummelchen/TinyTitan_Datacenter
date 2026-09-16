@@ -45,8 +45,8 @@ wiki; the measurements live in `docs/`.
   repository is **MIT**, so check the obligations before reusing any of its code here
   (tracked as `DC-013`).
 - `docs/` holds the decision records (`m0-decisions.md`, `m1-decisions.md`,
-  `m2-decisions.md`), the gate
-  docs (`m0-gate.md`, `m1-gate.md`, `m0c-quantization.md`), the contracts
+  `m2-decisions.md`), the gate docs (`m0-gate.md`, `m1-gate.md`,
+  `m0c-quantization.md`), the contracts
   (`ir-schema.md`, `trace-format.md`, `reference-*.md`) and `repository-layout.md`.
 
 ## This node's hard limit — read before running anything
