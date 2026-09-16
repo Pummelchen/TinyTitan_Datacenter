@@ -21,14 +21,16 @@ tests/
                          safetensors reader against a 296-byte fixture
 tools/                   the M0 harness and the repository gates, standard-library
                          Python only (trace_format, trace_diff, make_synthetic_trace,
-                         check_markdown_links) plus the venv-run pieces
+                         check_markdown_links, check_markdown_tables, check_toolchain,
+                         check_disk_headroom, disk_watchdog) plus the venv-run pieces
                          (trace_capture, ordered_reference, make_contract_vectors,
                          make_safetensors_fixture, check_engine_contract) and pinned
                          requirements
 docs/                    m0-decisions, trace-format, ir-schema, and one
                          reference-<family>.md contract per model family
-.github/                 CI: the tool suite, the link gate and the Swift build on
-                         every push
+.github/                 CI: the tool suite, the two Markdown gates, and — on a runner
+                         that meets the toolchain requirement, failing otherwise — the
+                         Swift build and test
 ```
 
 ## Rules that came out of building it
