@@ -658,3 +658,43 @@ contains, and it is now the next thing to read.
 contract, looking exactly like a successful capture of nothing. What caught it was comparing the tensor
 count against the one the engine had produced for the same change. A capture that silently captures nothing
 is the same failure as a diagnostic narrower than its gate.
+
+## D51 — Reading the attention half: four stages eliminated, and the two-path structure found
+
+`D50` put the divergence in layer 0's attention half — the input norm and the Gated DeltaNet. This round read
+that half rather than running it, and eliminated four of its stages by comparison, which is cheaper than any
+instrument.
+
+**Eliminated, with the reason each time.**
+
+| stage | reference | engine | verdict |
+| --- | --- | --- | --- |
+| the convolution | `position + tap - (kernel - 1)`, zero-padded | same | identical (`D49`) |
+| the decay gate | `-exp(A_log) · softplus(a + dt_bias)` | same | identical (`D50`) |
+| the input norm | `1/sqrt`, fp32, ordered sum ascending | same | identical |
+| `silu` / `sigmoid` | `x · sigmoid(x)`, branch at zero | same branch | identical |
+
+The norm was worth checking closely because it is the half's **first** operation, and a difference there would
+produce exactly the systematic pattern seen — every element of `attn_out` differing. It checks out: both sides
+take `1.0` over `np.sqrt`/`squareRoot` of `variance + eps` (both correctly rounded, and the contract says in
+so many words that `1/sqrt` is chosen over a hardware rsqrt because the two differ in the last bits), both
+compute the mean of squares as an **ascending one-addition-per-step** ordered sum, and both apply the
+family's weight-**offset** norm as `(1 + weight) · (x · inverse)`. The multiply order swaps between them,
+which is harmless: IEEE multiplication is commutative, so `a · b` and `b · a` round identically.
+
+`silu`/`sigmoid` matter more than they look. The contract's sigmoid **branches at zero** — `1/(1+exp(-x))`
+for `x ≥ 0`, `exp(x)/(1+exp(x))` otherwise — and both sides do. A single-expression sigmoid would agree for
+positive inputs and differ in the last bits for negative ones, which is the kind of difference that hides on
+a fixture.
+
+**What the reading found instead: the algorithm has two implementations, and the contract names one.** The
+reference calls `chunk_gated_delta_rule(..., chunk_size=64)` — `torch_chunk_gated_delta_rule:301` — and the
+engine has a `chunkedDeltaRule` that transcribes the same function. It *also* has a **recurrent**, one-token
+form (`torch_recurrent_gated_delta_rule:440`) reached from a path that projects with `rows: 1`, which is the
+decode case. A five-token trace takes the chunked path, so both sides are on the contract's algorithm and the
+divergence is inside the chunked rule or the ops immediately around it.
+
+That is where the next capture goes, and the chunk of code is not small: the intra-chunk attention with its
+`exp(-inf)` masking, the cumulative decay prefix sum, the per-chunk state decay, and the state update. It is
+also code that has been wrong before — `DC-038` records the grouped-query repeat being fixed in this very
+path, and the repeat is a stage the reference spells out with `np.repeat(..., axis=2)`.
