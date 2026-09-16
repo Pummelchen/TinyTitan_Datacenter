@@ -438,3 +438,26 @@ class InstallTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProvenanceWarningTests(unittest.TestCase):
+    """The packer says when the provenance it is about to write cannot mean what it looks like."""
+
+    def test_swapped_fields_are_warned_about(self) -> None:
+        from quantize import provenance_warnings
+
+        warnings = provenance_warnings("9" * 40, "local", {"a": "b"})
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn("swapped", warnings[0])
+
+    def test_a_clean_provenance_is_silent(self) -> None:
+        from quantize import provenance_warnings
+
+        self.assertEqual(provenance_warnings("Qwen/Qwen3.6-35B-A3B", "995ad96e", {"a": "b"}), [])
+
+    def test_missing_file_digests_are_warned_about(self) -> None:
+        from quantize import provenance_warnings
+
+        warnings = provenance_warnings("Qwen/Qwen3.6-35B-A3B", "995ad96e", {})
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn("cannot be traced", warnings[0])

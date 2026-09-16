@@ -74,6 +74,44 @@ DEFINITION = re.compile(r"^##\s+D(\d+)\b", re.MULTILINE)
 NO_TAGS = re.compile(r"\*\*no releases and no tags\*\*")
 
 
+# The invariants audit: every invariant must have a section, a status from this vocabulary, and at least
+# one named artifact as evidence. A status is a claim about the project, so it gets the same treatment as a
+# test count — the difference being that this one cannot be computed, only checked for shape.
+INVARIANTS = ("I1", "I2", "I3", "I4", "I5", "I6")
+AUDIT_PATH = "docs/invariants-audit.md"
+INVARIANT_STATUSES = ("`verified`", "`partly`", "`not applicable yet`", "`not yet`")
+EVIDENCE = re.compile(r"`[^`]*(?:docs/|tools/|tests/)[^`]*`")
+
+
+def check_invariants(root: Path) -> tuple[list[str], int]:
+    """Every invariant has a section, a status, and evidence that can be looked up."""
+    path = root / AUDIT_PATH
+    if not path.exists():
+        return [f"{AUDIT_PATH} is missing, so the invariants have no audit"], 0
+    text = path.read_text()
+    problems: list[str] = []
+    checked = 0
+    headings = list(re.finditer(r"^##\s+(I\d+)\b.*$", text, re.MULTILINE))
+    for invariant in INVARIANTS:
+        checked += 1
+        heading = next((match for match in headings if match.group(1) == invariant), None)
+        if heading is None:
+            problems.append(f"{AUDIT_PATH}: {invariant} has no section")
+            continue
+        end = next((match.start() for match in headings if match.start() > heading.start()), len(text))
+        section = text[heading.start():end]
+        if not any(status in heading.group(0) for status in INVARIANT_STATUSES):
+            problems.append(
+                f"{AUDIT_PATH}: {invariant}'s heading states no status; expected one of "
+                + ", ".join(INVARIANT_STATUSES)
+            )
+        if not EVIDENCE.search(section):
+            problems.append(
+                f"{AUDIT_PATH}: {invariant}'s section names no file under docs/, tools/ or tests/ as evidence"
+            )
+    return problems, checked
+
+
 def lines_with(text: str, pattern: re.Pattern[str]):
     for number, line in enumerate(text.splitlines(), start=1):
         for match in pattern.finditer(line):
@@ -143,6 +181,10 @@ def check(
                             f"{name}:{number}: the example says {flag} {claimed}; the suite reports "
                             f"{observed[key]}"
                         )
+
+    invariant_problems, invariant_checked = check_invariants(root)
+    problems.extend(invariant_problems)
+    checked += invariant_checked
 
     defined: set[int] = set()
     for name in decision_files:

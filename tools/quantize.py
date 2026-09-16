@@ -29,6 +29,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -633,6 +634,9 @@ def build_install(
 
     # `I6`: digest the source files here rather than trusting the spec, which carries an empty map.
     # The spec describes the *model*; the build is what read the bytes.
+    source_files = digest_snapshot(snapshot)
+    for warning in provenance_warnings(repo, revision, source_files):
+        print(f"quantize: warning: {warning}", file=sys.stderr)
     source = {
         # `I6` wants the source repo **and commit**, and a build knows neither: the snapshot is a
         # directory of shards. So they are inputs (`--repo`, `--revision`) and, when not given, they
@@ -640,12 +644,37 @@ def build_install(
         # reads like an answer and is not one, and one field was carrying both meanings.
         "repo": repo or spec["source"].get("repo"),
         "revision": revision,
-        "files": digest_snapshot(snapshot),
+        "files": source_files,
         "spec_family": spec["family"],
     }
     manifest = writer.finish(source=source, spec=spec, policy_files=[policy_file])
     manifest["skipped"] = skipped
     return manifest
+
+
+def provenance_warnings(repo: str | None, revision: str | None, files: dict) -> list[str]:
+    """`I6`: say when the provenance about to be recorded cannot mean what it looks like.
+
+    The M1 install has a **commit hash** in `repo` and the placeholder `"local"` in `revision` — two swapped
+    fields, recorded by a build that was never told otherwise and could not tell. A warning where the mistake
+    is made is worth more than a reader discovering it months later, and the check is evidence-driven rather
+    than defensive: that install exists.
+    """
+    warnings: list[str] = []
+    placeholders = {"local", "unknown", "none", "test", "placeholder", "todo"}
+    if repo and re.fullmatch(r"[0-9a-f]{40}", repo) and (
+        revision is None or revision.strip().lower() in placeholders
+    ):
+        warnings.append(
+            f"`--repo` is a 40-character commit hash ({repo[:12]}…) while `--revision` is {revision!r}: "
+            f"those look swapped, and the manifest will record it that way"
+        )
+    if not files:
+        warnings.append(
+            "no source file digests were recorded, so the artifact cannot be traced to its weights; "
+            "`digest_snapshot` fills this when the snapshot directory is available"
+        )
+    return warnings
 
 
 def digest_snapshot(snapshot: Path) -> dict[str, str]:

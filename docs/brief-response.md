@@ -21,7 +21,8 @@ payloads the real install never has; and a memory budget that would have swapped
 a property of the kernels; it is a property of everything around them, and the only defence that has
 worked is asserting it end to end rather than per component.
 
-**I2 — sharding is semantically free.** Not yet testable, and the brief is right that this is the real
+**I2 — sharding is semantically free.** *Audited 2026-09-16: `verified` — see `docs/invariants-audit.md`;
+this paragraph predates M2.* Not yet testable, and the brief is right that this is the real
 gate. What exists is `ShardedSafetensors` and the IR; what does not exist is a second node. I have no
 opinion worth having about I2 until M2 runs, except this: because the reduction order is part of the
 contract (I1's "fixed ring order, never arrival order"), **the ring membership must be pinned too**, or
@@ -39,7 +40,8 @@ what would otherwise happen.
 block justifying each entry against an invariant, a role missing from it **stops the install** (tested
 four times), and the same file serves two model families — `mlp.down`/`mlp.gate`/`mlp.up` appear in the
 dense fixture and in no MoE tensor, which is the shared format working rather than rot. The **sharding**
-half of I4 does not exist yet; that is M2's.
+half of I4 does not exist yet; that is M2's. *Audited 2026-09-16: `verified` — the shard plan is data now
+(`D20`), and the audit records the evidence.*
 
 **I5 — transcode, do not requantize.** Not applicable yet, and saying so is more useful than pretending
 otherwise: the M1 checkpoint ships bf16, so dequantize-then-requantize is the **only** option and no
@@ -51,6 +53,14 @@ layout ends up close to the vendor's block scaling or merely convenient.
 and in both committed fixtures: `source.files` was `{}` and `revision` was the placeholder `"local"`.
 Both are now fixed and pinned by tests that cannot be satisfied by the old behaviour — a digest checked
 against an independently computed hash, and a property test that fails if the placeholder returns.
+
+*Audited 2026-09-16: `partly`, and the distinction is the interesting part. The **code** is fixed — the
+manifest records `null` rather than a placeholder, and `digest_snapshot` hashes the source files — but the
+**install on disk predates both fixes**, so it still carries `"local"`, an empty `files`, and a commit hash
+in `repo`. Nothing checked the artifact until the audit: `tools/verify_install.py` now reports those three
+gaps on every run and the packer warns when its two provenance inputs look swapped. Closing it means
+rebuilding and re-staging the install, which is a deliberate operation rather than a side effect of an
+audit. See `docs/invariants-audit.md`.*
 
 ## (b) Where the brief is underspecified, or where I disagree
 

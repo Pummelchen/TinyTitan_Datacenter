@@ -151,7 +151,8 @@ class Install:
                 f"install schema is {manifest.get('schema')!r}, this reader knows {SCHEMA}"
             )
         self.family = manifest["family"]
-        self.revision = manifest.get("source", {}).get("revision")
+        self.source = manifest.get("source", {})
+        self.revision = self.source.get("revision")
         self.spec = manifest.get("spec", {})
         self.passes = manifest.get("passes", [])
         self.tensors: dict[str, Tensor] = {}

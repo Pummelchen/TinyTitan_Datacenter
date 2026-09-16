@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from check_status_claims import check  # noqa: E402
+from check_status_claims import check, check_invariants  # noqa: E402
 
 DEFINITIONS = """# Decisions
 
@@ -29,6 +29,18 @@ Something that cites `D1`.
 """
 
 
+def audit_text(statuses: dict[str, str] | None = None, evidence: bool = True) -> str:
+    """A minimal valid invariants audit, so a fixture repository is a *valid* one."""
+    statuses = statuses or {f"I{n}": "`verified`" for n in range(1, 7)}
+    body = ["# Audit", ""]
+    for invariant, status in statuses.items():
+        body.append(f"## {invariant} — a claim — {status}")
+        body.append("")
+        body.append("See `tools/run_m2_gate.py` for the evidence." if evidence else "Nothing named.")
+        body.append("")
+    return "\n".join(body)
+
+
 def build(
     root: Path,
     *,
@@ -38,6 +50,7 @@ def build(
     news: str | None = "| 2026-01-01 | then it was **105 tests, 2 skipped, 0 failures** |\n",
     decisions: str | None = DEFINITIONS,
     wiki: bool = True,
+    audit: bool = True,
 ) -> Path:
     (root / "docs").mkdir(parents=True, exist_ok=True)
     if wiki:
@@ -45,6 +58,9 @@ def build(
     # All three decision records, because the tool is right to complain when one is absent: they are part
     # of the repository, not optional context. (The fixture only defined D1/D2 in one of them, which is
     # exactly the sort of shortcut the gate is supposed to notice.)
+    (root / "docs").mkdir(parents=True, exist_ok=True)
+    if audit:
+        (root / "docs" / "invariants-audit.md").write_text(audit_text())
     for name, text in (
         ("README.md", readme),
         ("AGENTS.md", agents),
@@ -115,15 +131,17 @@ class StatusClaimTests(unittest.TestCase):
 
     def test_a_repository_with_no_claims_fails(self) -> None:
         """A regex that stopped matching must not turn the gate into a decoration."""
+        # No audit either, so nothing is checked at all — which is the state the guard exists for.
         build(
             self.root,
             readme="nothing to see\n",
             agents="nothing either\n",
             tracker="| Tests | none |\n",
             decisions="",
+            audit=False,
         )
         problems, checked, _ = self.run_gate()
-        self.assertEqual(checked, 0)
+        self.assertEqual(checked, 0, "nothing was checked, so the gate must not pass")
         self.assertTrue(any("no decision headings" in problem for problem in problems), problems)
 
     def test_a_missing_wiki_page_is_reported_rather_than_failing(self) -> None:
@@ -163,3 +181,53 @@ class StatusClaimTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InvariantAuditTests(unittest.TestCase):
+    """The invariants audit has to keep its shape, because a status is a claim about the project."""
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        (self.root / "docs").mkdir()
+
+    def write(self, text: str) -> None:
+        (self.root / "docs" / "invariants-audit.md").write_text(text)
+
+    def audit(self, statuses: dict[str, str] | None = None, evidence: bool = True) -> str:
+        return audit_text(statuses, evidence)
+
+    def test_a_missing_audit_is_reported(self) -> None:
+        problems, checked = check_invariants(self.root)
+        self.assertEqual(checked, 0)
+        self.assertTrue(any("no audit" in problem for problem in problems), problems)
+
+    def test_a_complete_audit_passes(self) -> None:
+        self.write(self.audit())
+        problems, checked = check_invariants(self.root)
+        self.assertEqual(problems, [])
+        self.assertEqual(checked, 6)
+
+    def test_an_invariant_without_a_section_is_reported(self) -> None:
+        self.write(self.audit({f"I{n}": "`verified`" for n in range(1, 6)}))
+        problems, _ = check_invariants(self.root)
+        self.assertTrue(any("I6 has no section" in problem for problem in problems), problems)
+
+    def test_a_section_without_a_status_is_reported(self) -> None:
+        text = self.audit().replace("## I3 — a claim — `verified`", "## I3 — a claim")
+        self.write(text)
+        problems, _ = check_invariants(self.root)
+        self.assertTrue(any("I3's heading states no status" in problem for problem in problems), problems)
+
+    def test_a_status_outside_the_vocabulary_is_reported(self) -> None:
+        text = self.audit().replace("## I2 — a claim — `verified`", "## I2 — a claim — `probably fine`")
+        self.write(text)
+        problems, _ = check_invariants(self.root)
+        self.assertTrue(any("I2's heading states no status" in problem for problem in problems), problems)
+
+    def test_a_section_without_named_evidence_is_reported(self) -> None:
+        self.write(self.audit(evidence=False))
+        problems, _ = check_invariants(self.root)
+        self.assertEqual(len(problems), 6, problems)
+        self.assertTrue(all("names no file" in problem for problem in problems), problems)

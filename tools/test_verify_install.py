@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from install_reader import Install  # noqa: E402
 from test_install_reader import InstallFixture  # noqa: E402
-from verify_install import coverage, main, policy_for  # noqa: E402
+from verify_install import coverage, main, policy_for, provenance  # noqa: E402
 
 
 def two_tensors(root: Path) -> InstallFixture:
@@ -168,3 +168,40 @@ class PolicyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProvenanceTests(unittest.TestCase):
+    """`I6` in the artifact, checked rather than assumed.
+
+    The distinction these tests pin is the one that matters: a **missing** source block is a problem, an
+    explicitly `null` revision is an honest unknown, and a revision that is a **placeholder string** — which
+    reads like an answer and is not one — is named as such. The M1 install has a commit hash in `repo` and
+    `"local"` in `revision`, so the swap check is evidence-driven rather than defensive.
+    """
+
+    def test_a_missing_source_block_is_a_problem(self) -> None:
+        problems, notes = provenance({})
+        self.assertTrue(problems, "I6 requires provenance in the artifact")
+        self.assertEqual(notes, [])
+
+    def test_a_null_revision_is_an_honest_unknown_not_a_problem(self) -> None:
+        problems, notes = provenance({"repo": "a/b", "revision": None, "files": {"x": "y"}})
+        self.assertEqual(problems, [])
+        self.assertTrue(any("null" in note for note in notes), notes)
+
+    def test_a_placeholder_revision_is_named(self) -> None:
+        _, notes = provenance({"repo": "a/b", "revision": "local", "files": {"x": "y"}})
+        self.assertTrue(any("placeholder" in note for note in notes), notes)
+
+    def test_an_empty_files_map_is_reported_as_untraceable(self) -> None:
+        _, notes = provenance({"repo": "a/b", "revision": "abc", "files": {}})
+        self.assertTrue(any("cannot be traced" in note for note in notes), notes)
+
+    def test_two_swapped_fields_are_recognised(self) -> None:
+        _, notes = provenance({"repo": "9" * 40, "revision": "local", "files": {"x": "y"}})
+        self.assertTrue(any("swapped" in note for note in notes), notes)
+
+    def test_a_complete_source_block_reports_the_file_count(self) -> None:
+        problems, notes = provenance({"repo": "Qwen/x", "revision": "995ad96e", "files": {"a": "b"}})
+        self.assertEqual(problems, [])
+        self.assertTrue(any("1 file digest" in note for note in notes), notes)

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -58,6 +59,52 @@ def policy_for(root: Path, script_dir: Path | None = None) -> dict[str, str]:
         )
     policy.update(json.loads(chosen.read_text()).get("quant", {}))
     return policy
+
+
+COMMIT_HASH = re.compile(r"^[0-9a-f]{40}$")
+PLACEHOLDER_REVISIONS = {"local", "unknown", "none", "null", "test", "placeholder", "todo"}
+
+
+def provenance(source: dict) -> tuple[list[str], list[str]]:
+    """What the artifact says about where it came from (`I6`), as (problems, notes).
+
+    The distinction matters and is the whole point: `I6` requires provenance **in the artifact**, so a
+    missing `source` block is a **problem**; an explicitly `null` revision is an honest *unknown* and only a
+    note; and a revision that is a **placeholder string** — `"local"` reads like an answer and is not one —
+    is called out by name. The last check is evidence-driven: the M1 install has a commit hash in `repo` and
+    `"local"` in `revision`, which is what two swapped fields look like.
+    """
+    problems: list[str] = []
+    notes: list[str] = []
+    if not source:
+        problems.append("the manifest carries no source block, so the artifact cannot be traced (I6)")
+        return problems, notes
+
+    repo, revision, files = source.get("repo"), source.get("revision"), source.get("files") or {}
+    if not repo:
+        notes.append("source.repo is not recorded, so the weights' origin is unknown")
+    if not revision:
+        notes.append(
+            "source.revision is null, which is an honest unknown — the code records null rather than a "
+            "placeholder for exactly this reason"
+        )
+    elif str(revision).strip().lower() in PLACEHOLDER_REVISIONS:
+        notes.append(
+            f"source.revision is {revision!r}, which reads like an answer and is a placeholder"
+        )
+    if not files:
+        notes.append(
+            "source.files is empty, so the source weights cannot be traced to their digests; a build that "
+            "read the bytes records them (`digest_snapshot`)"
+        )
+    else:
+        notes.append(f"source.files records {len(files)} file digest(s)")
+    if repo and COMMIT_HASH.match(str(repo)) and str(revision or "").strip().lower() in PLACEHOLDER_REVISIONS:
+        notes.append(
+            f"source.repo holds a commit hash ({str(repo)[:12]}…) while source.revision is a placeholder, "
+            f"so the two look swapped — which is what the M1 install records"
+        )
+    return problems, notes
 
 
 def coverage(install: Install) -> tuple[list[str], int]:
@@ -118,6 +165,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  quantisation: " + ", ".join(f"{k} {v}" for k, v in sorted(by_quant.items())))
         print(f"  policy roles: {len(policy)}")
 
+        provenance_problems, provenance_notes = provenance(getattr(install, "source", {}))
+        problems.extend(provenance_problems)
+        for note in provenance_notes:
+            print(f"  provenance: {note}")
+
         tiling, count = coverage(install)
         problems.extend(tiling)
         print(f"  payload: {count} tensor(s) tiling {install.data_path.stat().st_size:,} byte(s)")
@@ -141,6 +193,7 @@ def main(argv: list[str] | None = None) -> int:
 
     report = {
         "install": str(args.install),
+        "provenance_notes": provenance_notes,
         "family": install.family,
         "revision": install.revision,
         "tensors": len(install.tensors),
