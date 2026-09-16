@@ -1250,3 +1250,44 @@ phase identical between "on" and "off" — because the flag's default had been i
 both runs were the CPU. A comparison that shows no difference at all is as suspicious as one that shows the
 wrong direction: **check that the conditions differ before believing either**, in the same way that
 alternating them is what stops a warming machine from being read as a speedup.
+
+## D65 — M1's "identical generated tokens" is now verified and gate-checked, not a memory
+
+`M1`'s record has said since it was written that generation is "**0.108 tok/s** cached and **0.0374**
+uncached **with identical generated tokens**". The rate was measured; the token equality was observed by hand
+and never checked again — and the engine has changed since (the GPU unpack became the default, the matmul
+chooser was added). A claim checked by hand is a claim that drifts, so it was re-run and then made part of
+the gate.
+
+**Re-run, on the install, eight tokens from the frozen prompt.** Both paths produce
+
+```
+11751,11,264,3177,34756,364,1141,8807
+```
+
+with **identical top-2 margins at every step** — `1.6400, 0.1339, 1.3402, 2.7697, 0.3323, 2.8134, 5.1502,
+0.0445`. Two of those margins are narrow enough to be worth naming: 0.1339 and 0.0445 are calls that a
+small numerical difference could move, and they did not move. The first token, `11751`, is also the argmax
+`D40` measured independently at the trace's last position, which is a second, unrelated line of evidence
+agreeing with the first.
+
+**The gate now checks it.** `run_m1_gate.py` already ran the full-sequence generation for throughput; it now
+runs the **cached** path as well and requires the two token lists to be **equal** — a discrete decision with
+no tolerance, which is I3 — and records both in the report. Two details matter more than the change:
+
+* **An empty parse fails.** If the `generated:` line cannot be read from either run, the gate fails rather
+  than passing, because two failures to read produce two empty lists and `[] == []` is a perfectly true
+  statement about nothing. That is the same shape as the diagnostic that once printed "identical" while the
+  gate stayed red: an instrument has to be shown to have measured something.
+* **It is verified by the gate's own test.** `test_run_m1_gate.py` drives the whole script on the 236 KB
+  fixture — "so the gate is never untested code" — and that test now exercises the new path end to end.
+
+**What this node cannot do is run M1's gate itself.** The gate hands the **checkpoint** to both sides, which
+is what makes it a matched-weight comparison, and both sides map the whole 70 GB file; on an 8 GB node that
+mapping is the mechanism behind two panics. So the gate's own full run belongs to a machine with more memory,
+and it is part of the timing phase. What this node can establish, it now has: matched-weight traces that are
+byte-identical (`D56`), and generated tokens that are identical between the two generation paths.
+
+**One process note.** The first run of this verification lost the token line to `tail -3`, and the claim I was
+checking was on that line. The repository already records what a `| tail` does to an exit status; this is the
+same lesson one step further on — **a claim being verified has to be captured in full, not summarised**.

@@ -38,6 +38,19 @@ from heavy_job import require_heavy_headroom  # noqa: E402
 PROMPTS = ROOT / "tools" / "m1_prompts.json"
 
 
+def generated_tokens(stdout: str) -> list[int]:
+    """The engine's generated token ids, as the tool prints them.
+
+    `M1`'s claim includes "identical generated tokens" between the cached and full-sequence paths, and that
+    was a manual observation until this gate checked it. The line is parsed rather than eyeballed for the same
+    reason the seconds are: a number a reader has to copy is a number that goes stale.
+    """
+    for line in stdout.splitlines():
+        if line.startswith("generated: "):
+            return [int(part) for part in line.split(": ", 1)[1].split(",") if part.strip()]
+    return []
+
+
 def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True, **kwargs)
 
@@ -243,6 +256,32 @@ def main(argv: list[str] | None = None) -> int:
                 print("      the run finished below the tool's tenth-of-a-second resolution")
             else:
                 print(f"      {report['throughput']['tokens_per_second_mean']} tok/s mean over {args.max_new_tokens} steps")
+
+            # The other half of M1's generation claim: the cached path must generate **the same tokens** as
+            # the full-sequence path, which is a discrete decision and not a tolerance (I3). It was checked
+            # by hand once; a claim that is checked by hand is a claim that drifts.
+            uncached_tokens = generated_tokens(generate.stdout)
+            cached = run([
+                str(binary / "datacenter-generate"), str(args.snapshot), str(args.work / "generation-cached"),
+                ",".join(str(t) for t in longest["tokens"]), str(args.max_new_tokens),
+                "--model", args.model, "--revision", args.revision, "--cached",
+            ])
+            cached_tokens = generated_tokens(cached.stdout)
+            report["throughput"]["tokens_uncached"] = uncached_tokens
+            report["throughput"]["tokens_cached"] = cached_tokens
+            if cached.returncode != 0:
+                print("      the cached generation failed", file=sys.stderr)
+                failed = True
+            elif not uncached_tokens or not cached_tokens:
+                # An empty parse must not read as agreement: two absences are equal and say nothing.
+                print("      could not read the generated tokens from one of the runs", file=sys.stderr)
+                failed = True
+            elif uncached_tokens != cached_tokens:
+                print(f"      TOKENS DIFFER: cached {cached_tokens} against uncached {uncached_tokens}",
+                      file=sys.stderr)
+                failed = True
+            else:
+                print(f"      cached and uncached agree on {len(cached_tokens)} token(s)")
 
     report["identical"] = not failed
     report["hit_rate_overall"] = (
