@@ -1018,3 +1018,41 @@ the end-to-end check — the same trace digest with the flag off and on — is w
 would have to repeat. What is *not* deferred is the correctness: `testTheBufferCacheDoesNotLeakBetweenCalls`
 unpacks small, large, small and large again, each compared against the scalar path, because the cache's real
 risk is the second call rather than the first.
+
+## D60 — The GPU unpack is the default, and the profile corrects `DC-107`'s priority list
+
+`D59` left the verified-faster GPU unpack behind a flag, on the argument that a default is a policy. That
+argument is sound for a change that could move a digest. It does not apply to this one, because this one
+cannot: the decoder is asserted bit-identical over the `DC-087` grid, a real fixture tensor, the partial-row
+payload the row path assembles, and buffer-cache reuse; and end to end the real 35 B trace is
+`b0d382dbabf36df0…` with the decoder either way. Leaving a path that is verified identical *and* verified
+faster switched off would mean measuring M3 against a slower engine than the repository has.
+
+**So it is on where there is a GPU**, and `SHARD_GPU_UNPACK=0` restores the scalar path — which is how the
+two are compared rather than which one is trusted. A host with no Metal falls back on its own, so CI runners
+and a machine without a GPU are unaffected. Verified after the switch: **193 Swift tests, 0 failures** (their
+fixture installs now run through the GPU path), the default trace is `b0d382dbabf36df0…` in **16.1 s**, the
+scalar one is the same digest in **17.3 s**, and `trace_diff` against the stored scalar trace reports
+**IDENTICAL — 83 tensors, 0 differing elements, 40 discrete decisions** for *both*. One trace each: these are
+wall-clock observations, not a benchmark, and the timing phase is still deferred.
+
+**A profile run corrects the record.** `SHARD_PROFILE=1` on the current build gives, over a 19 s trace:
+
+| phase | s | what it is |
+| --- | --- | --- |
+| `mix.read` | **7.23** | the install read (3.24) plus the unpack (4.53) |
+| `attn.core` | 4.05 | the attention/DeltaNet core |
+| `load` | 2.22 | loading a layer's weights |
+| `head` | 1.76 | the lm head |
+| `mix.gateup` | 1.22 | the routed experts' gate/up projection |
+| `mix.down` | 0.53 | their down projection |
+
+`DC-107` recorded the unpack at 3.45 s as "at its measured limit". It is now **4.53 s**, it is the largest
+single sub-cost in the forward, and it was **not** at a limit — the GPU path takes about two seconds off the
+whole trace, which `D59` measured and this decision acts on. What *is* at its limit is the **read**: 3.24 s
+for 3.06 GB is about 0.95 GB/s, the sequential floor the earlier measurement established, and no kernel
+changes it.
+
+That leaves the compute targets, and the order is not the one the record implied: after `mix.read`, the
+largest are **`attn.core` 4.05 s**, **`load` 2.22 s** and **`head` 1.76 s**. The head is a plain GEMM and the
+easiest of the three to make bit-exact, which is a better first kernel than the DeltaNet's chunked rule.

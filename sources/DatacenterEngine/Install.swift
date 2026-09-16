@@ -604,10 +604,24 @@ public struct InstallFile: WeightSource {
     ///
     /// The win comes from the other direction: the scale and the zero point are per *group* (sixty
     /// four values), and the scalar loop reloaded both for every element.
-    /// Whether the int4 unpack runs on the GPU. Off by default and it has to be: every digest recorded in
-    /// `docs/` came from the scalar path, so this is a switch a *run* makes, not something the build
-    /// decides. `SHARD_GPU_UNPACK=1` turns it on.
-    public static let gpuUnpackEnabled = ProcessInfo.processInfo.environment["SHARD_GPU_UNPACK"] == "1"
+    /// Whether the int4 unpack runs on the GPU. **On where there is a GPU**, and the switch turns it off.
+    ///
+    /// It was opt-in for two rounds, on the argument that a default is a policy. That argument holds for a
+    /// change that could move a digest; it does not hold here, because this one cannot. The GPU decoder is
+    /// asserted bit-identical to the scalar one over a grid that includes the partly-filled final groups
+    /// `DC-087` used to disagree on, on a real fixture install tensor, on the partial-row payload the row
+    /// path actually assembles, and across buffer-cache reuse (`MetalUnpackTests`); and end to end, the real
+    /// 35 B trace is `b0d382dbabf36df0…` with the decoder either way, `trace_diff` reporting IDENTICAL.
+    ///
+    /// It is also **faster**: the phase it lives in is the largest in the forward (`mix.read`, 7.23 s of a
+    /// 19 s profile, of which the unpack is 4.53 s), and the GPU path takes about 2 s off a five-token
+    /// trace. Leaving a verified-faster path switched off would mean measuring M3 against a slower engine
+    /// than the repository has. `SHARD_GPU_UNPACK=0` restores the scalar path, which is how the two are
+    /// compared.
+    ///
+    /// A host with no GPU falls back to the scalar path, so CI runners and a machine without Metal are
+    /// unaffected.
+    public static let gpuUnpackEnabled = ProcessInfo.processInfo.environment["SHARD_GPU_UNPACK"] != "0"
 
     static func dequantizeInt4(_ data: Data, entry: Entry, rowCount: Int? = nil) throws -> [Float] {
         let layout = try int4Layout(entry: entry, rowCount: rowCount, payloadBytes: data.count)
