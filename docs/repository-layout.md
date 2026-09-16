@@ -22,7 +22,8 @@ tests/
 tools/                   the M0 harness and the repository gates, standard-library
                          Python only (trace_format, trace_diff, make_synthetic_trace,
                          check_markdown_links, check_markdown_tables, check_toolchain,
-                         check_disk_headroom, disk_watchdog) plus the venv-run pieces
+                         check_disk_headroom, disk_watchdog, run_m2_gate) plus the
+                         venv-run pieces
                          (trace_capture, ordered_reference, make_contract_vectors,
                          make_safetensors_fixture, check_engine_contract) and pinned
                          requirements

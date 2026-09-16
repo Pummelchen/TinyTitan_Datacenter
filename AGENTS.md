@@ -27,10 +27,11 @@ no Python contract reads an install (`DC-108`), `D12` is an open design question
 **M2 has started**: the reduction contract (`D17`), the wire protocol (`D18`), the failure semantics
 (`D19`), the shard plan as data (`D20`), bring-up (`D21`) and a transport that binds and connects
 (`D22`) are implemented and demonstrated — a two-node exchange driven by a **loaded plan file** is
-bit-identical to the single-node forward, over a socket pair **and over TCP**. The engine now **runs
-sharded**: a two-node forward over real TCP sockets produces a trace byte-identical to the single-node
-one. What remains is the same run as two processes, and then the cluster itself (`DC-045`), which needs
-two machines. **M3–M5 have not started**.
+bit-identical to the single-node forward, over a socket pair **and over TCP**. The engine **runs
+sharded end to end**: `tools/run_m2_gate.py` starts two `datacenter-node` **processes** over TCP and
+`trace_diff` reports IDENTICAL on both against the single-node trace. What remains for M2 is the cluster
+itself (`DC-045`), which needs two machines — the real model does not fit on this 8 GB host at two nodes.
+**M3–M5 have not started**.
 There are **no releases and no tags**. The design, the plan and the status live in the
 wiki; the measurements live in `docs/`.
 

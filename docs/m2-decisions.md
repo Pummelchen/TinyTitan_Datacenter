@@ -347,3 +347,40 @@ original path.
 its own `Qwen3_5Forward` and its own `InstallFile`, so nothing is shared but the kernel. And two
 *machines*: that is M2's gate (`DC-045`), and the real model at two nodes does not fit on this 8 GB
 development host, which is why it needs the cluster.
+
+## D24 — The gate runs as two processes, and the judge is the project's own differ
+
+Two threads in one address space share a heap and a failure domain; M2's claim is about machines. So
+`datacenter-node` runs **one node as its own process** — its own `InstallFile`, its own address space, its
+own socket — and `tools/run_m2_gate.py` starts two of them, one listening and one connecting, waits for
+both, and compares every trace with `tools/trace_diff.py`.
+
+The trace is the evidence, and the judge is the harness M0 built rather than a new one:
+
+```
+[1/4] plan: 8 experts over 2 nodes, contiguous
+[2/4] reference: 7 tensors, 2 discrete, digest 58518422914cfe2b…
+[3/4] node 0: BRINGUP ok: node 0 of 2, plan 25d34fe36d62d793…
+      node 1: BRINGUP ok: node 1 of 2, plan 25d34fe36d62d793…
+[4/4] node 0: IDENTICAL — 7 tensor(s), 0 element(s), 2 discrete decision(s) checked (matching digests)
+      node 1: IDENTICAL — 7 tensor(s), 0 element(s), 2 discrete decision(s) checked (matching digests)
+M2 GATE (fixture scale) PASSED: 2 processes, one plan, one trace
+```
+
+**The agreement is checked by the run, not by the harness.** The node loads the plan, validates it against
+the model it actually opened, handshakes, and only then computes. The first version of the harness guessed
+the family (`tiny-qwen36`) while the fixture's family is `qwen3_5_moe`: the node refused the plan, which is
+`D20` working exactly as intended — but the refusal came out as a Swift trap, because an uncaught
+top-level `try` in Swift is a `SIGTRAP` and a stack line. The fix was two-sided: the harness reads the
+family from the install's manifest, and the node reports a refused plan as a message.
+
+**The node's metrics are measured, not derived.** `datacenter-node` counts the bytes the install actually
+handed out, and the verification bytes separately. `elementsRead * 2` was removed from the single-node
+trace in the first round of this work for overstating a 4-bit install by ~3.5x, and it does not come back
+in the sharded one wearing a different name.
+
+**The honest limits.** The CLI is two-node: the engine's `ShardExecution` takes any number of peers and the
+plan covers any N, but the CLI takes exactly one `--listen` or `--connect`, and the harness says so rather
+than appearing to support four nodes and hanging. The run is the **fixture**, because the real model at two
+nodes does not fit on this 8 GB host — `--install` points the same harness at the real install on the
+cluster, which is `DC-045`.

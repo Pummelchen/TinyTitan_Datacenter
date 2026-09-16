@@ -15,7 +15,7 @@ A distributed inference engine for large MoE language models on clusters of Mac 
 **Status: M0 and M1 are complete and their gates have passed.** On the required
 toolchain — **Xcode 27 with Swift 6.4, and nothing else** — `swift build` is clean and
 `swift test --no-parallel` runs **165 tests, 2 skipped, 0 failures** (the skips are the
-Metal kernels, which need a GPU), with **174** standard-library Python tests run in CI.
+Metal kernels, which need a GPU), with **179** standard-library Python tests run in CI.
 M0 matched the reference on `Qwen/Qwen3.5-2B`: 40,683,520 bytes of trace data identical
 to the contract, every discrete decision matching. M1 runs the real 35 B model on one node
 and its trace is **byte-identical to the contract** — 83 tensors and 40 discrete
