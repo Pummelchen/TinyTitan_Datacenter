@@ -1,9 +1,9 @@
 # Contributing to TinyTitan Datacenter
 
 Thanks for looking. The engine **builds and passes its tests on Swift 6.4 / Xcode 27**
-(105 Swift tests, 2 skipped, 0 failures; 163 standard-library Python tests in CI) but is
-**incomplete**: M0's dense path is bit-exact against the reference contract at fixture
-scale, M1 has run on the real model without its gate closing, and M2 has not started. So
+(105 Swift tests, 2 skipped, 0 failures; 174 standard-library Python tests in CI) but is
+**incomplete**: **M0 is done and its gate passed** on a real 2B dense checkpoint, M1 has run
+on the real model without its gate closing, and M2 has not started. So
 the most useful contributions right now are design review, corrections to the
 documentation, measurements from hardware this project does not have, and anything that
 closes a gap `docs/m1-gate.md` names as unmeasured.

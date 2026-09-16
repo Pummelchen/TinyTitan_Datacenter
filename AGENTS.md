@@ -17,9 +17,11 @@ minis and Mac Studios, over LAN/SFP/QSFP and Thunderbolt. The Swift engine under
 `sources/` **builds and passes its tests on Swift 6.4 / Xcode 27**, the toolchain
 `swift-tools-version:6.4` requires: `swift build` clean, `swift test --no-parallel`
 at **105 tests, 2 skipped, 0 failures** (the skips are the Metal kernel tests, which
-need a GPU). It is nevertheless **incomplete**: M0's dense path matches the reference
-contract bit-for-bit at fixture scale, M1 has run on the real 35B model with all five
-frozen prompts at exit 0 and two byte-identical re-runs, and M1's gate is still open.
+need a GPU). It is nevertheless **incomplete**: **M0 is done and its gate passed** — `Qwen/Qwen3.5-2B`,
+three frozen prompts, **40,683,520 bytes identical** to the contract and every discrete
+decision matching the reference (`docs/m0-gate.md`) — M1 has run on the real 35B model
+with all five frozen prompts at exit 0 and two byte-identical re-runs, and **M1's gate is
+still open**.
 There are **no releases and no tags**. The design, the plan and the status live in the
 wiki; the measurements live in `docs/`.
 

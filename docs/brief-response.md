@@ -27,7 +27,9 @@ opinion worth having about I2 until M2 runs, except this: because the reduction 
 contract (I1's "fixed ring order, never arrival order"), **the ring membership must be pinned too**, or
 two runs at the same N could disagree — the brief implies this and does not say it.
 
-**I3 — discrete decisions match exactly.** Confirmed at fixture scale: the router's top-k index sets are
+**I3 — discrete decisions match exactly.** Confirmed on the pinned model, not only at fixture scale:
+the M0 gate's three prompts each matched the reference implementation's argmax index sets while the
+numeric distance stayed near 2e-06. The router's top-k index sets are
 asserted as a **separate** assertion from the numeric comparison, so a marginal argmax flip cannot hide
 behind a passing numeric check. The policy keeps routers at bf16 with the reason written next to it —
 because "the output then diverges completely while every per-tensor check still looks green" is precisely
@@ -110,6 +112,18 @@ the parts that mattered most were not the model.**
   which is a stronger gate than the brief asked for: bit-exactness is asserted two ways — the trace bytes
   and the discrete decisions — and numeric tolerance is explicitly not a substitute.
 
-The honest caveat: M0's gate is proven at **fixture scale**, not by running a ~1B dense model on this
-node, because this node cannot hold one alongside its other work. The fixtures capture the arithmetic;
-they do not capture scale. Scale is what M1 tested, and M1's gate is where the project actually stands.
+**The gate ran on the real model, and this section said otherwise until it was corrected.**
+`docs/m0-gate.md` records **status: passing** — `Qwen/Qwen3.5-2B` at revision
+`15852e8c16360a2fea060d615a32b45270f8a8fc`, one Mac mini M2 with 8 GB, three frozen prompts,
+**40,683,520 bytes of trace data identical** to the Python contract, every discrete decision matching
+the reference. The earlier wording here ("proven at fixture scale, not by running a dense model on this
+node") was wrong: it was written from the fixture suites I had spent the session in and never checked
+against the gate doc, which is the same failure as the invented geometry and the wrong nesting — **the
+repository held the answer and I did not read it.**
+
+Two things about the run are worth stating precisely rather than glossing. It used a **2B** dense
+checkpoint where the brief says "~1B", which the tracker records as the pinned model. And the oracle
+half was **renegotiated**: bit-matching torch is impossible (D3, R13), so against the reference the gate
+asserts exact discrete decisions plus recorded per-tensor closeness, instead of bytes. That is a
+weakening of the brief's literal words and it is recorded as a decision, which is what rule 3 requires —
+the alternative would have been a gate that could never pass and a claim that it did.

@@ -19,13 +19,19 @@ the engine is incomplete.** On **Swift 6.4 / Xcode 27** — what
 are the Metal kernel tests, which need a GPU. The 163 Python tests behind the
 numeric contract are standard-library only and run in CI on every push.
 
-What is **not** finished: M0's dense path matches the reference contract bit-for-bit
-at fixture scale, and M1 (Qwen3.6-35B-A3B, 4-bit experts, streamed from SSD) has run
-on the real model — all five frozen prompts exit 0, and two re-runs are
-byte-identical — but **M1's gate is open**, its throughput and cache figures predate
-later changes, and the contract comparison is verified on one prompt of five. Treat
-each capability below as intent plus whatever `docs/` measures. There are **no
-releases and no tags**.
+**M0 is complete and its gate passed**: `Qwen/Qwen3.5-2B` — 2B dense, bf16, on one Mac
+mini M2 with 8 GB — across three frozen prompts produced **40,683,520 bytes of trace
+data identical** to the Python contract, with every discrete decision matching the
+reference implementation. `docs/m0-gate.md` carries the run, the pinned revision and the
+one half that was renegotiated (bit-matching torch is impossible, so the oracle half is
+asserted as exact decisions plus recorded per-tensor closeness).
+
+What is **not** finished is M1 (Qwen3.6-35B-A3B, 4-bit experts, streamed from SSD): it has
+run on the real model — all five frozen prompts exit 0, and two re-runs are
+byte-identical — but **M1's gate is open**, its throughput and cache figures predate later
+changes, and the contract comparison is verified on one prompt of five. Treat each
+capability below as intent plus whatever `docs/` measures. There are **no releases and no
+tags**.
 
 **The toolchain is a requirement, not a preference: Xcode 27 with Swift 6.4, and
 nothing else.** There are no version conditionals in the sources and no lowered manifest
