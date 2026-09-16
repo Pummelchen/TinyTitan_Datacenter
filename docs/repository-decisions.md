@@ -147,3 +147,53 @@ compute. The tests cover the gate's judgement — which node decides the ratio, 
 **The farm, provisioned.** The gate needs the verified install on every node, so it was staged on the two
 that lacked it: node1 had **91 GB** free and node2 **70 GB**, against a 21.7 GB install, so neither came near
 the 5 GB floor. The copies run over the LAN in the background while the rest of this round proceeds.
+
+## D39 — The sister project's int4 is not this repository's int4, and the evidence is in the code
+
+`DC-085` is a standing task — *report cluster-relevant defects upstream* — so this round audited the sister
+project's quantisation rather than waiting for a defect to appear. Reading it settled a claim this repository
+had been repeating: that the sister project "holds the install format and the repacker".
+
+**It does not hold this one.** Its on-disk format is the `GTurbo*V1` family (`GTurboFormatV1`,
+`GTurboManifestV1`, `GTurboPackedExpertsLayoutV1`), and its int4 validation reference
+(`Quantization.quantizeInt4Affine` / `dequantizeInt4Affine`) is **unsigned with a bias**:
+
+```
+q = max(0, min(15, round((w - bias) / scale)))    // encoder
+w = Float(nibble) * scale + bias                  // decoder, bf16 scale and bias
+```
+
+This repository's install container is its own — `install.json` plus `data.bin`, **signed** four-bit codes
+(`value >= 8 ? value - 16 : value`), fp32 scales, int8 zero points, and `w = (code - zero) * scale`. Both are
+internally consistent, so **there is no defect to report upstream**; what there was is a wrong assumption in
+our own documents, and `AGENTS.md` is corrected.
+
+The distinction is not cosmetic. The signed case is the one where reading `0b1000` as 8 instead of −8 shifts a
+whole group by sixteen steps *and still looks like plausible weights* — which `tools/quantize.py` says in a
+comment and `D34` confirmed by hand — so a reader has to know which convention a file uses. Ours is signed,
+and the container is this repository's own.
+
+**A defect in our own tooling, found by using it on the farm.** Verifying the staged installs on node1 and
+node2 was the first time `tools/verify_install.py` ran anywhere but this checkout, and it died: the manifest
+records the policy's **absolute path on the building machine**
+(`/Users/<builder>/Downloads/…/tools/quant_policy.json`), and the fallback looked in a *repository* layout
+that does not exist on a node that received only an install and two scripts. It now prefers the file **beside
+the script** — where a copied tool finds its own data — and when nothing is found it says which file to copy
+instead of raising a `FileNotFoundError`. The first run after that fix failed again, because the tool had
+travelled without the policy: the sharpened message is what named the missing file.
+
+**And a harness of mine hid the failure**: the ssh command ended in `| tail -8`, so the remote crash reported
+exit 0. A pipeline returns the *last* command's status; when the exit code is what matters, it must not be
+behind a pipe.
+
+**The farm, provisioned and verified.** node1 (91 GB free) and node2 (70 GB) each received the 21.7 GB install
+at **115.8 MB/s — 3m07s each** — and each was then verified **on the node itself**:
+
+```
+  payload: 693 tensor(s) tiling 21,700,655,616 byte(s)
+  hashing 5 payload(s), 2.97 GB, streamed
+INSTALL VERIFIED: 693 tensor(s), structure and policy, 5 payload digest(s)
+```
+
+Every node now holds the same install, tiling and digests included, and the figures are the ones this
+checkout reports.

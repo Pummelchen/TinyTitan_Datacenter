@@ -29,16 +29,34 @@ from install_reader import Install, InstallError  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def policy_for(root: Path) -> dict[str, str]:
-    """`role -> quantisation`, from the same policy file the packer was given."""
+def policy_for(root: Path, script_dir: Path | None = None) -> dict[str, str]:
+    """`role -> quantisation`, from the same policy file the packer was given.
+
+    The manifest records that policy's **absolute path on the machine that built the install**, which does
+    not exist anywhere else. The first version fell back to a path relative to the *repository*, so a copy
+    of this tool on another node — where the install is all that travelled — died with a `FileNotFoundError`
+    looking for `/Users/<builder>/tools/quant_policy.json`. The fallback is now the file **beside this
+    script**, which is where a copied tool finds its own data, and the repository path is the last resort.
+    """
     manifest = json.loads((root / "install.json").read_text())
-    files = manifest.get("policy_files") or [str(ROOT / "tools" / "quant_policy.json")]
+    here = Path(__file__).resolve().parent if script_dir is None else script_dir
+    candidates = [Path(name) for name in manifest.get("policy_files") or []]
+    candidates.append(here / "quant_policy.json")
+    candidates.append(ROOT / "tools" / "quant_policy.json")
     policy: dict[str, str] = {}
-    for name in files:
-        path = Path(name)
-        if not path.exists():
-            path = ROOT / "tools" / "quant_policy.json"
-        policy.update(json.loads(path.read_text()).get("quant", {}))
+    chosen = None
+    for path in candidates:
+        if path.exists():
+            chosen = path
+            break
+    if chosen is None:
+        raise SystemExit(
+            "no quant policy found: looked at the manifest's path, "
+            + f"{here / 'quant_policy.json'}, and {ROOT / 'tools' / 'quant_policy.json'}. Copy "
+            + "`tools/quant_policy.json` beside this script — a tool that travels has to travel with the "
+            + "data it checks against, and this is that data."
+        )
+    policy.update(json.loads(chosen.read_text()).get("quant", {}))
     return policy
 
 

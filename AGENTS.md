@@ -53,8 +53,11 @@ wiki; the measurements live in `docs/`.
   [Architecture](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Architecture),
   [Testbed](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Testbed),
   [Glossary](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Glossary).
-- The sister project [TinyTitan](https://github.com/Pummelchen/TinyTitan) holds the
-  single-node streaming runtime, the install format and the repacker. Treat it as
+- The sister project [TinyTitan](https://github.com/Pummelchen/TinyTitan) holds a
+  single-node streaming runtime and the `GTurbo*V1` container family. Its int4 is **unsigned with a bias**
+  while this repository's install container is its own — signed codes, fp32 scales, int8 zero points
+  (`D39`) — so a file from one is not readable by the other; the earlier claim here that it "holds the
+  install format" was imprecise. Treat it as
   read-only unless a change there is explicitly requested. It is **Apache-2.0**; this
   repository is **MIT**, and `DC-013`'s review found **no code copied from it**, so no `NOTICE` transfers —
   the measurement and the three conditions that would change it are in `THIRD_PARTY_NOTICES.md` and
@@ -137,7 +140,7 @@ swift test --no-parallel
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 186 --swift-skipped 0 --python-tests 234
+python3 tools/check_status_claims.py --swift-tests 186 --swift-skipped 0 --python-tests 235
 
 # The provenance position: no copied code, and no NOTICE to carry
 python3 tools/check_provenance.py

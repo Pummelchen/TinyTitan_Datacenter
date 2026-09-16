@@ -104,6 +104,20 @@ class PolicyTests(unittest.TestCase):
         self.assertTrue(policy, "the project's quant policy should have roles")
         self.assertTrue(all(isinstance(role, str) for role in policy))
 
+    def test_the_policy_is_found_beside_a_copied_tool(self) -> None:
+        """A copied install travels without the policy's absolute path, so the sibling file must win.
+
+        This is the defect the first remote verification hit: the tool ran on another node, the manifest's
+        `/Users/<builder>/tools/quant_policy.json` did not exist there, and the fallback looked in a
+        *repository* layout that was not there either.
+        """
+        fixture = two_tensors(self.root)
+        fixture.write()
+        policy = json.loads((Path(__file__).resolve().parent / "quant_policy.json").read_text())
+        self.assertTrue(policy.get("quant"))
+        # `script_dir` is injected so the lookup can be tested where the script actually sits.
+        self.assertEqual(policy_for(self.root, script_dir=Path(__file__).resolve().parent), policy["quant"])
+
     def test_a_role_missing_from_the_policy_fails_the_run(self) -> None:
         fixture = two_tensors(self.root)
         fixture.tensors[0]["role"] = "role.that.does.not.exist"
