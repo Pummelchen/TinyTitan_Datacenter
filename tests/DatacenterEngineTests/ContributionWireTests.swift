@@ -49,9 +49,12 @@ final class ContributionWireTests: XCTestCase {
             ExpertContribution(token: 0, expert: 0, values: awkward, scale: -0.0),
             ExpertContribution(token: 1, expert: 5, values: subnormal, scale: 0.5),
         ]
-        let decoded = try ContributionWire.decode(
+        let frame = try ContributionWire.decode(
             ContributionWire.encode(terms, tokens: 2, hiddenSize: awkward.count)
         )
+        XCTAssertEqual(frame.tokens, 2)
+        XCTAssertEqual(frame.hiddenSize, awkward.count)
+        let decoded = frame.contributions
         XCTAssertEqual(decoded.count, 2)
         for (index, value) in decoded[0].values.enumerated() {
             XCTAssertEqual(
@@ -166,13 +169,14 @@ final class ContributionWireTests: XCTestCase {
         // which is what makes this an all-reduce rather than a gather at one node.
         var reduced: [[Float]] = []
         for node in 0..<2 {
-            let all = ownTerms[node] + (try ContributionWire.decode(try transports[node].receive()))
+            let all = ownTerms[node]
+                + (try ContributionWire.decode(try transports[node].receive())).contributions
             XCTAssertTrue(
                 OrderedReduction.isComplete(all, indices: indices),
                 "the pair of nodes must together cover every selected expert exactly once"
             )
             reduced.append(
-                OrderedReduction.accumulate(all, tokens: tokens, hiddenSize: shape.hiddenSize)
+                try OrderedReduction.accumulate(all, tokens: tokens, hiddenSize: shape.hiddenSize)
             )
         }
 

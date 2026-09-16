@@ -125,7 +125,9 @@ public enum MixtureOfExperts {
         )
         // The one-node path goes through the same contract the N-node path does (`D17`), so the two
         // cannot accumulate in different orders. A second loop here would be a second chance to.
-        return OrderedReduction.accumulate(contributions, tokens: tokens, hiddenSize: shape.hiddenSize)
+        return try OrderedReduction.accumulate(
+            contributions, tokens: tokens, hiddenSize: shape.hiddenSize
+        )
     }
 
     /// The per-`(token, expert)` terms the reduction sums.

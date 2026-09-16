@@ -549,3 +549,46 @@ suspect, so the test now joins through the **production** mesh rule with real lo
 both correct and closer to what runs. And its first version found free ports by binding `0` and holding
 the listeners, then could not bind them for the join; ports are found by a function whose return releases
 the probe. Test bugs, not engine bugs, and both were found because the failures were loud.
+
+## D30 — The wire audited against hostile input, and two things it was missing
+
+`DC-083` asks what happens when the peer is not friendly. The frame format was already defensive — magic,
+version, two-sided dimension bounds, a count bound, per-term width and token checks, a trailing-bytes
+check, and a 64 MB cap applied **before** a length prefix is allocated (`maximumFrameBytes`) — but
+"already defensive" is a claim, so it was tested as one. Two things came out of testing it.
+
+**Finding 1: a frame can declare a geometry the receiver does not have.** `ContributionWire.decode`
+validated a frame against *itself*, and a peer can satisfy every one of those checks while declaring a
+different hidden size. Those terms then reached `OrderedReduction.accumulate`, whose width invariant was
+a **precondition** — so a hostile, or merely mismatched, peer crashed the node, from the network. Three
+changes: `decode` returns a `DecodedFrame` (what the sender **declared**, not only what it carried);
+`ShardExchange` checks that declaration against the geometry it asked for and refuses it as
+`geometryMismatch`, naming both; and `accumulate` **throws** its invariants instead of preconditing them.
+The last one matters on its own — a public function that consumes terms from elsewhere should not have a
+crash as its error handling — and the other two make it unreachable.
+
+**Finding 2: the count bound was per-number, not per-product.** `count ≤ 2^20` and `hiddenSize ≤ 2^20`
+are each sane; their product is not, and `reserveCapacity(count)` ran before the frame's actual length
+was considered. The reservation is now `min(count, (bytes - cursor) / 16)`: proportional to the input
+rather than to the number the sender chose. The practical exposure was small — the transport's cap bounds
+the frame first — but the property is now the right one, and it is one line.
+
+**The audit itself** is `tests/DatacenterEngineTests/WireFuzzTests.swift`, seeded so every case replays:
+
+| Cases | What it establishes |
+| --- | --- |
+| 2,000 random buffers | every input ends in a frame or a **typed** refusal, never a crash |
+| 2,000 single-byte mutations of a valid frame | the same, starting from inside the format |
+| every truncation of a valid frame | a partial frame is a refusal, not a read past the end |
+| a million terms in 64 bytes, a million-wide hidden size | refused in microseconds, not allocated for |
+| a frame from another geometry | `geometryMismatch`, naming both geometries |
+| the same term twice — differing, then bit-identical | a contradiction is refused; a retry is collapsed |
+
+Every decode is also asserted to finish inside two seconds, because a duration bound is what can actually
+see the allocation this guards against — `D12`'s lesson, applied to a different instrument.
+
+**The posture, stated rather than assumed.** A node binds one address and one port from its own cluster
+config and connects only to peers that config names, so a node is not a listener to the world. There is
+**no authentication and no encryption**: the wire trusts the network it is on. That is a choice rather
+than an oversight — the design targets a switched, private segment — and the honest place to record it is
+next to what would have to change first, which is mutual authentication and a keyed transcript.

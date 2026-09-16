@@ -8,6 +8,27 @@ import Foundation
 /// computes. Shipping the terms and ordering them canonically makes the N-node sum **the same
 /// sequence of additions** as the 1-node sum — which is what "bit-identical to the M1 baseline"
 /// means, and the only way it can be true.
+/// What can be wrong with a set of terms, in the terms' own vocabulary (`DC-083`).
+public enum ReductionError: Swift.Error, CustomStringConvertible, Equatable {
+    case negativeGeometry(tokens: Int, hiddenSize: Int)
+    case geometryOverflows(tokens: Int, hiddenSize: Int)
+    case tokenOutsideRange(token: Int, tokens: Int)
+    case widthMismatch(width: Int, hiddenSize: Int)
+
+    public var description: String {
+        switch self {
+        case .negativeGeometry(let tokens, let hiddenSize):
+            return "a reduction over \(tokens)x\(hiddenSize) has no shape"
+        case .geometryOverflows(let tokens, let hiddenSize):
+            return "\(tokens)x\(hiddenSize) does not fit in this machine's address space"
+        case .tokenOutsideRange(let token, let tokens):
+            return "a term is for token \(token), which is outside \(tokens)"
+        case .widthMismatch(let width, let hiddenSize):
+            return "a term has width \(width) where the hidden size is \(hiddenSize)"
+        }
+    }
+}
+
 public struct ExpertContribution: Sendable, Equatable {
     public let token: Int
     public let expert: Int
@@ -85,19 +106,32 @@ public enum OrderedReduction {
     /// single-node path uses — `D17` is only meaningful if both sites round identically, and a
     /// compiler that contracted one into an FMA and not the other would break bit-identity in a way
     /// only a test like this one can see.
+    ///
+    /// The invariants **throw** rather than preconditing (`DC-083`). They were preconditions, which is
+    /// a crash, and this function consumes terms decoded from the network: a peer that declared a
+    /// different geometry could reach it. The wire now refuses that frame earlier and by name, and this
+    /// is the second lock on the same door — a public API that takes data from elsewhere should not have
+    /// a crash as its error handling.
     public static func accumulate(
         _ contributions: [ExpertContribution], tokens: Int, hiddenSize: Int
-    ) -> [Float] {
-        var output = [Float](repeating: 0, count: tokens * hiddenSize)
+    ) throws -> [Float] {
+        guard tokens >= 0, hiddenSize >= 0 else {
+            throw ReductionError.negativeGeometry(tokens: tokens, hiddenSize: hiddenSize)
+        }
+        let (count, overflowed) = tokens.multipliedReportingOverflow(by: hiddenSize)
+        guard !overflowed else {
+            throw ReductionError.geometryOverflows(tokens: tokens, hiddenSize: hiddenSize)
+        }
+        var output = [Float](repeating: 0, count: count)
         for contribution in contributions.sorted(by: precedes) {
-            precondition(
-                contribution.token >= 0 && contribution.token < tokens,
-                "contribution for token \(contribution.token), which is outside \(tokens)"
-            )
-            precondition(
-                contribution.values.count == hiddenSize,
-                "contribution width \(contribution.values.count) is not the hidden size \(hiddenSize)"
-            )
+            guard contribution.token >= 0, contribution.token < tokens else {
+                throw ReductionError.tokenOutsideRange(token: contribution.token, tokens: tokens)
+            }
+            guard contribution.values.count == hiddenSize else {
+                throw ReductionError.widthMismatch(
+                    width: contribution.values.count, hiddenSize: hiddenSize
+                )
+            }
             let base = contribution.token * hiddenSize
             for index in 0..<hiddenSize {
                 output[base + index] = output[base + index] + contribution.values[index] * contribution.scale

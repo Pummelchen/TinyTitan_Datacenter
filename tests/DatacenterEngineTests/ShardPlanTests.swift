@@ -250,7 +250,7 @@ final class ShardPlanTests: XCTestCase {
                     indices: fixture.indices, weights: fixture.chosen, shape: shape
                 )
             }
-            let reduced = OrderedReduction.accumulate(
+            let reduced = try OrderedReduction.accumulate(
                 try ShardExchange.merge(terms, indices: fixture.indices),
                 tokens: fixture.tokens, hiddenSize: shape.hiddenSize
             )

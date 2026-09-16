@@ -62,7 +62,26 @@ public enum ContributionWire {
         return Data(bytes)
     }
 
-    public static func decode(_ data: Data) throws -> [ExpertContribution] {
+    /// What a frame said, not only what it carried.
+    ///
+    /// The distinction matters at the boundary: `decode` validates a frame against **itself**, and a
+    /// hostile or mismatched peer can satisfy every one of those checks while declaring a geometry this
+    /// node does not have. The reduction then has terms of the wrong width, and `OrderedReduction`
+    /// *preconditions* on the width — which is a crash, from the network. So the declaration travels
+    /// back to the caller, which knows what it asked for (`DC-083`).
+    public struct DecodedFrame: Equatable, Sendable {
+        public let tokens: Int
+        public let hiddenSize: Int
+        public let contributions: [ExpertContribution]
+
+        public init(tokens: Int, hiddenSize: Int, contributions: [ExpertContribution]) {
+            self.tokens = tokens
+            self.hiddenSize = hiddenSize
+            self.contributions = contributions
+        }
+    }
+
+    public static func decode(_ data: Data) throws -> DecodedFrame {
         let bytes = [UInt8](data)
         guard bytes.count >= headerBytes else {
             throw ContributionWireError.truncated(needed: headerBytes, got: bytes.count)
@@ -79,8 +98,11 @@ public enum ContributionWire {
         let count = Int(try nextUInt32(bytes, &cursor))
         guard count <= maximumTerms else { throw ContributionWireError.absurdCount(count) }
 
+        // `count` is bounded on its own, but its *product* with the per-term width is not: a frame can
+        // declare a million terms in sixty-four bytes. Reserving what the remaining bytes could hold
+        // keeps the allocation proportional to the input rather than to the declaration.
         var contributions: [ExpertContribution] = []
-        contributions.reserveCapacity(count)
+        contributions.reserveCapacity(min(count, (bytes.count - cursor) / 16))
         for _ in 0..<count {
             let token = Int(try nextUInt32(bytes, &cursor))
             let expert = Int(try nextUInt32(bytes, &cursor))
@@ -100,7 +122,7 @@ public enum ContributionWire {
             )
         }
         guard cursor == bytes.count else { throw ContributionWireError.trailingBytes(bytes.count - cursor) }
-        return contributions
+        return DecodedFrame(tokens: tokens, hiddenSize: hiddenSize, contributions: contributions)
     }
 
     // MARK: - little-endian primitives
@@ -145,6 +167,7 @@ public enum ContributionWireError: Swift.Error, CustomStringConvertible, Equatab
     case absurdCount(Int)
     case malformedTerm(token: Int, width: Int, hiddenSize: Int)
     case trailingBytes(Int)
+    case geometryMismatch(tokens: Int, hiddenSize: Int, expectedTokens: Int, expectedHiddenSize: Int)
 
     public var description: String {
         switch self {
@@ -162,6 +185,9 @@ public enum ContributionWireError: Swift.Error, CustomStringConvertible, Equatab
             return "term for token \(token) has width \(width) where the frame declares \(hiddenSize)"
         case .trailingBytes(let count):
             return "frame has \(count) bytes after the last term"
+        case .geometryMismatch(let tokens, let hiddenSize, let expectedTokens, let expectedHiddenSize):
+            return "frame declares \(tokens)x\(hiddenSize) where this node is reducing "
+                + "\(expectedTokens)x\(expectedHiddenSize)"
         }
     }
 }

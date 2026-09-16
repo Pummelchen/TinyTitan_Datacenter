@@ -115,7 +115,19 @@ public enum ShardExchange {
                 for peer in peers { peer.applyTimeout(milliseconds: policy.receiveTimeoutMilliseconds) }
                 for peer in peers { try peer.send(frame) }
                 received = []
-                for peer in peers { received += try ContributionWire.decode(try peer.receive()) }
+                for peer in peers {
+                    let decoded = try ContributionWire.decode(try peer.receive())
+                    // A frame is validated against itself in `decode`; this is the check only the
+                    // receiver can make, and without it a peer's geometry reaches `accumulate`, whose
+                    // width invariant is a precondition — a crash, from the network (`DC-083`).
+                    guard decoded.tokens == tokens, decoded.hiddenSize == hiddenSize else {
+                        throw ContributionWireError.geometryMismatch(
+                            tokens: decoded.tokens, hiddenSize: decoded.hiddenSize,
+                            expectedTokens: tokens, expectedHiddenSize: hiddenSize
+                        )
+                    }
+                    received += decoded.contributions
+                }
                 break
             } catch let error as ContributionTransportError {
                 // Only a clean timeout is retryable: `midFrame` means the stream is desynchronised.
@@ -127,7 +139,7 @@ public enum ShardExchange {
             }
         }
 
-        return OrderedReduction.accumulate(
+        return try OrderedReduction.accumulate(
             try merge(own + received, indices: indices), tokens: tokens, hiddenSize: hiddenSize
         )
     }

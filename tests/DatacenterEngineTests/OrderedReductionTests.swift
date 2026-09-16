@@ -51,10 +51,10 @@ final class OrderedReductionTests: XCTestCase {
         return output
     }
 
-    func testTheReductionReproducesTheSingleNodeSequenceBitForBit() {
+    func testTheReductionReproducesTheSingleNodeSequenceBitForBit() throws {
         let contributions = makeContributions(tokens: 5, experts: 8, width: 32, active: 4)
         let reference = singleNode(contributions, tokens: 5, width: 32)
-        let reduced = OrderedReduction.accumulate(contributions, tokens: 5, hiddenSize: 32)
+        let reduced = try OrderedReduction.accumulate(contributions, tokens: 5, hiddenSize: 32)
 
         for index in 0..<reference.count {
             XCTAssertEqual(
@@ -67,9 +67,9 @@ final class OrderedReductionTests: XCTestCase {
     /// The invariant M2's gate rests on: a partition decides *who computes* a term and nothing else.
     /// Each partition's terms arrive in a different internal order, and the partitions are concatenated
     /// in a different order, exactly as a network would deliver them.
-    func testPartitioningAndArrivalOrderDoNotMoveTheBits() {
+    func testPartitioningAndArrivalOrderDoNotMoveTheBits() throws {
         let contributions = makeContributions(tokens: 4, experts: 8, width: 16, active: 6)
-        let reference = OrderedReduction.accumulate(contributions, tokens: 4, hiddenSize: 16)
+        let reference = try OrderedReduction.accumulate(contributions, tokens: 4, hiddenSize: 16)
 
         for partitions in [1, 2, 4, 8] {
             var delivered: [ExpertContribution] = []
@@ -78,7 +78,7 @@ final class OrderedReductionTests: XCTestCase {
                 owned.reverse()  // arrival order within a node is not the computation order
                 delivered.append(contentsOf: owned)
             }
-            let reduced = OrderedReduction.accumulate(delivered, tokens: 4, hiddenSize: 16)
+            let reduced = try OrderedReduction.accumulate(delivered, tokens: 4, hiddenSize: 16)
             for index in 0..<reference.count {
                 XCTAssertEqual(
                     reference[index].bitPattern, reduced[index].bitPattern,
@@ -95,9 +95,9 @@ final class OrderedReductionTests: XCTestCase {
     /// canonical left-to-right sequence lands on `20000008`. Both are "the sum of the same three
     /// numbers" and they are not the same float — which is precisely the difference between passing
     /// M2's gate and failing it in a way that looks like a conversion bug.
-    func testPreSummedPartialsWouldNotBeBitIdenticalAndTheContractIs() {
+    func testPreSummedPartialsWouldNotBeBitIdenticalAndTheContractIs() throws {
         let a: Float = 2e7, b: Float = 3, c: Float = 3
-        let canonical = OrderedReduction.accumulate(
+        let canonical = try OrderedReduction.accumulate(
             [
                 ExpertContribution(token: 0, expert: 0, values: [a], scale: 1),
                 ExpertContribution(token: 0, expert: 1, values: [b], scale: 1),
@@ -122,5 +122,41 @@ final class OrderedReductionTests: XCTestCase {
         ]
         let sorted = terms.sorted(by: OrderedReduction.precedes)
         XCTAssertEqual(sorted.map { "\($0.token):\($0.expert)" }, ["0:1", "0:3", "1:0"])
+    }
+}
+
+/// `DC-083`: the reduction's invariants **throw** instead of preconditing.
+///
+/// They were preconditions — a crash — and this function consumes terms decoded from the network, so a
+/// peer that declared a different geometry could reach it. The wire refuses that frame earlier and by
+/// name; these are the second lock, and a lock nobody has tried is not a lock.
+extension OrderedReductionTests {
+    func testTheReductionRefusesWhatItCannotReduce() throws {
+        let narrow = ExpertContribution(token: 0, expert: 0, values: [1, 2], scale: 1)
+        XCTAssertThrowsError(try OrderedReduction.accumulate([narrow], tokens: 1, hiddenSize: 3)) { error in
+            XCTAssertEqual(error as? ReductionError, .widthMismatch(width: 2, hiddenSize: 3))
+        }
+
+        let farToken = ExpertContribution(token: 5, expert: 0, values: [1, 2, 3], scale: 1)
+        XCTAssertThrowsError(try OrderedReduction.accumulate([farToken], tokens: 1, hiddenSize: 3)) { error in
+            XCTAssertEqual(error as? ReductionError, .tokenOutsideRange(token: 5, tokens: 1))
+        }
+
+        XCTAssertThrowsError(try OrderedReduction.accumulate([], tokens: -1, hiddenSize: 3)) { error in
+            XCTAssertEqual(error as? ReductionError, .negativeGeometry(tokens: -1, hiddenSize: 3))
+        }
+
+        XCTAssertThrowsError(try OrderedReduction.accumulate([], tokens: Int.max, hiddenSize: 2)) { error in
+            XCTAssertEqual(
+                error as? ReductionError, .geometryOverflows(tokens: Int.max, hiddenSize: 2)
+            )
+        }
+    }
+
+    func testAnEmptyReductionIsStillAValidZeroShape() throws {
+        // The guards must not refuse something legitimate: no terms over a real shape is a zero output,
+        // which is what a mixture layer with nothing selected would produce.
+        let empty = try OrderedReduction.accumulate([], tokens: 2, hiddenSize: 3)
+        XCTAssertEqual(empty, [Float](repeating: 0, count: 6))
     }
 }

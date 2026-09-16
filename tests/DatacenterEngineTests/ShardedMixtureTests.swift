@@ -90,7 +90,7 @@ final class ShardedMixtureTests: XCTestCase {
                 "\(nodes) nodes: the reduction must see every selected term exactly once before it sums"
             )
             XCTAssertEqual(terms.count, selected.count, "\(nodes) nodes: one term per selection")
-            let sharded = OrderedReduction.accumulate(terms, tokens: tokens, hiddenSize: shape.hiddenSize)
+            let sharded = try OrderedReduction.accumulate(terms, tokens: tokens, hiddenSize: shape.hiddenSize)
             assertBitIdentical(single, sharded, "\(nodes) nodes")
         }
     }

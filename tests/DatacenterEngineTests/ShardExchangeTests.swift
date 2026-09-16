@@ -204,7 +204,7 @@ final class ShardExchangeTests: XCTestCase {
         XCTAssertEqual(merged.count, mine.count + theirs.count, "a bit-identical duplicate must collapse")
         assertSameBits(
             single,
-            OrderedReduction.accumulate(merged, tokens: fixture.tokens, hiddenSize: shape.hiddenSize),
+            try OrderedReduction.accumulate(merged, tokens: fixture.tokens, hiddenSize: shape.hiddenSize),
             "a retry must not move the bits"
         )
         XCTAssertFalse(frame.isEmpty)

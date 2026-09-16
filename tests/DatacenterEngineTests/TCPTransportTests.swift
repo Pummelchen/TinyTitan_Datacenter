@@ -112,17 +112,17 @@ final class TCPTransportTests: XCTestCase {
                 try fixture.terms(node: 0, nodes: 2), tokens: fixture.tokens, hiddenSize: shape.hiddenSize
             )
         )
-        let fromServer = try ContributionWire.decode(try server.receive())
+        let fromServer = try ContributionWire.decode(try server.receive()).contributions
         try server.send(
             try ContributionWire.encode(
                 try fixture.terms(node: 1, nodes: 2), tokens: fixture.tokens, hiddenSize: shape.hiddenSize
             )
         )
-        let fromClient = try ContributionWire.decode(try client.receive())
+        let fromClient = try ContributionWire.decode(try client.receive()).contributions
 
         let mineAtServer = try fixture.terms(node: 1, nodes: 2)
         let merged = try ShardExchange.merge(fromServer + mineAtServer, indices: fixture.indices)
-        let reduced = OrderedReduction.accumulate(
+        let reduced = try OrderedReduction.accumulate(
             merged, tokens: fixture.tokens, hiddenSize: shape.hiddenSize
         )
         for (index, element) in reduced.enumerated() where element.bitPattern != single[index].bitPattern {
