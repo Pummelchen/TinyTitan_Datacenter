@@ -79,6 +79,9 @@ def main(argv: list[str] | None = None) -> int:
             args.model,
             "--revision",
             args.revision,
+            # The 2B checkpoint is mapped by `safe_open` without this, and the rule that came out of two
+            # panics is that a multi-gigabyte mapping is a hazard rather than a neutral operation (`D74`).
+            "--uncached",
         ]
     else:
         contract_command = [

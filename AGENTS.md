@@ -179,7 +179,7 @@ python3 tools/run_all_gates.py
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 200 --swift-skipped 0 --python-tests 374
+python3 tools/check_status_claims.py --swift-tests 200 --swift-skipped 0 --python-tests 381
 
 # The provenance position: no copied code, and no NOTICE to carry
 python3 tools/check_provenance.py

@@ -32,7 +32,7 @@ from check_disk_headroom import require_headroom  # noqa: E402
 
 # The reader is shared with the install builder and the mixture's CLI, so all three agree
 # about what a sharded checkpoint is.
-from safetensors_source import SafetensorsSource  # noqa: E402,F401
+from contract_source import add_uncached_argument, open_source  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -43,12 +43,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tokens", required=True, help="comma-separated token ids")
     parser.add_argument("--model", default="")
     parser.add_argument("--revision", default="")
+    add_uncached_argument(parser)
     args = parser.parse_args(argv)
     require_headroom(purpose="the contract run")
 
     spec = json.loads(args.spec.read_text())
     tokens = [int(part) for part in args.tokens.replace(" ", "").split(",") if part]
-    source = SafetensorsSource(args.snapshot)
+    source = open_source(args.snapshot, uncached=args.uncached)
 
     captured: dict[str, np.ndarray] = {}
     q35.streamed_text_forward(spec, source, tokens, capture=captured)

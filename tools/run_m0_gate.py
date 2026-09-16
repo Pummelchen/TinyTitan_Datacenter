@@ -112,7 +112,13 @@ def main(argv: list[str] | None = None) -> int:
         started = time.time()
         contract = run(
             [python, str(ROOT / "tools" / "ordered_qwen35_trace.py"), str(args.snapshot), str(contract_trace),
-             "--spec", str(spec_path), "--tokens", tokens, "--model", args.model, "--revision", args.revision]
+             "--spec", str(spec_path), "--tokens", tokens, "--model", args.model, "--revision", args.revision,
+             # This gate could not pass this flag, because until `D74` the 2B contract had no such flag: its
+             # reader was hard-coded to `safe_open`, which *maps* the checkpoint. The pairing that makes a
+             # real-model contract run survivable is in `docs/m1-gate.md` -- read through pread and fetch
+             # experts by index -- and the dense family has no experts, so for M0 the first half is the one
+             # that applies.
+             "--uncached"]
         )
         if contract.returncode != 0:
             print(contract.stdout + contract.stderr, file=sys.stderr)

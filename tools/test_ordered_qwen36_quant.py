@@ -35,7 +35,7 @@ FIXTURE = ROOT / "tests" / "DatacenterEngineTests" / "Fixtures" / "tiny-qwen36"
 MODULE_ERROR = ""
 if HAVE_NUMPY:
     try:
-        import ordered_qwen35_trace as q35t
+        from contract_source import open_source
         import ordered_qwen36 as q36
         import quantize
 
@@ -65,7 +65,7 @@ class MixtureQuantizationTests(unittest.TestCase):
         reference_capture: dict = {}
         reference_decisions: dict = {}
         q36.streamed_text_forward(
-            spec, q35t.SafetensorsSource(FIXTURE), tokens,
+            spec, open_source(FIXTURE), tokens,
             capture=reference_capture, discrete=reference_decisions,
         )
         install_capture: dict = {}

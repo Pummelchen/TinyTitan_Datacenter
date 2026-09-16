@@ -35,7 +35,7 @@ import trace_format  # noqa: E402
 from check_disk_headroom import require_headroom  # noqa: E402
 
 
-from safetensors_source import SafetensorsSource  # noqa: E402,F401
+from contract_source import add_uncached_argument, open_source  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -65,17 +65,7 @@ def main(argv: list[str] | None = None) -> int:
             "tensor) and tools/test_ordered_moe.py asserts the two paths byte for byte."
         ),
     )
-    parser.add_argument(
-        "--uncached",
-        action="store_true",
-        help=(
-            "read the checkpoint through pread instead of `safe_open`'s mmap. The default is unchanged, "
-            "because the contract is the authority and its reader should change only deliberately; this "
-            "exists because a 67 GB mapping on an 8 GB node is the mechanism behind two panics, and it is "
-            "byte-identical to the mapped reader (tools/test_uncached_safetensors.py checks that on a real "
-            "shard of this checkpoint)."
-        ),
-    )
+    add_uncached_argument(parser)
     args = parser.parse_args(argv)
     require_headroom(purpose="the contract run")
 
@@ -84,16 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     # An install directory is read through the install's own dequantiser, which is what the Swift reader
     # mirrors. That is how the gate's real question gets asked: same weights on both sides, so a difference
     # is a difference in arithmetic rather than in what was quantised (`D55`).
-    if (args.snapshot / "install.json").exists():
-        from install_source import InstallSource
-
-        source = InstallSource(args.snapshot)
-    elif args.uncached:
-        from uncached_safetensors import UncachedSafetensorsSource
-
-        source = UncachedSafetensorsSource(args.snapshot)
-    else:
-        source = SafetensorsSource(args.snapshot)
+    source = open_source(args.snapshot, uncached=args.uncached)
 
     captured: dict[str, np.ndarray] = {}
     decisions: dict[str, np.ndarray] = {}

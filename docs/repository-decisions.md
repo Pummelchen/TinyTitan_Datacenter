@@ -1657,3 +1657,47 @@ lesson in another register: measure the thing the number is about, not the thing
 70 GB. For the **checkpoint** path that is no longer true: it ran here, in about eight minutes of engine time
 plus the contracts, with both flags. What remains specific to this node is the **install** path, where the
 contract's per-row Python reads make the same run take hours (`DC-114`) — a cost, not a correctness problem.
+
+## D74 — The same question was answered in three places, so it now has one home
+
+`D69` added `--stream-experts` to an invocation that had omitted it and `D73` added `--uncached` to the same
+one. Two rounds, one shape: a contract was invoked without the flag its own documentation called for. So this
+round asked the structural question instead of waiting for a third instance — *where else is "which reader, and
+with which flag" decided independently?* — and audited every tool that invokes a contract.
+
+**The finding is one model family down.** `ordered_qwen35_trace.py`, M0's contract, had **no `--uncached` flag
+at all**: line 51 read `source = SafetensorsSource(args.snapshot)` and nothing else, so every M0 run mapped its
+checkpoint and there was no way to ask it not to. `run_m0_gate.py` could not have passed the flag because the
+flag did not exist. The 2B checkpoint is smaller than the 35 B one, which is why this never produced an
+incident — but the rule the node's own instructions state does not have a size threshold: a multi-gigabyte
+mapping is a hazard rather than a neutral operation.
+
+**So the question has one home.** `tools/contract_source.py` holds the selection rule and the flag that goes
+with it: `open_source(snapshot, uncached=…)` — an install if that is what the path is, else a checkpoint read
+through `pread` or through `safe_open`'s mapping — and `add_uncached_argument(parser)` for CLIs to declare it.
+Both trace CLIs call it, so the 2B contract gains both `--uncached` and the install branch the 36 B one already
+had, and `run_m0_gate.py` and `check_engine_contract.py` now pass the flag for their checkpoint runs.
+
+**What is deliberately not shared is `--stream-experts`, and the reason is a property of the model rather than
+of the reader.** `qwen3_5` is dense — its `streamed_text_forward` has no `stream_experts` parameter and the
+fixture's roles contain no `expert.*` — so a flag declared there would do nothing while reading like a
+capability. A test asserts the flag is declared **exactly** where the family has experts, which encodes the
+reason and not merely the current fact.
+
+**One hidden coupling came out with it.** `test_ordered_qwen36_quant.py` reached `SafetensorsSource` *through*
+the CLI module, which is what the `# noqa: F401` on that import was for. That test now calls `open_source`, so it
+exercises the shared rule instead of a module attribute — and the re-export it depended on is gone rather than
+silently restored.
+
+**Seven tests, and the one that matters is the byte-identity case.** Both CLIs must accept `--uncached`;
+`--stream-experts` must be declared exactly where experts exist; the rule must choose install, then pread, then
+mapped — including that **an install wins over the flag**, which `run_m1_gate.py` relies on when it passes
+`--uncached` only for a checkpoint; and the whole 2B contract CLI is run **twice** on the fixture, mapped and
+through `pread`, with every tensor's `sha256` compared. That last one is the claim the flag rests on, and it is
+now checked through the CLI the gates actually invoke rather than only at the reader. The suite reports **381
+tests, OK**.
+
+**One exclusion is named rather than skipped.** `ordered_reference.py` still maps its checkpoint. It reads the
+**small** reference models (0.6B) rather than the pinned large ones, and its reader is its own rather than the
+shared rule, so bringing it in would be a different change with a different risk. Saying so is the point:
+the alternative is an omission that looks like an oversight.
