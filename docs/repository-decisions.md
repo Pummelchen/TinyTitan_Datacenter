@@ -1405,3 +1405,61 @@ a precondition it does not use.
   exit: 0`, because `$?` was the exit status of `tail`. This is the third time in this session that the same
   recorded lesson has bitten, and the fix is not care but shape: capture the output to a file and read `$?`,
   which is how the re-run was done.
+
+## D69 — M1's gate can run against an install, which it never could, and the fixture found a latent shape bug
+
+`D65` recorded that M1's gate cannot run on this node because it hands the checkpoint to both sides and both
+map 70 GB. That is true of the *checkpoint* form and was never true of the install form: M1's claim was
+restated in `D56` as the engine against a contract reading the **same install**, which needs no mapping at all.
+The gate nonetheless could not do it, for a reason that is worth writing down precisely.
+
+**The defect: the contract half never passed `--stream-experts`.** `install_source.py` refuses to materialise an
+expert stack — a single expert layer is gigabytes, so it raises rather than trying — and its own docstring says
+the streaming path "exists for those and the contract uses it (`stream_experts=True`)". The `InstallSource`
+construction in the contract was right; the **gate's command line was not**, so the contract died with
+`InstallSourceError` on the first expert stack it met. The intent was documented in the module and absent from
+the call site, which is the same shape as `D65`'s manual claim: a statement about the code that no execution
+had ever tested.
+
+**The fix is small and the flag is two things at once.** The gate now passes `--stream-experts`, and it also
+discovers whether it was handed a checkpoint or an install — from `install.json`'s `family` or `config.json`'s
+`model_type` — rather than making the caller name the kind with another flag, because the path the caller
+already chose says which they meant. The flag is **correctness** for the install, which refuses without it,
+and **memory** for the checkpoint: `safetensors_source.py` and `uncached_safetensors.py` do *not* refuse an
+expert stack, they materialise it. That is why this gate declares 4.2 GB, and streaming it should lower the
+real figure — the declaration stays as it is, because a declaration is a promise of the worst case and lowering
+a guard to match a measurement is how guards get weakened.
+
+**And the fixture earned its keep.** With the flag in place the gate still failed, on the tiny install, with
+`ValueError: cannot reshape array of size 512 into shape (1, 32, 32)`. `InstallSource._materialise` took its row
+width from the *original* tensor's last axis instead of the install's own row width, `padded`. For the real
+model those are equal — `expert.stack_gate_up` is 2,048 wide either way — and for the fixture they are 32
+against 512, so the read was correct for the 35 B model and wrong in general. Widening a row to `padded` is
+also right for the one-dimensional rows and for the convolution's `(8192, 1, 4)`, whose row is four values
+rather than one, so the fix needed no special case. This is the first defect the tiny fixture has found in the
+source rather than in a test, and it found it because the new install-mode case drives the path no checkpoint
+case can reach.
+
+**Two process notes, both mine.** The gate holds the heavy-job lock while it runs and I released it, because I
+was treating the lock as mine to tidy; the next tool that tried to start — `quantize.py` on a fixture — refused
+and printed the holder's purpose and pid back at me, which is how the mistake surfaced rather than hid. And
+Python buffers stdout when it is redirected, so a 12-minute run's log held nothing but its first warning:
+background runs of long jobs use `-u`, which is a property of the invocation rather than of the program.
+
+**The fixture then found a third thing, and this one is not fixed.** With the shape bug corrected the
+install-mode gate case runs end to end on the tiny install and reports **DIFFERS** on both fixture prompts,
+in 0.04 s at 0.02 GB peak — so the streaming path works and the engine and the contract simply do not agree
+there. The real 35 B install agrees byte for byte (`D56`), so this is a fixture-scale divergence, and it is
+`DC-113` rather than a guess: either the tiny install's quantisation reaches a Swift/Python dequantiser
+difference the real geometry avoids, or the fixture's install is built against a policy the fixture cannot
+satisfy. The case stays in the suite as an **expected failure**, because an expected failure becomes an
+unexpected *success* the moment the divergence is understood, and nothing else drives that path.
+
+**And the declaration had to follow the source.** The gate claimed 4.2 GB unconditionally — the checkpoint
+path's measured peak (`docs/m1-gate.md`: 4.16 GB), taken *before* the contract streamed expert stacks — and
+this node's reclaimable headroom now sits below that, so the gate refused on an install it could have run. An
+install with streaming held **1.21 GB** resident when measured during the real run, and the engine's own trace
+is smaller, so the install path now declares **1.5 GB** and the checkpoint path keeps 4.2 GB. That asymmetry is
+deliberate: the install figure is a measurement with a margin, and the checkpoint figure is a measurement
+nobody has repeated since streaming landed. Lowering it would be a guard weakened to match a guess, and
+re-measuring the checkpoint path is its own job.

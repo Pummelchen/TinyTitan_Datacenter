@@ -86,7 +86,13 @@ class InstallSource:
         """Rows `[start, end)` in the checkpoint's index space, in fp32, flat; the callers shape it."""
         shape = tuple(tensor.shape or ())
         _rows_total, padded = tensor.geometry()
-        columns = int(shape[-1]) if len(shape) > 1 else padded
+        # The row's content is the *true* row width, capped by what the install actually stores:
+        # `shape[-1]` is that width for a matrix and `_width` for a flattened stack, and `padded` is the same
+        # width rounded up. Reading `padded` blindly over-reads a padded matrix; reading `shape[-1]` blindly
+        # under-reads a flattened stack, which is how the tiny install raised `cannot reshape array of size
+        # 512 into shape (1, 32, 32)`. For the real model all three numbers are 2,048, so both mistakes are
+        # invisible there — `expert.stack_gate_up` is 2,048 wide whichever way it is read.
+        columns = padded if len(shape) <= 1 else min(padded, self._width(tensor))
         factor = self._rows_per_index(tensor)
         values: list[float] = []
         for row in self.install.row_range(tensor, start * factor, end * factor, row_block=row_block):

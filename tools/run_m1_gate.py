@@ -98,9 +98,6 @@ def main(argv: list[str] | None = None) -> int:
         help="run a subset of the frozen prompts; the contract side costs about ten times the engine's wall time",
     )
     args = parser.parse_args(argv)
-    # 4.2 GB is the checkpoint path's measured peak RSS (`docs/m1-gate.md`: 4.16 GB), which is the number
-    # that decides whether this machine can carry it at all.
-    require_heavy_headroom(4.2, purpose="the M1 gate on the checkpoint")
 
     prompt_bytes = args.prompts.read_bytes()
     prompt_set = json.loads(prompt_bytes)
@@ -128,11 +125,36 @@ def main(argv: list[str] | None = None) -> int:
         print(built.stdout + built.stderr, file=sys.stderr)
         return 2
 
+    # The gate is handed either a checkpoint or an install, and it has to know which, because the two make
+    # different claims. A checkpoint on both sides is the model as published; an install on both sides is
+    # M1's restated claim — the engine against a contract reading the SAME install, which is what `D56`
+    # settled — and it is also the form that needs no 70 GB mapping, so it runs on the 8 GB node. The kind
+    # is discovered from the directory rather than named by a flag: the caller already said what they meant
+    # by choosing the path.
+    manifest_path = args.snapshot / "install.json"
+    if manifest_path.exists():
+        family = json.loads(manifest_path.read_text()).get("family", "")
+        kind = "install"
+        # Measured, not guessed: the contract held 1.21 GB resident on the real install while streaming its
+        # expert stacks, and the engine's own trace is smaller. The declaration carries a margin above the
+        # observation rather than being the observation.
+        needs_gb = 1.5
+    else:
+        family = json.loads((args.snapshot / "config.json").read_text()).get("model_type", "")
+        kind = "checkpoint"
+        # 4.16 GB is the checkpoint path's measured peak RSS (`docs/m1-gate.md`), taken *before* the contract
+        # streamed expert stacks. That measurement is now stale in the safe direction, and it stays as it is:
+        # a guard lowered to a number nobody has measured is a guard weakened, and re-measuring the
+        # checkpoint path is its own job.
+        needs_gb = 4.2
+
+    require_heavy_headroom(needs_gb, purpose=f"the M1 gate on the {kind}")
+
     python = sys.executable if Path(sys.executable).name.startswith("python") else "python3"
-    model_type = json.loads((args.snapshot / "config.json").read_text()).get("model_type", "")
-    if model_type != "qwen3_5_moe":
-        print(f"refusing: this is M1's gate and {args.snapshot} declares model_type {model_type!r}", file=sys.stderr)
+    if family != "qwen3_5_moe":
+        print(f"refusing: this is M1's gate and {args.snapshot} declares {family!r}", file=sys.stderr)
         return 2
+    print(f"      source: a {kind} declaring {family!r}; BOTH sides of every comparison read this one source")
 
     print("[3/5] the engine's IR spec, emitted by the engine's own importer")
     spec_path = args.work / "spec.json"
@@ -170,6 +192,11 @@ def main(argv: list[str] | None = None) -> int:
 
         contract = run([
             python, str(ROOT / "tools" / "ordered_qwen36_trace.py"), str(args.snapshot), str(contract_trace),
+            # `--stream-experts` is not an optimisation here, it is the only way the contract can read the
+            # expert stacks at all: the install source refuses to materialise one, because a single expert
+            # layer is gigabytes. Without this flag the contract half of this gate could not run against an
+            # install, and nothing had ever asked it to.
+            "--stream-experts",
             "--spec", str(spec_path), "--tokens", tokens_arg, "--model", args.model, "--revision", args.revision,
         ])
         if contract.returncode != 0:

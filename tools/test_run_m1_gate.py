@@ -98,6 +98,50 @@ class GateInstrumentTests(unittest.TestCase):
             self.assertIsNotNone(entry["expert_requests"], f"{entry['id']}: expert requests")
             self.assertIsNotNone(entry["expert_hit_rate"], f"{entry['id']}: hit rate")
 
+    @unittest.expectedFailure
+    # DC-113: on the tiny install the engine and the contract DIFFER, while the real 35 B install agrees
+    # byte for byte (`D56`). The case is kept, and marked, because it is the only test that drives the
+    # install path — and because an expected failure turns into an unexpected *success* the moment the
+    # divergence is understood, which is the loudest available signal that DC-113 is fixed.
+    def testTheGateRunsAgainstATinyInstallAndWouldHaveCaughtTheMissingFlag(self):
+        """The install is the source that refuses to materialise an expert stack.
+
+        The gate's contract half must therefore stream experts (`--stream-experts`), because a single expert
+        layer is gigabytes; without the flag the contract dies with an `InstallSourceError` and the gate
+        cannot run against an install at all. Nothing asked it to until `D69`, which is how the flag came to
+        be missing while the install source's own docstring said the contract used it. The checkpoint case
+        above cannot catch that: a checkpoint source does not refuse stacks. This case is the one that has to
+        exist, and it is the reason the gate can now run on the 8 GB node without mapping a 70 GB file.
+        """
+        work, prompts = self.build()
+        spec = work / "spec.json"
+        emitted = subprocess.run(
+            [str(ROOT / ".build" / "release" / "datacenter-trace"), "--emit-spec", str(spec), str(FIXTURE)],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        self.assertEqual(emitted.returncode, 0, emitted.stdout + emitted.stderr)
+        install = work / "install"
+        built = subprocess.run(
+            [
+                "python3", str(ROOT / "tools" / "quantize.py"), "build",
+                "--spec", str(spec), str(FIXTURE), str(install),
+            ],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+        result = subprocess.run(
+            [
+                "python3", str(ROOT / "tools" / "run_m1_gate.py"),
+                "--snapshot", str(install), "--work", str(work / "gate-install"),
+                "--prompts", str(prompts), "--model", "tiny-fixture", "--revision", "generated",
+                "--skip-generation",
+            ],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        report = json.loads((work / "gate-install" / "report.json").read_text())
+        self.assertTrue(report["identical"], "the engine must reproduce the contract reading the install")
+
     def testTheGateRefusesAFamilyItIsNotFor(self):
         """M1's gate is for M1's model. Running it on a `qwen3_5` checkpoint must stop rather
         than measure something else and label it M1."""
