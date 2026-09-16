@@ -60,6 +60,13 @@ SWIFT_TESTS = re.compile(r"\*\*(\d+) tests?, (\d+) skipped")
 PAIR = re.compile(r"\*\*(\d+) Swift, (\d+) Python\*\*")
 # `with **200** standard-library Python tests`.
 PYTHON_TESTS = re.compile(r"\*\*(\d+)\*\* standard-library Python tests")
+# The same claims in the form a reader *copies*: `--swift-tests 184 --swift-skipped 0 --python-tests 219`.
+# These matter more than the prose, not less — a stale example is a command that reports the wrong thing.
+COMMAND_CLAIMS = (
+    ("--swift-tests", "swift_tests"),
+    ("--swift-skipped", "swift_skipped"),
+    ("--python-tests", "python_tests"),
+)
 # A decision citation: `D17`, `D34`, but not `3D4`.
 DECISION = re.compile(r"(?<![A-Za-z0-9])D(\d{1,3})(?![0-9])")
 # The heading that defines one: `## D34 — ...`.
@@ -119,6 +126,24 @@ def check(
                 )
 
     decision_files = sorted(str(path) for path in root.glob(DECISION_GLOB))
+    observed = {"swift_tests": swift_tests, "swift_skipped": swift_skipped, "python_tests": python_tests}
+    for name in CLAIM_DOCUMENTS:
+        path = root / name
+        if not path.exists():
+            continue
+        for number, line in enumerate(path.read_text().splitlines(), start=1):
+            for flag, key in COMMAND_CLAIMS:
+                for match in re.finditer(rf"{re.escape(flag)}\s+(\d+)", line):
+                    if observed[key] is None:
+                        continue
+                    checked += 1
+                    claimed = int(match.group(1))
+                    if claimed != observed[key]:
+                        problems.append(
+                            f"{name}:{number}: the example says {flag} {claimed}; the suite reports "
+                            f"{observed[key]}"
+                        )
+
     defined: set[int] = set()
     for name in decision_files:
         path = root / name

@@ -137,7 +137,7 @@ swift test --no-parallel
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 184 --swift-skipped 0 --python-tests 221
+python3 tools/check_status_claims.py --swift-tests 186 --swift-skipped 0 --python-tests 223
 
 # The provenance position: no copied code, and no NOTICE to carry
 python3 tools/check_provenance.py
@@ -255,6 +255,12 @@ any failure.
   the moment a fourth record existed — the gate caught its own stale configuration, which is better than
   not catching it, but the fix was to **discover** `docs/*-decisions.md` rather than list it. Prefer a rule
   that finds its inputs to a list that has to be maintained beside them.
+- **Check the form a reader copies, not only the prose.** The claims gate matched test counts in
+  sentences and missed the `--swift-tests` flag in the command example beside them — the number most
+  likely to be copy-pasted, and stale for a round. (This paragraph first quoted that stale command, and the
+  widened gate flagged *it*: a note about a violation is still a violation if it reproduces the literal,
+  which is exactly what the provenance fixture learned in the same round.) It now checks the flags too, and found it immediately: a gate that
+  reads every *sentence* but no *command* is checking the least actionable form of the claim.
 - **A test fixture that simulates a violation contains the violation.** The provenance check flags
   third-party copyright lines, and its own test file held one because the fixture wrote it literally — so
   the fixture now assembles the line at runtime rather than the checker gaining an exemption for the file

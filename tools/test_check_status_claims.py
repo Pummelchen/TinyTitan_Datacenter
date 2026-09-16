@@ -145,6 +145,16 @@ class StatusClaimTests(unittest.TestCase):
         problems, _, _ = self.run_gate()
         self.assertEqual(problems, [], "a decision defined in a new record must be found")
 
+    def test_a_stale_example_command_is_a_claim_too(self) -> None:
+        """The form a reader copies matters more than the prose, not less."""
+        build(self.root, agents="python3 tools/check_status_claims.py --swift-tests 183 --python-tests 200\n")
+        problems, _, _ = self.run_gate()
+        self.assertTrue(any("--swift-tests 183" in problem for problem in problems), problems)
+
+    def test_a_current_example_command_passes(self) -> None:
+        build(self.root, agents="--swift-tests 184 --swift-skipped 0 --python-tests 200\n")
+        self.assertEqual(self.run_gate()[0], [])
+
     def test_a_family_without_its_number_is_not_compared(self) -> None:
         build(self.root, readme="**999 tests, 9 skipped, 0 failures**\n")
         problems, _, _ = check(self.root, swift_tests=None, swift_skipped=None, python_tests=200)
