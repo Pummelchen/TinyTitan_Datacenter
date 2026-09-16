@@ -1566,3 +1566,41 @@ another way.
 and the suite reports **373 tests, OK, expected failures 2** where it reported 3 — the count moving is the
 evidence, and it is the same shape as `D68`'s unexpected success. The tiny install with the **full** policy is
 `IDENTICAL` between the two sides, and so is each single-stack policy that used to differ. `DC-113` is closed.
+
+## D72 — The class of `D71`, not just the instance: an index mapping now has a check
+
+`D71` fixed a formula. This round asked where else that *kind* of defect could hide, and found that the check
+which should have caught it did not exist anywhere.
+
+**The manifest is provably consistent, which locates the bug precisely.** For every tensor in the real install
+(693) and in the fixture (36), the recorded `nbytes` equals `prod(shape[:-1])` rows of `padded_columns`, or of
+`shape.last` when the manifest's zero means "not padded": **0 mismatches**, and 20,695 MB accounted for against
+a known install of about 20 GB. So the payload agrees with the layout, `Install.geometry()` already derives the
+same rows and already refuses a payload that disagrees, and `verify_install.py` already calls it for every
+tensor. The wrong number was in the **one derived quantity nothing checked** — `_rows_per_index`, which maps the
+checkpoint's index space onto the install's rows and had no invariant and no test.
+
+**So the fix is an invariant rather than another patch.** `InstallSource.check_index_mapping` asserts two things
+that must both hold for any tensor with a shape, and both are arithmetic over the manifest:
+
+* the install's rows are the checkpoint's indices times the rows one index takes — `shape[0] * factor ==
+  geometry().rows`;
+* the values one index contributes are the checkpoint's trailing dimensions — `factor * shape.last ==
+  prod(shape[1:])`.
+
+For `D71`'s tensor the first fails with 8 x 16 = 128 against 256 rows, which is the half-expert that cost two
+rounds to find. It is called **for every tensor when an `InstallSource` is opened**, so it fails at the point of
+use in every caller — the contract, the gate, a one-off script — rather than in a test that someone has to
+remember to write. A check is worth more than the attention that missed it.
+
+**And it is verified both ways, because a check that cannot fail is decoration.** The real install (693 tensors)
+and the tiny one (36) open cleanly, so the invariant is not a false positive on the model it was written for.
+A test pins the `D71` geometry — a `(2, 2, 4)` stack padded to 8, where an index is two install rows and the
+padding is dropped rather than read — and then **reinstates the formula that was wrong** and asserts that
+opening now refuses, with the message naming both numbers. The suite reports **374 tests, OK**.
+
+**The process note is the point of the round.** Two rounds went into bisecting what twenty lines of arithmetic
+catch at open. The generalisation is not "be more careful": it is that a quantity *derived* from a checked one
+needs its own check, because the check on the input says nothing about the derivation. `geometry()` was right
+and verified; `_rows_per_index` was wrong and unchecked; the fixture's whole value was that it made the
+difference visible at all.

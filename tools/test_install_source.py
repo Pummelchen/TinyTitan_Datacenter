@@ -137,6 +137,44 @@ class InstallSourceTests(unittest.TestCase):
             self.assertEqual(provider(0).shape, (2, 4))
             self.assertEqual(provider(0).reshape(-1).tolist(), [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
 
+    def test_the_index_mapping_is_checked_and_the_formula_it_replaced_is_refused(self) -> None:
+        """`D71`'s defect, as a test rather than as a bisection two rounds long.
+
+        A stack whose `shape.last` is not its `padded_columns` is where the index mapping and the layout can
+        disagree: the install holds `prod(shape[:-1])` rows of `shape.last` (padded), so one checkpoint index
+        is `prod(shape[1:-1])` of them. The formula this replaced divided the flattened trailing width by the
+        padded row, which is the same number whenever the last axis and the padding agree -- always true for
+        the real model, and never for the fixture.
+        """
+        fixture = InstallFixture(self.root)
+        fixture.add(
+            "layer.0.expert.stack_gate_up",
+            {"role": "expert.stack_gate_up", "dtype": "bf16", "quant": "bf16", "group": 0,
+             "padded_columns": 8, "shape": [2, 2, 4]},
+            bf16([float(v) for v in range(1, 33)]),
+        )
+        fixture.write()
+        # Two indices, two install rows each, four real values per row: the padding is dropped, not read.
+        with InstallSource(self.root) as source:
+            first = source.rows("layer.0.expert.stack_gate_up", 0, 1)
+            self.assertEqual(first.shape, (1, 2, 4))
+            self.assertEqual(first.reshape(-1).tolist(), [1.0, 2.0, 3.0, 4.0, 9.0, 10.0, 11.0, 12.0])
+            second = source.rows("layer.0.expert.stack_gate_up", 1, 2)
+            self.assertEqual(second.reshape(-1).tolist(), [17.0, 18.0, 19.0, 20.0, 25.0, 26.0, 27.0, 28.0])
+            source.check_index_mapping(source._tensor("layer.0.expert.stack_gate_up"))
+
+        # And the mapping that was wrong is refused rather than trusted: this is the check that fails at
+        # open, so no caller can read half an expert and only notice hours later.
+        original = InstallSource._rows_per_index
+        InstallSource._rows_per_index = lambda self, tensor: self._width(tensor) // max(tensor.padded_columns, 1)
+        try:
+            with self.assertRaises(InstallSourceError) as caught:
+                with InstallSource(self.root):
+                    pass
+            self.assertIn("index mapping and", str(caught.exception))
+        finally:
+            InstallSource._rows_per_index = original
+
     def test_a_three_dimensional_tensor_that_is_not_a_stack_is_read_whole(self) -> None:
         # The convolution is (8192, 1, 4) in the real model: three dimensions, and small. The refusal is
         # about the expert stacks, not about the rank, which the first version of this got wrong.

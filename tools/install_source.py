@@ -42,6 +42,11 @@ class InstallSource:
         self.install = Install(Path(root), uncached=uncached)
 
     def __enter__(self) -> "InstallSource":
+        # Validate the index mapping for the whole install on the way in. It is arithmetic over the manifest,
+        # so it costs nothing, and it turns `D71`'s class of defect into an immediate refusal rather than a
+        # wrong trace hours later.
+        for tensor in self.install.tensors.values():
+            self.check_index_mapping(tensor)
         return self
 
     def __exit__(self, *_: object) -> None:
@@ -93,6 +98,35 @@ class InstallSource:
         if len(shape) <= 2:
             return 1
         return max(int(np.prod(shape[1:-1])), 1)
+
+    def check_index_mapping(self, tensor: Tensor) -> None:
+        """Raise unless the checkpoint index space and the install's rows are the same size.
+
+        Two invariants, both arithmetic and both cheap, and neither was checked anywhere until `D71`:
+        the install's rows are the checkpoint's indices times the rows one index takes, and the values one
+        index contributes are the checkpoint's trailing dimensions. `_rows_per_index` returned half the truth
+        for a stack whose `shape.last` is not its `padded_columns` — 16 where the answer is 32 — and nothing
+        said so, because the only install anyone read was the real one, where the two agree by coincidence.
+        A check is worth more than the attention that missed it: this fails at open, in every caller.
+        """
+        shape = tuple(tensor.shape or ())
+        if len(shape) < 2:
+            return  # a one-dimensional tensor is one install row and has no trailing dimensions to map
+        rows, _padded = tensor.geometry()
+        indices = int(shape[0])
+        factor = self._rows_per_index(tensor)
+        if indices * factor != rows:
+            raise InstallSourceError(
+                f"{tensor.name}: shape {shape} has {indices} index(es) and one index takes {factor} install "
+                f"row(s), which is {indices * factor}, but the payload holds {rows}. The index mapping and "
+                f"the layout disagree."
+            )
+        content = int(np.prod(shape[1:]))
+        if factor * self._width(tensor) != content:
+            raise InstallSourceError(
+                f"{tensor.name}: one index takes {factor} row(s) of {self._width(tensor)} value(s), which is "
+                f"{factor * self._width(tensor)}, but its shape {shape} holds {content} value(s)."
+            )
 
     def _materialise(self, tensor: Tensor, start: int, end: int, row_block: int) -> np.ndarray:
         """Rows `[start, end)` in the checkpoint's index space, in fp32, flat; the callers shape it."""
