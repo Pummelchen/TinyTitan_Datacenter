@@ -12,34 +12,20 @@
 
 A distributed inference engine for large MoE language models on clusters of Mac minis and Mac Studios over LAN/SFP/QSFP and Thunderbolt.
 
-**Status: builds and passes its tests on the toolchain `Package.swift` requires;
-the engine is incomplete.** On **Swift 6.4 / Xcode 27** — what
-`swift-tools-version:6.4` demands — `swift build` reports no diagnostics and
-`swift test --no-parallel` runs **105 tests, 2 skipped, 0 failures**. The two skips
-are the Metal kernel tests, which need a GPU. The 163 Python tests behind the
-numeric contract are standard-library only and run in CI on every push.
+**Status: M0 is complete and its gate passed; M1's gate is open.** On the required
+toolchain — **Xcode 27 with Swift 6.4, and nothing else** — `swift build` is clean and
+`swift test --no-parallel` runs **105 tests, 2 skipped, 0 failures** (the skips are the
+Metal kernels, which need a GPU), with **174** standard-library Python tests run in CI.
+M0 matched the reference on `Qwen/Qwen3.5-2B`: 40,683,520 bytes of trace data identical
+to the contract, every discrete decision matching. M1 runs the real 35 B model but its
+**throughput and cache-hit figures are historical**, so its gate is not yet closed. There
+are **no releases and no tags**.
 
-**M0 is complete and its gate passed**: `Qwen/Qwen3.5-2B` — 2B dense, bf16, on one Mac
-mini M2 with 8 GB — across three frozen prompts produced **40,683,520 bytes of trace
-data identical** to the Python contract, with every discrete decision matching the
-reference implementation. `docs/m0-gate.md` carries the run, the pinned revision and the
-one half that was renegotiated (bit-matching torch is impossible, so the oracle half is
-asserted as exact decisions plus recorded per-tensor closeness).
-
-What is **not** finished is M1 (Qwen3.6-35B-A3B, 4-bit experts, streamed from SSD): it has
-run on the real model — all five frozen prompts exit 0, and two re-runs are
-byte-identical — but **M1's gate is open**, its throughput and cache figures predate later
-changes, and the contract comparison is verified on one prompt of five. Treat each
-capability below as intent plus whatever `docs/` measures. There are **no releases and no
-tags**.
-
-**The toolchain is a requirement, not a preference: Xcode 27 with Swift 6.4, and
-nothing else.** There are no version conditionals in the sources and no lowered manifest
-floor to fall back on, and `tools/check_toolchain.py` refuses any other pairing — the CI
-job **fails** rather than warns, so a red Swift job means the runner image is below the
-standard, never that the code is broken. GitHub's `macos-26` image carries Xcode 26.x, so
-that job cannot pass until an image ships Xcode 27: it is the one gate that runs only
-where the requirement is met, and it says so out loud.
+News, measurements and the live work list are in the **[wiki](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki)** —
+start with [News](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/News) for what
+has closed and what it cost, and the
+[Project Tracker](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Project-Tracker)
+for what is still open.
 
 ## What it does
 
@@ -68,57 +54,45 @@ token simultaneously and all-reduce the MoE output.
 | Aggregate expert cache | 1x | N x |
 | Sync per token | N-1 hops | 1 all-reduce per MoE layer (~4 KB) |
 
-That's the whole thesis: 4–10x single-user tok/s from topology and I/O layout, not
-from more compute.
+That's the thesis: speedup from topology and I/O layout, not from more compute. It is a
+**read fraction**, not a constant — the dense backbone, the router and the all-reduce are
+replicated work on every node, so the gain approaches N only while expert reads dominate.
 
 ## Approach
 
-**Faithful ports only.** No architectural changes — no fewer layers, no weight
-sharing, no substituted attention. All speed comes from sharding, expert repacking,
-and quantization. This keeps a reference implementation to diff against, which is
-what makes the project debuggable.
-
-**One IR, thin importers.** A declarative model IR dispatches on tensor *role*, not
-tensor name. Importers are pure name-to-role mapping (~500–800 lines per model
-family). Transform passes — fusing, repacking, expert reordering, quantization,
-sharding — are written once and architecture-agnostic. Quantization and shard policy
-are data files shared across models.
-
-**Transcode, don't requantize.** DeepSeek ships FP4 experts / FP8 dense natively;
-Qwen ships an FP8 variant. Direct transcoding avoids stacking our error on theirs.
-
-**Bit-reproducibility as a hard invariant.** N-node output must be bit-identical to
-1-node output. fp32 accumulation, fixed reduction order. Without this you can't tell
-a conversion bug from a scheduling artifact — and on these models you will need to.
-
-**Discrete decisions checked separately from numerics.** Router top-k index sets and
-sparse-attention block selections must match the reference *exactly*. Small numeric
-drift flips these, after which output diverges completely while every per-tensor MSE
-check still looks green.
+- **Faithful ports only.** No architectural changes — no fewer layers, no weight sharing,
+  no substituted attention. All speed comes from sharding, expert repacking and
+  quantization. A reference implementation to diff against is what makes this debuggable.
+- **One IR, thin importers.** A declarative model IR dispatches on tensor *role*, not
+  tensor name; importers are pure name-to-role mapping (144–235 lines per family here).
+  Transform passes — fusing, repacking, reordering, quantizing, sharding — are written once,
+  architecture-agnostic. Quantization and shard policy are data files shared across models.
+- **Transcode, don't requantize.** DeepSeek ships FP4 experts / FP8 dense natively and Qwen
+  ships an FP8 variant; direct transcoding avoids stacking our error on theirs. (Not yet
+  applicable: M1's checkpoint is bf16, so no vendor error is being added on top of today.)
+- **Bit-reproducibility is a hard invariant.** N-node output must be bit-identical to 1-node
+  output — fp32 accumulation, fixed reduction order. Without that you can't tell a conversion
+  bug from a scheduling artifact, and on these models you will need to.
+- **Discrete decisions are checked separately from numerics.** Router top-k index sets must
+  match the reference *exactly*. Small numeric drift flips them, after which output diverges
+  completely while every per-tensor MSE check still looks green.
 
 ## Target models
 
 In order: **Qwen3.6-35B-A3B** (the validation model), **DeepSeek-V4-Flash** and
-**Qwen3.8-Flash-Next**. M0 uses the dense Qwen3.5-2B. The verified configuration of each —
+**Qwen3.8-Flash-Next**. M0 used the dense Qwen3.5-2B. The verified configuration of each —
 with the checkpoint revision every figure came from — is on the wiki's
 [Target models](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Target-Models) page.
 
-Both frontier families are converging on the same shape — fine-grained MoE, shared
-expert, compressed or sparse hybrid attention, constant-size recurrent state, MTP
-speculative decoding, and sparse n-gram lookup tables. That shape happens to suit
-SSD streaming well, and an IR built around it should absorb the next generation with
-importer changes only.
-
 ## Milestones
 
-- **M0** — Single node, small dense model, bf16. Gate: bit-matches reference golden
-  traces. Ships the trace-capture and diff harness.
-- **M1** — Qwen3.6-35B-A3B, single node, 4-bit, SSD-streamed. Gate: correct output,
-  recorded tok/s baseline.
-- **M2** — 2 nodes, expert-parallel. **Gate: bit-identical to M1.** This is the real
-  gate for the project.
+- **M0** — single node, small dense model, bf16. Gate: bit-matches reference golden traces.
+  **Done**; ships the trace-capture and diff harness.
+- **M1** — Qwen3.6-35B-A3B, single node, 4-bit, SSD-streamed. Gate: correct output and a
+  recorded tok/s baseline. **Gate open** — the figures on record are historical.
+- **M2** — 2 nodes, expert-parallel. **Gate: bit-identical to M1.** The project's real gate.
 - **M3** — 4 nodes. Gate: ≥3x the M1 tok/s.
-- **M4** — DeepSeek-V4.1-Flash. Gate: matches reference at 128K context.
+- **M4** — DeepSeek-V4.1-Flash. Gate: matches the reference at 128K context.
 - **M5** — Qwen3.8-Flash-Next. Gate: same.
 
 ## Non-goals
@@ -129,24 +103,23 @@ attention family costs real kernel work, and that's expected.
 
 ## Stack
 
-Swift + Metal. Raw sockets over Thunderbolt bridge for the all-reduce. macOS only.
-
+Swift + Metal. Raw sockets over the Thunderbolt bridge for the all-reduce. macOS only.
+`swift-tools-version:6.4`, Swift 6 language mode, Python 3.14.
 
 ## Documentation
 
-The design, the plan and the live task list are kept in the
-[wiki](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki):
-
 | Page | What it holds |
 |---|---|
+| [News](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/News) | Everything that has closed, dated, with the measurement it closed on |
 | [Roadmap](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Roadmap) | The phases M0–M5 with the gate each one has to pass |
-| [Project Tracker](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Project-Tracker) | Every task (`DC-nnn`), its status, the risks and the open questions |
+| [Project Tracker](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Project-Tracker) | Only what is still open: tasks, risks, open questions |
 | [Architecture](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Architecture) | Expert parallelism, the invariants, the IR and the transport |
+| [Target models](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Target-Models) | The verified configuration of the three models |
 | [Testbed](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Testbed) | The hardware and toolchain the work assumes |
 | [Glossary](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Glossary) | The terms used on those pages |
 
-A commit that changes the plan or a decision updates the README, the affected wiki page
-and the tracker in the same push.
+`docs/` in this repository holds the contracts and the decision records; every milestone
+gate is documented there with the command that reproduces it.
 
 ## License
 
