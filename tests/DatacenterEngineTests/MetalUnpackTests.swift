@@ -32,21 +32,16 @@ final class MetalUnpackTests: XCTestCase {
     }
 
     func testTheGpuUnpackIsBitIdenticalToTheScalarOne() throws {
-        // **Skipped, and the reason is not the device.** This grid found a real GPU/CPU
-        // divergence — `DC-087` — and I could not narrow it to a rule before the round ended:
-        // it is not merely a partly filled final group, since full groups fail too. Rather than
-        // guess at a fix, the kernel is not called by anything, this test states the known defect
-        // instead of hiding it, and the task names the grid it must pass. The two tests below
-        // still run, and the throughput report is what says whether the kernel is worth the work.
+        // **The grid `DC-087` named.** This test used to exclude every shape whose final group is
+        // partly filled (`columns % group != 0`), because the GPU and the CPU really did diverge on
+        // them and the kernel was therefore called by nothing. Both halves of that have changed: the
+        // reproducer below passes, so the restriction is now a claim to check rather than a defect to
+        // step around, and the grid includes the awkward widths — a prime, an odd one and one that is
+        // one past a group boundary — instead of avoiding them.
         try XCTSkipUnless(MetalUnpack.isAvailable, "no Metal device (CI runners have none)")
         var compared = 0
-        for columns in [1, 4, 16, 64, 128] {
+        for columns in [1, 4, 16, 17, 33, 64, 65, 128, 129] {
             for group in [1, 4, 8, 64] {
-                // **Only full groups, for now.** The GPU and the CPU diverge whenever a row's
-                // final group is partly filled (`columns % group != 0`), which is `DC-087`; the
-                // skipped test below reproduces it. Verified for what is verified, not for what
-                // is hoped.
-                if columns % group != 0 { continue }
                 for rows in [1, 3] {
                     var padded = columns + (group - columns % group) % group
                     if padded % 2 == 1 { padded += group }
@@ -65,19 +60,45 @@ final class MetalUnpackTests: XCTestCase {
         XCTAssertGreaterThan(compared, 8, "the grid must actually cover the shapes")
     }
 
-    /// **A known divergence, skipped rather than hidden.** When the last group of a row is partly
-    /// filled — `columns = 65`, `group = 4`, so the final group holds one real value of four — the
-    /// GPU and the CPU disagree on exactly that last column of every row, and only there. Both
-    /// implementations compute the same expression with the same inputs as far as reading the code
-    /// shows, so the next step is to dump the shader's view of the group index and the scale for
-    /// that column rather than to guess. Until it is fixed the GPU path is **not used** by the
-    /// engine, which is what `D10` says a kernel has to earn first.
-    func testKnownDivergenceOnAPartlyFilledFinalGroup() throws {
+    /// **`DC-087`'s reproducer, kept as a named case now that it passes.** When the last group of a row
+    /// is partly filled — `columns = 65`, `group = 4`, so the final group holds one real value of four —
+    /// the GPU and the CPU used to disagree on exactly that last column of every row. The name is kept
+    /// because this is the shape the defect was found on, and a regression is most likely to arrive
+    /// here first; the grid above now covers the same class of widths rather than stepping around it.
+    func testPartlyFilledFinalGroupStillMatchesAfterDC087() throws {
         let entry = try entry(rows: 3, columns: 65, padded: 68, group: 4)
         let body = payload(rows: 3, padded: 68, group: 4)
         let scalar = try InstallFile.dequantizeInt4Scalar(body, entry: entry)
         let gpu = try MetalUnpack.unpack(payload: body, entry: entry)
         XCTAssertEqual(gpu.map(\.bitPattern), scalar.map(\.bitPattern))
+    }
+
+    /// **The shape the engine actually hands the decoder.** `rows(named:range:)` does not decode a whole
+    /// tensor: it reads three byte ranges for the requested leading-axis entries and concatenates them, so
+    /// the decoder sees a payload describing *R* rows and is told `rowCount: R`. Every other test here
+    /// passes a whole-tensor payload, so this is the case the wiring depends on and nothing covered.
+    func testPartialRowPayloadsDecodeIdentically() throws {
+        try XCTSkipUnless(MetalUnpack.isAvailable, "no Metal device")
+        let rows = 9, columns = 65, group = 4, padded = 68
+        let entry = try entry(rows: rows, columns: columns, padded: padded, group: group)
+        let whole = payload(rows: rows, padded: padded, group: group)
+        let groupsPerRow = padded / group
+        let codesPerRow = padded / 2
+        let codesBytes = rows * codesPerRow
+        let scalesBytes = rows * groupsPerRow * 4
+
+        for (first, count) in [(0, 1), (4, 1), (0, 9), (7, 2)] {
+            var partial = Data()
+            partial.append(whole[(first * codesPerRow)..<((first + count) * codesPerRow)])
+            partial.append(whole[(codesBytes + first * groupsPerRow * 4)..<(codesBytes + (first + count) * groupsPerRow * 4)])
+            partial.append(whole[(codesBytes + scalesBytes + first * groupsPerRow)..<(codesBytes + scalesBytes + (first + count) * groupsPerRow)])
+            let scalar = try InstallFile.dequantizeInt4(partial, entry: entry, rowCount: count)
+            let gpu = try MetalUnpack.unpack(payload: partial, entry: entry, rowCount: count)
+            XCTAssertEqual(
+                gpu.map(\.bitPattern), scalar.map(\.bitPattern),
+                "rows \(first)..<\(first + count) of \(rows): the GPU moved a bit"
+            )
+        }
     }
 
     /// The fixture's real payloads, not synthetic ones: same bytes the engine unpacks.

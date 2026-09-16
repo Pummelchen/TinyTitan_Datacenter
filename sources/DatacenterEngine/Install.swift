@@ -487,7 +487,19 @@ public struct InstallFile: WeightSource {
         // the payload before the decoder sees it, and a copy of the payload is part of what the
         // caller experiences as "fetching an expert".
         let unpackStarted = DispatchTime.now().uptimeNanoseconds
-        let decoded = try Self.dequantizeInt4(codes + scales + zeros, entry: entry, rowCount: payloadRows)
+        // The decoder is *chosen*, not replaced. The GPU path has existed since `D10` and has been called
+        // by nothing but its own tests, because it used to disagree with the scalar one on a row whose
+        // final group is partly filled (`DC-087`). That reproducer passes on the widened grid now, so this
+        // is the last step `DC-033` was waiting for -- and it stays behind a flag because every recorded
+        // digest was produced by the scalar path, so a changed default would move all of them at once.
+        // `SHARD_GPU_UNPACK=1` selects it; the real-model trace digest is what verifies it.
+        let payload = codes + scales + zeros
+        let decoded: [Float]
+        if Self.gpuUnpackEnabled, MetalUnpack.isAvailable {
+            decoded = try MetalUnpack.unpack(payload: payload, entry: entry, rowCount: payloadRows)
+        } else {
+            decoded = try Self.dequantizeInt4(payload, entry: entry, rowCount: payloadRows)
+        }
         state.unpackSeconds += Double(DispatchTime.now().uptimeNanoseconds &- unpackStarted) / 1e9
         return decoded
     }
@@ -592,6 +604,11 @@ public struct InstallFile: WeightSource {
     ///
     /// The win comes from the other direction: the scale and the zero point are per *group* (sixty
     /// four values), and the scalar loop reloaded both for every element.
+    /// Whether the int4 unpack runs on the GPU. Off by default and it has to be: every digest recorded in
+    /// `docs/` came from the scalar path, so this is a switch a *run* makes, not something the build
+    /// decides. `SHARD_GPU_UNPACK=1` turns it on.
+    public static let gpuUnpackEnabled = ProcessInfo.processInfo.environment["SHARD_GPU_UNPACK"] == "1"
+
     static func dequantizeInt4(_ data: Data, entry: Entry, rowCount: Int? = nil) throws -> [Float] {
         let layout = try int4Layout(entry: entry, rowCount: rowCount, payloadBytes: data.count)
         var values = [Float](repeating: 0, count: layout.rows * layout.columns)

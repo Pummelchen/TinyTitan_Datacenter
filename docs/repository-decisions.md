@@ -947,3 +947,41 @@ so every digest recorded in `docs/` and on the wiki still stands. The cost was 1
 `HEAVY_PATTERNS` so a future run is guarded like the other multi-gigabyte reads.
 
 `I6` therefore moves from `partly` to **`verified`**, and the audit says so with the evidence.
+
+## D58 — `DC-087` is fixed, the GPU unpack is wired in behind a flag, and it is not yet faster
+
+`DC-033` had one clause left — "**Metal remains**" — and the reason it had not landed was a documented
+defect. `MetalUnpack` has existed since `D10` and was called by **nothing but its own tests**, because it
+disagreed with the scalar path on a row whose final group is partly filled (`DC-087`). Its test file said so
+rather than hiding it, and the grid it had to pass was written down.
+
+**The defect is gone, and the acceptance test is a grid rather than a case.** `DC-087`'s reproducer passes,
+and the main grid — which used to `continue` past every shape with `columns % group != 0` — now covers
+**17, 33, 65 and 129** as well as the round numbers. Every shape is bit-identical on synthetic payloads, and
+`testTheGpuUnpackMatchesTheWholeInstallTensor` does the same on a **real fixture install tensor**. One case
+was missing and is now there: every other test hands the decoder a whole-tensor payload, while the engine's
+row path assembles **three byte ranges for the requested entries** and tells the decoder `rowCount: R`. That
+is the shape the wiring actually depends on, and `testPartialRowPayloadsDecodeIdentically` covers it for
+partial ranges at the start, in the middle and across a boundary.
+
+**The wiring is a switch, not a replacement.** `SHARD_GPU_UNPACK=1` selects the GPU decoder for int4 rows and
+the default is unchanged, because every digest recorded in `docs/` came from the scalar path and a changed
+default would move all of them at once. The check is the strongest one available: the real 35 B trace is
+**`b0d382dbabf36df0…` with the flag off and on**, and `trace_diff` between the two runs reports **IDENTICAL —
+83 tensors, 0 differing elements, 40 discrete decisions**. The GPU path is exercised by everything int4 in
+the model — every routed expert fetch, plus `linear.in_qkv`, `in_z`, `out` and `attn.q/k/v/o`.
+
+**And it is slower, which is the useful part.** `18.2 s` scalar against `38.2 s` on the GPU for the same
+five-token trace. The kernel is not the cost: `rows(named:range:)` concatenates `codes + scales + zeros`
+into one `Data` and `unpack` then `subdata`s it again, so a one-expert fetch copies its payload twice and
+allocates a fresh `MTLBuffer` per call — at 2,218 fetches that dominates, and the comment in the row path
+already says the concatenation is inside the unpack timing "on purpose". So the path stays opt-in and the
+remaining work is the plumbing, not the shader: fetch into a reusable buffer, or dispatch over a payload
+already in one. That is `DC-107`'s next target with its measurement attached.
+
+**A second lesson, and it cost the disk.** I had killed the disk watchdogs while tidying up in the previous
+round, so this round's GPU run — which uses more memory and grew swap to 1.8 GB — drove free disk to **0 GB**
+with nothing watching. It recovered on its own when the run ended, `du` showed nothing oversized, and the
+sample was almost certainly APFS purgeable space, which is exactly why the watchdog acts on three readings
+and not one. But a guard that is tidy to remove is the guard that was needed: the watchdog is running again,
+and the rule is that it is started with the heavy job and stopped by the marker, not by hand.
