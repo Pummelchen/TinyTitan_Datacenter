@@ -34,6 +34,9 @@ public protocol WeightSource {
 public struct SourceTiming: Sendable {
     public var counted = false
     public var bytes = 0
+    /// How much of `bytes` was spent verifying rather than using. Both numbers, because a total that
+    /// folds verification in cannot answer "how much did the model actually need?".
+    public var verifiedBytes = 0
     public var readSeconds = 0.0
     public var digestSeconds = 0.0
     public var unpackSeconds = 0.0
@@ -120,6 +123,10 @@ public struct InstallFile: WeightSource {
         /// expert of a stacked tensor does not cost the whole stack, which is the difference
         /// between streaming and not streaming.
         var bytesRead = 0
+        /// Of those bytes, how many were read to verify a digest rather than to be used. Verification
+        /// reads were **not counted at all** until this existed, which is how a "measured" 3.06 GB
+        /// understated a forward's traffic by about half.
+        var bytesVerified = 0
         /// Where the time went. `mix.read` was 65% of a real forward and the disk is measured at
         /// ~1 GB/s, so the caller needs to know whether those seconds are the device or the
         /// unpacking — a distinction arithmetic cannot settle.
@@ -139,6 +146,15 @@ public struct InstallFile: WeightSource {
     /// tested instead of deleting it.
     public let verifySlabs: Bool
 
+    /// Whether a tensor's whole payload is hashed **the first time it is read**. Off by default, for
+    /// the same reason as `verifySlabs` and with a measurement behind it: the embedding is 1.02 GB and
+    /// reading five of its rows was verifying all of it, which is 1.64 s in a 19.8 s forward, and the
+    /// dense tensors together are ~3 GB of first-touch verification. Integrity is established out of
+    /// band — `install.json` carries a digest per tensor, and `tools/quantize.py verify` checks the
+    /// whole install uncached at a 34 MB peak. `verifyOnFirstUse: true` or `verify: true` restores it,
+    /// and both paths are tested.
+    public let verifyOnFirstUse: Bool
+
     /// Payload bytes read through this instance.
     public var bytesRead: Int { state.bytesRead }
 
@@ -151,6 +167,7 @@ public struct InstallFile: WeightSource {
         var timing = SourceTiming()
         timing.counted = true
         timing.bytes = state.bytesRead
+        timing.verifiedBytes = state.bytesVerified
         timing.readSeconds = state.readSeconds
         timing.digestSeconds = state.digestSeconds
         timing.unpackSeconds = state.unpackSeconds
@@ -166,8 +183,11 @@ public struct InstallFile: WeightSource {
     /// is not weakened by moving it — each payload is checked the first time it is read, so a
     /// tampered tensor still cannot produce plausible numbers (I6) — and `verifyAll()` restores
     /// the eager check for a gate that wants to make it explicit.
-    public init(url: URL, verify: Bool = false, verifySlabs: Bool = false) throws {
+    public init(
+        url: URL, verify: Bool = false, verifySlabs: Bool = false, verifyOnFirstUse: Bool = false
+    ) throws {
         self.verifySlabs = verifySlabs
+        self.verifyOnFirstUse = verifyOnFirstUse
         let manifestData = try Data(contentsOf: url.appendingPathComponent("install.json"))
         let manifest = try JSONDecoder().decode(Manifest.self, from: manifestData)
         self.manifest = manifest
@@ -187,13 +207,32 @@ public struct InstallFile: WeightSource {
         }
     }
 
+    /// Read an entry, hash it, and count both — then hand the buffer back so a caller that needs the
+    /// payload does not read it a second time.
+    ///
+    /// Reading it twice was the old behaviour: `digestMatches` read the whole entry to hash it and
+    /// `payload` read it again to return it, which doubled the dense traffic of every forward. The
+    /// verification read is also **counted** now; it was invisible to `bytesRead`, so the metric
+    /// reported the use-traffic and called it the total.
+    @discardableResult
+    private func verifyRead(_ entry: Entry) throws -> Data {
+        let readStarted = DispatchTime.now().uptimeNanoseconds
+        let payload = try blob.readData(offset: entry.offset, byteCount: entry.nbytes)
+        state.readSeconds += Double(DispatchTime.now().uptimeNanoseconds &- readStarted) / 1e9
+        state.bytesRead += payload.count
+        state.bytesVerified += payload.count
+        let digestStarted = DispatchTime.now().uptimeNanoseconds
+        let digest = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        state.digestSeconds += Double(DispatchTime.now().uptimeNanoseconds &- digestStarted) / 1e9
+        guard digest == entry.sha256 else { throw Error.digestMismatch(entry.name) }
+        state.names.insert(entry.name)
+        return payload
+    }
+
     private func digestMatches(_ entry: Entry) throws -> Bool {
         if state.names.contains(entry.name) { return true }
         guard entry.offset + entry.nbytes <= blob.byteCount else { return false }
-        let payload = try blob.readData(offset: entry.offset, byteCount: entry.nbytes)
-        let digest = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
-        guard digest == entry.sha256 else { return false }
-        state.names.insert(entry.name)
+        _ = try verifyRead(entry)
         return true
     }
 
@@ -220,12 +259,8 @@ public struct InstallFile: WeightSource {
     }
 
     private func payload(_ entry: Entry) throws -> Data {
-        guard try digestMatches(entry) else { throw Error.digestMismatch(entry.name) }
-        let started = DispatchTime.now().uptimeNanoseconds
-        let data = try blob.readData(offset: entry.offset, byteCount: entry.nbytes)
-        state.readSeconds += Double(DispatchTime.now().uptimeNanoseconds &- started) / 1e9
-        state.bytesRead += data.count
-        return data
+        if verifyOnFirstUse { return try verifyRead(entry) }
+        return try readCounted(offset: entry.offset, byteCount: entry.nbytes)
     }
 
     public func tensor(named name: String) throws -> [Float] {
@@ -250,7 +285,9 @@ public struct InstallFile: WeightSource {
         if entry.dtype != "int4" {
             // Sliced from the stored bytes: one row of the embedding should not cost a
             // gigabyte of decoding.
-            guard try digestMatches(entry) else { throw Error.digestMismatch(entry.name) }
+            if verifyOnFirstUse {
+                guard try digestMatches(entry) else { throw Error.digestMismatch(entry.name) }
+            }
             let stride = Self.elementSize(entry.dtype) * width
             let start = entry.offset + range.lowerBound * stride
             let slice = try blob.readData(offset: start, byteCount: range.count * stride)

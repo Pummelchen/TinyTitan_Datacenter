@@ -16,7 +16,7 @@ A distributed inference engine for large MoE language models on a cluster of Mac
 minis and Mac Studios, over LAN/SFP/QSFP and Thunderbolt. The Swift engine under
 `sources/` **builds and passes its tests on Swift 6.4 / Xcode 27**, the toolchain
 `swift-tools-version:6.4` requires: `swift build` clean, `swift test --no-parallel`
-at **109 tests, 2 skipped, 0 failures** (the skips are the Metal kernel tests, which
+at **110 tests, 2 skipped, 0 failures** (the skips are the Metal kernel tests, which
 need a GPU). It is nevertheless **incomplete**: **M0 is done and its gate passed** — `Qwen/Qwen3.5-2B`,
 three frozen prompts, **40,683,520 bytes identical** to the contract and every discrete
 decision matching the reference (`docs/m0-gate.md`) — M1 has run on the real 35B model
@@ -216,7 +216,7 @@ any failure.
   evidenced.** The first revision said there was no source code; the second said the
   engine runs; the third said it is "untested and does not run". The first two were
   wrong, and so is the third as written — on the toolchain the manifest requires, the
-  build is clean and **109 Swift tests pass**, while on the `macos-26` CI image (Xcode
+  build is clean and **110 Swift tests pass**, while on the `macos-26` CI image (Xcode
   26.x, below the 6.4 floor) the manifest does not even parse. **Any status claim must
   name the toolchain**, because that is the whole difference between "does not build"
   and "builds and passes". Point at a command and its output, never at an adjective.

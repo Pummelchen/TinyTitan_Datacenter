@@ -491,6 +491,47 @@ bytes, bounded by the total) plus ~1.04 GB of dense weights, the head included.
 still a separate measurement, because generation re-runs the sequence without a KV cache and is not
 this number.
 
+## The instrument lied again: verification reads were not counted, and cost ~3 GB a forward
+
+`D15` removed per-read slab hashing and took the forward from 39.9 s to 19.8 s. Reading the same code
+path for `DC-107` found the same shape in the whole-tensor path:
+
+- **`digestMatches` verified whatever the `verify` flag said.** Reading **five rows of the 1.02 GB
+  embedding read all of it** to hash it. That is the `embed` phase: **1.64 s for kilobytes of data**.
+- **Those reads were never counted** — `digestMatches` called `blob.readData` directly — so the
+  "measured 3.06 GB" from the round-2 section above was **use-traffic reported as a total**. The third
+  instrument artefact in this project, after an `elementsRead * 2` estimate and a cache-assisted
+  benchmark.
+- **`payload` read each entry twice**: once to hash it, once to return it.
+
+`D16` fixes all three: verification and use share one buffer, `verifyOnFirstUse` is explicit and off by
+default, and `SourceTiming.verifiedBytes` reports the verification share so a total can be read
+correctly.
+
+| phase | round 2 | now | change |
+| --- | --- | --- | --- |
+| `embed` | 1.64 s | **0.00 s** | −100% |
+| `head` | 3.20 s | 1.64 s | −49% |
+| `load` | 2.95 s | 1.74 s | −41% |
+| `mix.read` | 6.28 s | 5.99 s | −5% |
+| **total (profiled)** | **19.80 s** | **14.97 s** | **−24%** |
+| wall clock | 19.9 s | **15.5 s** | |
+| trace digest | `b0d382dbabf36df0…` | **identical** | |
+
+**Two rounds together: 39.9 s → 15.0 s, a 2.67× speedup, with the same digest** — 0.127 tok/s → **0.321
+tok/s** on this prefill. Both changes are performance changes with no numerical effect, which is what
+I1 demands of one.
+
+**And 3.06 GB is now the true install traffic of the forward**, rather than use-traffic dressed as a
+total: 2.02 GB of expert payloads (1,109 fetches at 1,818,624 bytes) plus ~1.04 GB of dense weights,
+the head included. Nothing runs uncounted, so the earlier `Q9` arithmetic stands on a number that now
+means what it says.
+
+**What is left in the 14.97 s**, none of it I/O: the expert fetch is 5.99 s — a genuine 2.99 s of
+reads at ~1 GB/s and 3.45 s of unpacking at ~1,012 M values/s, both at their measured limits — and
+`attn.core` is **3.86 s**, the largest single compute phase, followed by `load` 1.74 s, `head` 1.64 s
+and the mixture matmuls 1.50 s. The attention core is the next target (`DC-107`).
+
 ## Running the sweep
 
 The sweep is a script, not a sequence typed from memory, because it is a heavy run on a node that has

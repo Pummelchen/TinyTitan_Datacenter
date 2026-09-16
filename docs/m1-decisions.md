@@ -652,3 +652,39 @@ found a flaw in the instrument itself: the clock had started outside the branch,
 Verified on the real 35 B model: the same prompt, **39.9 s → 19.9 s**, `mix.read` 25.53 s → 6.28 s,
 digest seconds 0, and the trace digest **unchanged** (`b0d382dbabf36df0…`) — the option is a
 performance change with no numerical effect, which is what I1 demands of one.
+
+## D16 — Verification reads are counted, shared with the read they verify, and opt-in
+
+`D15` removed per-read slab hashing. Reading the code around it found the same shape in the whole-tensor
+path, twice over, and both halves were invisible:
+
+1. **`digestMatches` verified regardless of the `verify` flag.** `verify: false` meant "do not check
+   everything at open", not "do not check" — each tensor's whole payload was hashed the first time it
+   was touched. Reading **five rows of the 1.02 GB embedding read all 1.02 GB to hash it**: 1.64 s of
+   a 19.8 s forward, on a phase that should be kilobytes. The dense tensors together are ~3 GB of
+   first-touch verification.
+2. **Those reads were not counted.** `digestMatches` called `blob.readData` directly, never
+   `readCounted`, so `install_bytes_read_this_forward` reported the *use* traffic and the documents
+   called it the total. **That is the third time in this project that a headline figure was an
+   artefact of its instrument** — an `elementsRead * 2` estimate, a cache-assisted read benchmark, and
+   now an uncounted read.
+
+And a third thing was not a lie but a waste: `payload` read the entry twice, once inside
+`digestMatches` to hash it and once to return it.
+
+The decisions:
+
+- **Verification and use share one buffer.** `verifyRead` reads, hashes, counts and *returns* the
+  payload, so a caller that needs it never reads it again. A test asserts the total read is identical
+  with and without verification — the guarantee must not cost a second read.
+- **`verifyOnFirstUse` is a parameter, false by default**, exactly as `verifySlabs` is and for the same
+  reason: integrity is established out of band (`install.json` digests per tensor and per slab,
+  `tools/quantize.py verify` for the whole install). `verifyOnFirstUse: true` and `verify: true` both
+  restore it, and both paths are tested — the tamper-on-use test now asks for verification explicitly.
+- **`SourceTiming.verifiedBytes`** reports how much of the traffic was verification rather than use.
+  A single total cannot answer "how much did the model actually need?", and that question is exactly
+  the one this defect hid.
+
+Verified on the real 35 B model: **19.8 s → 15.0 s**, `embed` 1.64 s → 0.00 s, `head` 3.20 s → 1.64 s,
+`load` 2.95 s → 1.74 s, digest seconds 0, trace digest **unchanged**. Counted traffic is 3.06 GB and
+is now the whole truth, because the only reads that were ever uncounted have been removed.

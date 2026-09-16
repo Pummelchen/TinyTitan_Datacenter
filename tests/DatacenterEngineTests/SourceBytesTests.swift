@@ -100,4 +100,47 @@ final class SourceBytesTests: XCTestCase {
             "asking for verification must verify, and the cost must be visible rather than asserted"
         )
     }
+
+    /// A tensor's name from the fixture's own manifest, by role.
+    private func tensorName(role: String, in install: URL) throws -> String {
+        let manifest = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: install.appendingPathComponent("install.json"))
+        ) as? [String: Any]
+        let tensors = try XCTUnwrap(manifest?["tensors"] as? [[String: Any]])
+        let entry = try XCTUnwrap(
+            tensors.first { $0["role"] as? String == role }, "the fixture must have a \(role) tensor"
+        )
+        return try XCTUnwrap(entry["name"] as? String)
+    }
+
+    /// First-use verification is **opt-in**, and it shares its buffer with the read that follows.
+    ///
+    /// Two defects were fixed together here, and both were invisible:
+    ///
+    /// 1. `digestMatches` hashed a tensor's whole payload the first time it was touched **regardless
+    ///    of the `verify` flag**, so reading five rows of the 1.02 GB embedding read all of it — 1.64 s
+    ///    of a 19.8 s forward, and ~3 GB across the dense tensors.
+    /// 2. Those reads were **not counted**. `digestMatches` called `blob.readData` directly, so
+    ///    `install_bytes_read_this_forward` reported use-traffic and the documents called it the
+    ///    total. It was the third time a figure in this project was an artefact of its instrument.
+    func testFirstUseVerificationIsOptInAndSharesTheRead() throws {
+        let install = try install()
+        let name = try tensorName(role: "token.embedding", in: install)
+
+        let trusted = try InstallFile(url: install)
+        _ = try trusted.tensor(named: name)
+        XCTAssertEqual(
+            trusted.sourceTiming.verifiedBytes, 0,
+            "the default reader must not read a tensor again to hash it: that cost 1.64 s on one phase"
+        )
+        XCTAssertGreaterThan(trusted.bytesReadFromSource, 0, "it still read the payload")
+
+        let verifying = try InstallFile(url: install, verifyOnFirstUse: true)
+        _ = try verifying.tensor(named: name)
+        XCTAssertGreaterThan(verifying.sourceTiming.verifiedBytes, 0, "asking for verification must verify")
+        XCTAssertEqual(
+            verifying.bytesReadFromSource, trusted.bytesReadFromSource,
+            "verification must hash the buffer it hands back, not read the entry a second time"
+        )
+    }
 }

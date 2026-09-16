@@ -116,8 +116,10 @@ final class InstallVerificationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
 
         // Opening does not read the payload, which is the change that keeps a 20 GB install from
-        // being a 20 GB read on every start.
-        let install = try InstallFile(url: url)
+        // being a 20 GB read on every start. Verification on first use is asked for explicitly now
+        // (`D16`): it reads ~3 GB of dense tensors per forward on the real model, so the default is
+        // to trust the install and establish integrity out of band.
+        let install = try InstallFile(url: url, verifyOnFirstUse: true)
 
         // The tensor that was not touched still reads.
         _ = try install.tensor(named: second)
