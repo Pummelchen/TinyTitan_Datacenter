@@ -344,6 +344,15 @@ any failure.
   name the toolchain**, because that is the whole difference between "does not build"
   and "builds and passes". Point at a command and its output, never at an adjective.
 
+- **A pipe hides the exit status of the thing you are testing, and it has now happened three times in one
+  session.** `swift test | tail` on a failing suite; `datacenter-generate … | tail -3` on a run whose *token
+  line* was the thing being verified; and `run_m3_gate.py … | tail` on a gate that had **crashed** — each
+  printed a reassuring tail, and each reported the exit status of `tail`, which is 0. The first is recorded
+  as a toolchain trap, the second cost a re-run, and the third was caught only because a report file was
+  missing. The lesson is not "be careful": it is that a pipe must never stand between a command and the
+  question of whether it succeeded. **Write the output to a file, then read `$?`** — or use `PIPESTATUS` —
+  and check the exit status of the command itself.
+
 ## Releasing
 
 **Read [`RELEASE.md`](RELEASE.md) before cutting a release.** It is this repository's
