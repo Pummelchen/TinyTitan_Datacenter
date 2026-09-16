@@ -149,3 +149,38 @@ timeout, retry, a node that stops answering, and the rule that a missing term **
 than shrinking the sum — are `DC-043`. `SO_NOSIGPIPE` is set on every descriptor, because the alternative
 is that a peer which has gone away kills the process with `SIGPIPE`, and that presents as "the node
 vanished" rather than "the write failed".
+
+## D19 — Failure semantics: a retry cannot move the bits, and a missing term fails the run
+
+Three ways a cluster run ends badly, and they must not look alike. `ShardExchange` implements the
+rules; `ShardExchangeTests` holds them, using a counting transport so "was this retried?" is an exact
+assertion rather than a stopwatch.
+
+| Failure | Rule | Why |
+| --- | --- | --- |
+| A peer says nothing | **retry**, up to `ExchangePolicy.attempts` | the reduction order is canonical (`D17`), so the same terms sent twice produce the same bits — retrying is safe *because* of that, not in spite of it |
+| A peer stops mid-frame | **fail, no retry** | the stream is desynchronised: the next read would return the previous frame's tail, and the failure would surface much later, somewhere unrelated to its cause |
+| A peer is gone | **fail** | `receive` reports a closed connection rather than waiting out a deadline |
+| A term never arrives | **fail the run** | `merge` checks completeness before anything is summed; a reduction over seven of a token's eight experts is a number that looks like an answer and is not one |
+
+**A duplicate is allowed only if it is bit-identical.** That is what a resend looks like, so `merge`
+collapses it — and a duplicate that *differs* means two nodes disagree about a term they both claim to
+have computed, which nothing downstream can repair. It is refused at the point where the diagnosis is
+still possible. The comparison is on bit patterns, not `==`: `Float` says `-0.0 == 0.0` and `NaN != NaN`,
+and either would hide exactly the divergence it exists to catch.
+
+**Two defects, both the same class, both caught by asserting a duration.** The first version had an
+`ExchangePolicy` timeout that never reached the transport, so a test configured 60 ms, waited 30 s per
+attempt, and **passed** — three attempts, 90 seconds, green, because it asserted behaviour and not time.
+Wiring the policy through produced a second one: the test's own counting decorator implemented `send` and
+`receive` but not `applyTimeout`, took the protocol's no-op default, and reintroduced the identical bug a
+layer up. Corrected, the same test runs in **0.191 s** and asserts `deadlines == [60, 60, 60]`, so the
+deadline is now known to arrive rather than assumed to. The lesson is in the code: a decorator that wraps
+a transport **must forward the deadline**, and a parameter that is not wired up is a lie that only a
+clock catches.
+
+**What is still not exercised.** A real network and a real second process: everything here runs over a
+socket pair on one host, where a peer can be silenced but not made slow, and where no packet is ever
+lost. The transport measurement (`DC-008`) and M2's own gate (`DC-045`) need the cluster. What is decided
+here is what the run *does* when a peer misbehaves; that the failure is *detected* over a real link is the
+next question, and the rules above are the contract it will be tested against.
