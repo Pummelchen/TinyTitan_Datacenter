@@ -434,7 +434,12 @@ public struct Qwen3_5Forward: ForwardPass {
             let mixed: [Float]
             if let gdn = layer.gdn {
                 mixed = GatedDeltaNet.layer(
-                    hidden: normed, weights: gdn, shape: try gatedShape(), batch: 1, length: length
+                    hidden: normed, weights: gdn, shape: try gatedShape(), batch: 1, length: length,
+                    record: Self.tracingInternals ? { name, values, shape in
+                        captured.append(
+                            TraceWriter.Tensor(name: "\(tag).\(name)", shape: shape, values: values)
+                        )
+                    } : nil
                 )
             } else {
                 mixed = try attention(

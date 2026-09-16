@@ -515,7 +515,8 @@ public enum GatedDeltaNet {
     }
 
     public static func layer(
-        hidden: [Float], weights: GatedDeltaNetWeights, shape: GatedDeltaNetShape, batch: Int, length: Int
+        hidden: [Float], weights: GatedDeltaNetWeights, shape: GatedDeltaNetShape, batch: Int, length: Int,
+        record: ((String, [Float], [Int]) -> Void)? = nil
     ) -> [Float] {
         let keyDim = shape.keyDim
         let valueDim = shape.valueDim
@@ -650,10 +651,17 @@ public enum GatedDeltaNet {
                 }
             }
 
+            // Two points, both opt-in through `record`: the rule's output before the gated norm, and the
+            // gated norm's output before the projection. They split the tail in two, which is what a
+            // divergence localised to "the attention half" needs next.
+            record?("delta_core", core, [length * heads, headV])
+
             let normalised = gatedRMSNorm(
                 hidden: core, gate: z[index * length * valueDim..<(index + 1) * length * valueDim].map { $0 },
                 weight: weights.norm, rows: length * heads, width: headV, eps: shape.eps
             )
+            record?("gated_norm_out", normalised, [length * heads, headV])
+
             let projected = Ops.orderedMatmul(
                 x: normalised, w: weights.outProj, rows: length, k: valueDim, out: shape.hiddenSize
             )

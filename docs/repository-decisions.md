@@ -735,3 +735,56 @@ follow, and both point the same way:
 
 Reading eliminated ten candidates at the cost of no runs at all. Knowing when it has stopped paying is the
 other half of that: the next comparison has to be of numbers, not of code.
+
+## D53 — The divergence is inside the delta rule, and it is not a rounding difference
+
+`D52` said the next comparison had to be of numbers. It was, and it inverted the expectation.
+
+Two more capture points on each side — `delta_core`, the rule's output before the gated norm, and
+`gated_norm_out`, after it — split the DeltaNet's tail in four. Both sides produce **223 tensors**, and they
+even agree on which layers are DeltaNet layers (30 of 40, so layer 3 and its kind have neither point). The
+comparison:
+
+```
+layer       hidden_in  delta_core  gated_norm   attn_out   ff_out
+layer.00       ok      DIFFERS     DIFFERS      DIFFERS    DIFFERS
+layer.01    DIFFERS    DIFFERS     DIFFERS      DIFFERS    DIFFERS
+```
+
+`layer.00.hidden_in` matches and **`layer.00.delta_core` differs in all 20480 values** — so the divergence is
+inside `chunk_gated_delta_rule` itself, before the gated norm, before the projection, with the input norm
+already eliminated. The hunt is now one function's inputs and body.
+
+**And it is not a rounding difference, which is the part that matters.** The character of the difference:
+
+| measure | value |
+| --- | --- |
+| max abs value in the reference | 0.758 |
+| max absolute difference | 0.0126 |
+| **median relative difference** | **4.3%** |
+| 90th percentile relative | 29% |
+| relative difference on values above 1e-3 | 2 – 4.7% |
+
+A 1-ULP difference is about `1e-7` relative. **4.3% is not a rounding difference** — it is a structural one,
+of exactly the size a slightly different `beta` or `decay` would produce, or a slightly different value
+entering the rule. That rules out the whole family of explanations `D52` was left with — a cast, a fused
+multiply-add, a `Float`-versus-`np.float32` evaluation order — all of which are last-bit effects. Something
+being computed is *different*, not *rounded differently*.
+
+**Which is a strange place to be, because the body reads as identical.** Every stage of
+`chunk_gated_delta_rule` was compared line by line in `D52` and again here: the l2 norm and the scale, the
+strictly-upper mask (`column > row` masked to `-inf`, the diagonal kept), `ut_system` and `intra_chunk_attn`
+as `ordered_matmul(...) · pairwise`, `key_beta`/`value_beta`, `decayed_key_beta`, the two triangular solves,
+the row/column rotations by `exp(cum_decay)` and `exp(cum_last − cum_decay)`, `chunk_decay`, `v_new`, `inter`,
+the output and the state update. With the initial state zero and a five-token prompt — one chunk — the core is
+`intra_chunk_attn · solved` and nothing else, so the inputs to that product are the whole story.
+
+**The next comparison is therefore the rule's inputs**: `query`, `key`, `value`, `beta` and `decay` as the
+rule receives them, which the reference computes offline from the identical `hidden_in` and the engine can
+record at the same seam. If they differ, the cause is in the convolution, the projections, the gates or the
+repeat — all of which read as matching, which is the same trap as before: **a line-by-line read has now
+twice agreed with itself against a measurement.**
+
+**The instrument is what made this cheap.** Four capture points per side turned a milestone-sized question
+into four runs and four diffs, and the *character* of a difference — median relative, not maximum absolute —
+is what said "structural" rather than "rounding". That distinction is the one that changed the next step.

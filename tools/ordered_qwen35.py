@@ -86,7 +86,10 @@ def depthwise_causal_conv(x: np.ndarray, weight: np.ndarray, activation: str = "
     return silu(out) if activation == "silu" else out
 
 
-def gated_delta_net_layer(hidden: np.ndarray, weights: dict, config) -> np.ndarray:
+def gated_delta_net_layer(
+    hidden: np.ndarray, weights: dict, config, capture: dict | None = None, tag: str | None = None,
+    internals: bool = False,
+) -> np.ndarray:
     """One Gated DeltaNet layer. `hidden` is `[B, S, hidden_size]`; returns the same shape."""
     hidden = f32(hidden)
     batch, length, _ = hidden.shape
@@ -135,10 +138,15 @@ def gated_delta_net_layer(hidden: np.ndarray, weights: dict, config) -> np.ndarr
     core, _ = chunk_gated_delta_rule(
         query, key, value, gate, beta, chunk_size=64, use_qk_l2norm=True
     )
+    # The same two points the engine records, opt-in for the same reason: the digest covers the tensor list.
+    if internals and capture is not None and tag is not None:
+        capture[f"{tag}.delta_core"] = core.reshape(-1, head_v)
 
     normalized = gated_rms_norm(
         core.reshape(-1, head_v), z.reshape(-1, head_v), weights["norm"], eps=config.rms_norm_eps
     )
+    if internals and capture is not None and tag is not None:
+        capture[f"{tag}.gated_norm_out"] = normalized
     normalized = normalized.reshape(batch, length, value_dim)
     return ordered_matmul(normalized, weights["out_proj"])
 

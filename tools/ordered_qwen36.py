@@ -79,7 +79,10 @@ def moe_decoder_layer(
     if config.layer_types[layer_index] == "full_attention":
         mixed = q35.full_attention_layer(normed, weights["self_attn"], config, cos, sin, mask)
     else:
-        mixed = q35.gated_delta_net_layer(normed[None], weights["linear_attn"], config)[0]
+        mixed = q35.gated_delta_net_layer(
+            normed[None], weights["linear_attn"], config,
+            capture=capture, tag=f"layer.{layer_index:02d}", internals=internals,
+        )[0]
     hidden = f32(residual + mixed)
     # The mixture's input, which is also the router's input after its norm. Recording it is opt-in because
     # the trace's digest covers its tensor list, so a trace with extra tensors is a different artifact.
