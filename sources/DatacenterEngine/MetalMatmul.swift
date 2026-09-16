@@ -25,6 +25,12 @@ public enum MetalMatmul {
     /// Whether this host has a GPU. CI runners have none, so the tests skip there.
     public static var isAvailable: Bool { MTLCreateSystemDefaultDevice() != nil }
 
+    /// The threadgroup's width in outputs. The shader's `TILE` has to equal it, and a mismatch would be a
+    /// wrong answer rather than a slow one. Nothing can read a `#define` back out of a compiled library, so
+    /// the guard is not an assertion here but the grid: `MetalMatmulTests` compares bit patterns over shapes
+    /// whose `out` and `k` are not multiples of the tile, which is exactly where a mismatch would show.
+    static let tile = 32
+
     private struct Pipeline {
         let device: any MTLDevice
         let queue: any MTLCommandQueue
@@ -97,10 +103,12 @@ public enum MetalMatmul {
             encoder.setBuffer(wBuffer, offset: 0, index: 1)
             encoder.setBuffer(outBuffer, offset: 0, index: 2)
             encoder.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 3)
-            let width = min(pipeline.state.threadExecutionWidth, values)
-            encoder.dispatchThreads(
-                MTLSize(width: values, height: 1, depth: 1),
-                threadsPerThreadgroup: MTLSize(width: max(width, 1), height: 1, depth: 1)
+            // One threadgroup per 32 outputs and per row; the last group in a row is partly active, and the
+            // kernel returns early for the lanes past the end rather than reading past `w`.
+            let tile = MetalMatmul.tile
+            encoder.dispatchThreadgroups(
+                MTLSize(width: (out + tile - 1) / tile, height: rows, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: tile, height: 1, depth: 1)
             )
             encoder.endEncoding()
             command.commit()
@@ -156,24 +164,71 @@ public enum MetalMatmul {
     #include <metal_stdlib>
     using namespace metal;
 
-    // One thread per output value, `k` accumulated in ascending order, one rounding for the product and one
-    // for the add. `metal::fma(x, w, 0.0f)` is the correctly-rounded product whatever the compiler would
-    // prefer to do with `x * w` followed by an add: `D61` measured that every math mode this SDK offers
-    // contracts that pair into a single `fma`, which is a different number.
+    // A threadgroup-tiled matmul with the **contract's order preserved**.
+    //
+    // The first version had one thread per output with `k` in its inner loop: thread `column` and thread
+    // `column + 1` then read `w` rows `k * 4` bytes apart — 8 KB at the head's width — so a warp touched
+    // thirty-two cache lines to use four bytes of each. Measured, it was slower than the CPU (`D63`).
+    //
+    // Here each threadgroup owns `TILE` consecutive outputs for one row of `x`, and loads `w`'s tile for the
+    // current `k` **cooperatively and coalesced** into threadgroup memory: each of the `TILE` rows of the tile
+    // is `K_TILE` contiguous floats, which is one cache line at TILE=32. Each thread then accumulates its own
+    // output over that tile — still **ascending in k**, tile after tile — so the sequence of roundings is
+    // identical to the sequential loop and to the CPU. Tiling changes *which thread* adds, not the order in
+    // which the adds happen, which is why the bit-exactness assertion carries over unchanged.
+    //
+    // The tail is **skipped rather than zero-padded**, and that is not a micro-optimisation: adding a
+    // zero-valued term to a `-0.0` accumulator gives `+0.0`, and this project asserts zero signs bit for bit
+    // (`D34`). A padded kernel would be right for every value and wrong for the sign of zero.
+    #define TILE 32
+    #define K_TILE 32
+
     kernel void matmul(device const float *x [[buffer(0)]],
                        device const float *w [[buffer(1)]],
                        device float *out [[buffer(2)]],
                        constant uint4 &dims [[buffer(3)]],
-                       uint gid [[thread_position_in_grid]]) {
+                       uint2 group [[threadgroup_position_in_grid]],
+                       uint2 lane [[thread_position_in_threadgroup]]) {
         uint rows = dims.x, k = dims.y, columns = dims.z;
-        uint row = gid / columns;
-        uint column = gid % columns;
-        if (row >= rows) { return; }
+        uint row = group.y;
+        uint column = group.x * TILE + lane.x;
+        // **Predicated, never an early return.** A `return` here leaves the threadgroup before the barriers
+        // below, and a barrier that some lanes have exited is undefined — which is not a theory: the first
+        // version returned, and the grid failed with the first element of every short row correct and the
+        // rest wrong, because the surviving lane was reading a tile row that its owner never loaded. Each
+        // lane loads and reads **its own row** of the tile, so an inactive lane simply owns an unread one.
+        bool active = row < rows && column < columns;
+
+        // One extra column of padding so that the per-thread stride through a row of the tile is not a
+        // multiple of the bank count; it changes which bank is read, never which value.
+        threadgroup float tile[TILE][K_TILE + 1];
+
         float accumulator = 0.0f;
-        for (uint index = 0; index < k; ++index) {
-            accumulator = accumulator + metal::fma(x[row * k + index], w[column * k + index], 0.0f);
+        for (uint base = 0; base < k; base += K_TILE) {
+            uint span = min((uint)K_TILE, k - base);
+            // The load is the whole point, and it is a transpose: lane `l` fills **column `l`** of every row
+            // of the tile, so the lanes of a warp read `w[row * k + base + 0..TILE-1]` — TILE contiguous
+            // floats, one 128-byte line — instead of each walking a different row 8 KB away. Loading each
+            // lane's own row instead would be *correct* and exactly the stride this kernel exists to remove.
+            // The guard is on the column, not on `active`: a lane past `span` has no column to fill, and a
+            // row past `columns` has nothing to fill it from.
+            for (uint r = 0; r < TILE; ++r) {
+                if (group.x * TILE + r < columns && lane.x < span) {
+                    tile[r][lane.x] = w[(group.x * TILE + r) * k + base + lane.x];
+                }
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            if (active) {
+                for (uint index = 0; index < span; ++index) {
+                    // `metal::fma(x, w, 0)` is the correctly-rounded product whatever the compiler would
+                    // prefer to do with `x * w` followed by an add: `D61` measured that every math mode this
+                    // SDK offers contracts that pair into a single `fma`, which is a different number.
+                    accumulator = accumulator + metal::fma(x[row * k + base + index], tile[lane.x][index], 0.0f);
+                }
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
         }
-        out[gid] = accumulator;
+        if (active) { out[row * columns + column] = accumulator; }
     }
     """
 }

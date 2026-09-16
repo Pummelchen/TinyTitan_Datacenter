@@ -1186,3 +1186,67 @@ tiled version has somewhere to land. A kernel that is slower is not a default, a
 head was at its I/O floor does **not** hold either: the head's compute was never removed, and the 1.28 s was a
 warmer machine rather than a faster matmul. What *does* hold from `D62` is the part that was measured twice:
 the head reads 1.02 GB of its own weights, and that is the floor under it.
+
+## D64 — The tiled kernel is bit-exact and still slower: the engine is I/O-bound, and kernels are not M3's lever
+
+`D63` diagnosed the GPU matmul's slowness as the access pattern — one thread per output walking `w` rows 8 KB
+apart — and specified a threadgroup-tiled kernel as the fix. The kernel is written, and the diagnosis was
+**wrong**.
+
+**The kernel is right.** Each threadgroup owns 32 consecutive outputs for one row of `x`, and the tile is
+loaded as a **transpose**: lane `l` fills column `l` of every row, so a warp reads `w[row*k + base + 0..31]`
+— 32 contiguous floats, one 128-byte line — instead of each lane walking its own row. Each thread still
+accumulates its output **ascending in k**, tile after tile, so the sequence of roundings is unchanged and
+the grid's assertion carries over untouched: bit-identical over the 288 shapes (including `k = 257` and
+`out = 17, 129`, both tiles-and-a-half), the head's real shape, and cache reuse. End to end the real trace is
+`b0d382dbabf36df0…` with the tiled kernel and without it, `trace_diff` IDENTICAL.
+
+Two traps were found by that grid rather than by reasoning, and both are worth keeping:
+
+* **A `return` before a barrier is not a shortcut.** The first version returned early for lanes past
+  `columns`; the grid failed with the first element of every short row correct and the rest wrong, because
+  the surviving lane read a tile row whose owner had exited. A barrier that some lanes have left is
+  undefined. It is predicated now, and the load is guarded on the column rather than on activity, because a
+  lane past `span` simply has no column to fill.
+* **The load must be a transpose, not each lane's own row.** Loading `tile[lane][0..span-1]` is correct and
+  is exactly the 8 KB stride the kernel exists to remove; a warp has to cover one row of `w` together.
+
+**And it is still slower.** Alternating the conditions on one build, as `D63` established:
+
+| phase | CPU | GPU (tiled) |
+| --- | --- | --- |
+| `attn.core` | 4.05, 4.07 | 5.88, 5.60 |
+| `head` | 1.74, 1.74 | 1.98, 1.81 |
+| `mix.gateup` | 1.18, 1.17 | 2.12, 2.08 |
+| `mix.down` | 0.53, 0.53 | 1.10, 1.04 |
+
+Coalescing the loads changed nothing — the naive and tiled versions cost the same — so the access pattern was
+not the bottleneck. What is left is the **path around the kernel**, and it is expensive: a command buffer and
+encoder per call, two `copyMemory` calls to move `x` and `w` into the cached buffers, and a
+`waitUntilCompleted` that serialises every dispatch. `mix.gateup` gives the clearest number: about 210 calls,
+**0.9 s of overhead, ~4 ms per dispatch** — orders of magnitude more than the dispatch itself, and consistent
+with a GPU that has to be woken for each one.
+
+**The strategic reading is what matters.** A profile of the same run says where a forward actually goes:
+
+```
+mix.read + load + head   12.73 s of 18.75 s   68%   (I/O, at the sequential floor)
+attn.core + gateup + down 5.77 s                     (compute)
+```
+
+**The engine is I/O-bound.** The reads are already at ~1 GB/s sequential, which no kernel changes, and the
+fix for that is not arithmetic — it is **sharding**, which is what `M2` built and `M3` demonstrated: four
+nodes give four times the read bandwidth. So GPU compute kernels are **not on M3's critical path**, and
+rounds of tuning them would be work done because it is interesting rather than because it moves the gate.
+
+**Therefore: the kernels stay, opt-in, as a tested asset** — bit-exact, gridded, and reachable with
+`SHARD_GPU_MATMUL=1` — and the work stops here rather than continuing to chase a lever that the measurement
+says is the wrong one. `DC-033`'s Metal clause is recorded with its measurement and the task is closed; its
+done-when, the tiny model bit-for-bit against the contract with router decisions included, has been met since
+long before this.
+
+**One more method note, because it nearly went wrong twice.** The first tiled measurement showed *every*
+phase identical between "on" and "off" — because the flag's default had been inverted by the round before, so
+both runs were the CPU. A comparison that shows no difference at all is as suspicious as one that shows the
+wrong direction: **check that the conditions differ before believing either**, in the same way that
+alternating them is what stops a warming machine from being read as a speedup.
