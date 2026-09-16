@@ -592,3 +592,44 @@ config and connects only to peers that config names, so a node is not a listener
 **no authentication and no encryption**: the wire trusts the network it is on. That is a choice rather
 than an oversight — the design targets a switched, private segment — and the honest place to record it is
 next to what would have to change first, which is mutual authentication and a keyed transcript.
+
+## D31 — The slot bank is sized from a budget, and the measurement says one slot
+
+`D12` asked how large the per-layer LRU slot bank should be, and it was answered twice by argument: the
+literal `16` (8.05 GB across 40 layers against roughly 4.5 GB usable, reported as an **expected failure**
+by `SlotBudgetTests`), and then a cross-token bank that audit reverted for the same reason. What was
+missing was a number — and the number is a **count**, not a timing: hits and bytes read.
+
+`SHARD_EXPERT_SLOTS=<n>` has been the instrument. On the real 35 B install, one five-token prompt, five
+sizes, one process each:
+
+| slots | expert requests | hits | hit rate | install bytes read |
+| --- | --- | --- | --- | --- |
+| 1 | 2218 | 0 | 0.0000 | 3,060,562,432 |
+| 2 | 2218 | 0 | 0.0000 | 3,060,562,432 |
+| 4 | 2218 | 0 | 0.0000 | 3,060,562,432 |
+| 8 | 2218 | 0 | 0.0000 | 3,060,562,432 |
+| 16 | 2218 | 0 | 0.0000 | 3,060,562,432 |
+
+**A bigger bank saves exactly nothing: not one hit, not one byte.** The reason is structural and is now
+visible rather than guessed at — a bank lives as long as its layer's weights, and inside one layer call
+the router's picks do not repeat, so a slot is never reused. Sixteen slots is 8.05 GB of a 4.5 GB budget
+for zero measured benefit; one slot is 503 MB for the same zero.
+
+So the bank is sized from a **budget** (`SHARD_EXPERT_BANK_MB`, default 512 MB, which the real geometry
+turns into **one slot per layer**), the capacity is computed from the layer's own shape instead of a
+literal, and `SlotBudgetTests` — which carried the expected failure — now asserts the constraint, the
+property that no budget buys a bank larger than the budget, that an absurd budget is refused rather than
+clamped quietly, and that the answer is **1**. The expected failure was deleted deliberately, which is
+what its own note asked for.
+
+**What this does not say.** It is a measurement of a bank that lives as long as a layer; it says nothing
+about a bank that survives a token, which is the design `DC-091` reverted on memory and which would need
+its own hit-rate measurement and its own budget. Nor is it an argument that caching is pointless here:
+the measured win is elsewhere and already tracked — `DC-106`, keeping the dense backbone resident, which
+the profile puts at **2.95 s of a 19.8 s forward**. A bank of experts that never repeats is not where the
+seconds are.
+
+**No timings are claimed above.** Hits and bytes are counts. The five runs were functional and
+sequential, on a shared farm, with swap flat at 953.81 MB used before and after and free disk flat at
+15 GB.

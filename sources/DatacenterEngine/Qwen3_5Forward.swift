@@ -129,30 +129,59 @@ public struct Qwen3_5Forward: ForwardPass {
     /// policy when there is a measurement to put in it.
     /// How many experts one layer's slot bank may hold. Overridable for **measurement**.
     ///
-    /// `D12` is open: the brief asks for per-layer LRU slot banks and does not say how large, and this
-    /// literal was never derived from a budget — 16 slots is 201 MB per layer and **8.05 GB across 40
-    /// layers**, against roughly 4.5 GB usable, which `SlotBudgetTests` reports as an expected failure.
+    /// The expert slot bank's budget in bytes, for the whole model (`D12`, `DC-091`).
     ///
-    /// Rather than decide it, the run should *measure* it: the honest answer needs a cache hit rate at
-    /// more than one size, and a sweep is how the gap between "how often does routing repeat" and "how
-    /// much RAM is there" gets a number attached. `SHARD_EXPERT_SLOTS=<n>` sets it for one process, so
-    /// a measurement is a series of runs rather than a rebuild.
-    /// Swift 6 forbids a mutable global, and it is right to: a value that can change under a running
-    /// forward is a race. Read once, so a sweep is one process per setting — which is how a
-    /// measurement should work anyway, since two bank sizes in one process would share banks.
-    public static let expertSlotsPerLayer = slotsFrom(environment: ProcessInfo.processInfo.environment)
+    /// The brief asks for per-layer LRU slot banks and does not say how large. It was the literal `16`,
+    /// never derived from anything: 16 slots across this chain's 40 layers is **8.05 GB** against roughly
+    /// 4.5 GB usable, which `SlotBudgetTests` reported as an expected failure until the number came from
+    /// a budget. The default below is the measured answer (`D31`), not a guess: it is the smallest bank
+    /// at which the read savings stop improving, so paying more memory buys nothing.
+    public static let expertBankBudgetBytes = bankBudgetBytes(
+        environment: ProcessInfo.processInfo.environment
+    )
+
+    /// The budget, from `SHARD_EXPERT_BANK_MB` when it is sane.
+    static func bankBudgetBytes(environment: [String: String]) -> Int {
+        let defaultMegabytes = 512
+        guard let raw = environment["SHARD_EXPERT_BANK_MB"], let megabytes = Int(raw) else {
+            return defaultMegabytes * 1_048_576
+        }
+        // A budget nobody could hold is refused rather than clamped quietly: `Int.max` here is a typo,
+        // and a bank sized from it is a node that swaps — which is what `DC-091` reverted.
+        guard megabytes >= 0, megabytes <= 1 << 20 else { return defaultMegabytes * 1_048_576 }
+        return megabytes * 1_048_576
+    }
+
+    /// How many experts one layer may keep, given a budget for the whole bank.
+    ///
+    /// `ExpertSlotCache` holds one expert's fused gate/up (`2·inter·hidden`) and its down
+    /// (`inter·hidden`) as fp32 reals, so one expert costs `3·inter·hidden·4` bytes and the whole bank
+    /// costs that times the slots times the layers. The arithmetic is asserted in `SlotBudgetTests`
+    /// against the **real** geometry, because a fixture's experts are kilobytes and cannot see a
+    /// gigabyte — which is how a 14.5 GB change once shipped past 98 green tests.
+    public static func expertSlots(budgetBytes: Int, layers: Int, shape: MixtureShape) -> Int {
+        let (perRow, rowOverflow) = shape.intermediate.multipliedReportingOverflow(by: shape.hiddenSize)
+        let (perExpert, expertOverflow) = perRow.multipliedReportingOverflow(by: 3 * 4)
+        let (whole, wholeOverflow) = perExpert.multipliedReportingOverflow(by: max(1, layers))
+        guard !rowOverflow, !expertOverflow, !wholeOverflow, whole > 0, budgetBytes > 0 else { return 1 }
+        return max(1, min(budgetBytes / whole, shape.experts))
+    }
+
+    /// The capacity one layer's bank gets: an explicit sweep wins, otherwise the budget decides.
+    ///
+    /// `SHARD_EXPERT_SLOTS=<n>` sets it for one process, which is how a measurement is a series of runs
+    /// rather than a rebuild. Swift 6 forbids a mutable global and is right to: a value that can change
+    /// under a running forward is a race.
+    static func slotCapacity(environment: [String: String], shape: MixtureShape, layers: Int) -> Int {
+        if let raw = environment["SHARD_EXPERT_SLOTS"], let slots = Int(raw), slots >= 1 { return slots }
+        return expertSlots(
+            budgetBytes: bankBudgetBytes(environment: environment), layers: layers, shape: shape
+        )
+    }
 
     /// Whether to time the forward's phases. Immutable, so Swift 6's concurrency checking is satisfied
     /// and a profile cannot change under a running forward. `SHARD_PROFILE=1` turns it on.
     public static let profilingEnabled = ProcessInfo.processInfo.environment["SHARD_PROFILE"] == "1"
-
-    /// The parse, separated so it can be tested without a process.
-    static func slotsFrom(environment: [String: String]) -> Int {
-        guard let raw = environment["SHARD_EXPERT_SLOTS"], let slots = Int(raw), slots >= 1 else {
-            return 16
-        }
-        return slots
-    }
 
     /// The feed-forward half of a decoder layer. The reference branches inside its decoder
     /// layer between `Qwen3_5MLP` and `Qwen3_5SparseMoeBlock`, and so does this.
@@ -193,7 +222,13 @@ public struct Qwen3_5Forward: ForwardPass {
             // this model is 3.2 GB in fp32, so the layer keeps a provider that reads one
             // expert's row range on demand and a bounded cache in front of it.
             let stacked = StackedExpertProvider(source: source, gateUpName: gateUpName, downName: downName)
-            let cache = ExpertSlotCache(upstream: stacked, capacity: Self.expertSlotsPerLayer)
+            let cache = ExpertSlotCache(
+                upstream: stacked,
+                capacity: Self.slotCapacity(
+                    environment: ProcessInfo.processInfo.environment, shape: try mixtureShape(),
+                    layers: config.numLayers
+                )
+            )
             feedForward = .mixture(
                 MixtureWeights(
                     router: try load(.routerLogits),
