@@ -733,3 +733,50 @@ which is already `0x00`; expecting `write()` to raise when it is what constructs
 fixture that tripped the bounds guard instead; and one that added the same tensor twice. A guard fired
 before my expectation every time — which is what guards are for, and a reminder to write the expected
 number down before writing the test that checks it.
+
+## D32 — The dense backbone stays resident: 8.35 GB of reads became 1.04 GB, output unchanged
+
+`DC-106` asked for the brief's own premise to hold — the dense backbone resident across tokens rather
+than re-read per token. The profile put the cost at **2.95 s of a 19.8 s forward**, and the acceptance is
+a count rather than a timing.
+
+**What residency costs, measured from the install before writing code.** The payload is 21.70 GB: 18.87 GB
+of stacked expert banks and **2.83 GB of everything else** — but 2.03 GB of that is the embedding
+(1,017,118,720 B) and the LM head (1,017,118,720 B), each of which is read a **row at a time** and so
+belongs nowhere near a whole-tensor cache. What is left, the per-layer backbone, is **0.796 GB**, about
+20 MB per layer. That is small enough to hold, and it is why the brief's premise is affordable here.
+
+**Why it holds packed bytes.** 0.74 GB of that 0.796 is int4, which is eight times larger decoded, so
+caching the dequantised form would need roughly **6 GB against this node's ~4.5 GB budget** — the `DC-091`
+mistake a second time. Packed bytes cost what the disk costs, and the dequantisation is arithmetic the CPU
+was doing anyway.
+
+**Where it lives, and why nothing had to be argued away.** The funnel is `InstallFile.payload(...)`, the
+only path a whole-tensor read takes — and the stacked expert banks never take it, because they are read a
+row range at a time. An 18 GB expert bank filling the cache is therefore not a risk to be mitigated; it is
+not reachable, and `InstallCacheTests` asserts that rather than trusting it.
+
+**The measurement**: one install, one prompt, three cached-decode steps, two processes because the budget
+is read once from the environment.
+
+| | cache on (1024 MB) | cache off (0 MB) |
+| --- | --- | --- |
+| payload bytes read from disk | **1,043,708,416** | **8,349,667,328** |
+| cache hits | 4,277 | 0 |
+| resident | 1,043,708,416 B | 0 |
+| generated tokens | `11751,11,264` | `11751,11,264` |
+| trace digest | `620f5acc777a0d6b…` | `620f5acc777a0d6b…` |
+
+**8.35 GB of reads became 1.04 GB — 8× — with identical tokens and an identical trace digest.** That last
+row is the point of the whole exercise: residency changes what is read, never what is computed, so `I2` is
+untouched. The 1.04 GB is one forward's distinct set, which means forwards two and three read **no**
+whole-tensor payload at all — the fixture test asserts that zero directly.
+
+**One thing the numbers said that the design did not expect**: with the cache off the run read 8.35 GB over
+three steps, or 2.78 GB per step, against a 1.04 GB distinct set. The same tensors were being read **more
+than once inside a single forward**. Residency therefore saves more than "N forwards instead of one": it
+also deduplicates within one. Where those repeat reads come from is a profile question, and `DC-107` owns
+the per-phase seconds.
+
+**No timings are claimed.** The runs log wall clocks (15.4 s and 16.6 s) because a log without them is hard
+to read, and this phase is functional tests on a shared farm. The claim is the byte count.

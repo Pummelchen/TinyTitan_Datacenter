@@ -27,10 +27,30 @@ public protocol WeightSource {
     var bytesReadFromSource: Int { get }
     /// Where the time goes inside this source, when it counts it.
     var sourceTiming: SourceTiming { get }
+    /// The payload cache's counters; a source without one reports zeroes.
+    var payloadCacheMetrics: PayloadCacheMetrics { get }
 }
 
 /// A source's own account of its cost: bytes read, and the seconds spent reading, verifying and
 /// unpacking them. Fractions of 1.0 sum to the time the caller spent inside the source.
+/// What the whole-tensor payload cache did (`DC-106`), on the `SourceTiming` pattern: a value the
+/// caller collects rather than four accessors to keep in step.
+public struct PayloadCacheMetrics: Sendable, Equatable {
+    /// Whole-tensor payload bytes that had to come from disk. Row-range reads are not counted here:
+    /// residency cannot eliminate them, so a second forward driving this to **zero** is the claim.
+    public var bytesRead = 0
+    /// Whole-tensor reads the cache served instead.
+    public var hits = 0
+    /// What the cache is holding, in bytes.
+    public var bytesHeld = 0
+
+    public init(bytesRead: Int = 0, hits: Int = 0, bytesHeld: Int = 0) {
+        self.bytesRead = bytesRead
+        self.hits = hits
+        self.bytesHeld = bytesHeld
+    }
+}
+
 public struct SourceTiming: Sendable {
     public var counted = false
     public var bytes = 0
@@ -49,6 +69,7 @@ public struct SourceTiming: Sendable {
 extension WeightSource {
     public var bytesReadFromSource: Int { 0 }
     public var sourceTiming: SourceTiming { SourceTiming() }
+    public var payloadCacheMetrics: PayloadCacheMetrics { PayloadCacheMetrics() }
 }
 
 extension WeightSource {
@@ -133,9 +154,53 @@ public struct InstallFile: WeightSource {
         var readSeconds = 0.0
         var digestSeconds = 0.0
         var unpackSeconds = 0.0
+        /// Whole-tensor payload bytes (`DC-106`): the dense backbone's share, and the figure a second
+        /// forward must drive to zero. Row-range reads are deliberately not here.
+        var payloadBytesRead = 0
+        /// The cache's budget, read once from the environment so a measurement is a series of processes.
+        static let payloadCacheBudgetValue = InstallFile.payloadCacheBudget(
+            environment: ProcessInfo.processInfo.environment
+        )
+    }
+
+    /// The whole-tensor payload cache (`DC-106`). A **class**, because `InstallFile` is a struct and a
+    /// cache is state that outlives one call — the same reason `ReadState` is one. Least-recently-used,
+    /// bounded in bytes, and holding the payload exactly as stored.
+    final class PayloadCache {
+        let budget: Int
+        private var payloads: [String: Data] = [:]
+        private var order: [String] = []
+        private(set) var bytes = 0
+        private(set) var hits = 0
+
+        init(budget: Int) { self.budget = budget }
+
+        var names: Set<String> { Set(payloads.keys) }
+
+        func value(for name: String) -> Data? {
+            guard budget > 0, let cached = payloads[name] else { return nil }
+            hits += 1
+            if let position = order.firstIndex(of: name) {
+                order.remove(at: position)
+                order.append(name)
+            }
+            return cached
+        }
+
+        func store(_ data: Data, named name: String) {
+            guard budget > 0, data.count <= budget else { return }
+            bytes += data.count - (payloads[name]?.count ?? 0)
+            if payloads[name] == nil { order.append(name) }
+            payloads[name] = data
+            while bytes > budget, let oldest = order.first {
+                order.removeFirst()
+                if let dropped = payloads.removeValue(forKey: oldest) { bytes -= dropped.count }
+            }
+        }
     }
 
     private let state = ReadState()
+    private let payloadCache = PayloadCache(budget: ReadState.payloadCacheBudgetValue)
 
     /// Whether to verify each slab's digest **on every read**. Off by default, and that default is a
     /// measurement: on the real 35 B model the verification cost **21.04 s of a 39.8 s forward**, 82%
@@ -157,6 +222,16 @@ public struct InstallFile: WeightSource {
 
     /// Payload bytes read through this instance.
     public var bytesRead: Int { state.bytesRead }
+
+    /// The whole-tensor payload counters — the instrument `DC-106` is accepted against.
+    public var payloadCacheMetrics: PayloadCacheMetrics {
+        PayloadCacheMetrics(
+            bytesRead: state.payloadBytesRead, hits: payloadCache.hits, bytesHeld: payloadCache.bytes
+        )
+    }
+
+    /// The names the cache is holding, so a test can assert that a stacked expert bank never lands in it.
+    var payloadCacheNames: Set<String> { payloadCache.names }
 
     /// `WeightSource`: the same counter, so a caller can report measured traffic rather than an
     /// estimate derived from element counts.
@@ -258,9 +333,43 @@ public struct InstallFile: WeightSource {
         return data
     }
 
+    /// The payload cache's budget, from `SHARD_DENSE_CACHE_MB` (0 disables it, for an A/B measurement).
+    ///
+    /// The dense backbone is read and dequantised on **every forward**: the forward walks every layer for
+    /// every token, so the same ~20 MB per layer of norms, attention, router and shared-expert weights is
+    /// fetched again per token. Measured on the real install, the whole-tensor payload is **0.796 GB per
+    /// forward** (2.83 GB of non-expert tensors, less the 1.02 GB embedding and 1.02 GB head, which are
+    /// read a row at a time) — small enough to hold, and the default budget covers it.
+    ///
+    /// It caches the **packed** bytes rather than the dequantised fp32, and that is the whole point: 0.74 GB
+    /// of that 0.796 is int4, which is eight times larger decoded, so caching the decoded form would need
+    /// ~6 GB against this node's ~4.5 GB budget — the `DC-091` mistake a second time. Packed bytes cost what
+    /// the disk costs, and the dequantisation is arithmetic the CPU was doing anyway.
+    ///
+    /// The stacked expert banks never reach here: they are read a row range at a time, so 18 GB of experts
+    /// cannot fill this. `InstallCacheTests` asserts that rather than trusting it.
+    static func payloadCacheBudget(environment: [String: String]) -> Int {
+        let defaultMegabytes = 1024
+        guard let raw = environment["SHARD_DENSE_CACHE_MB"], let megabytes = Int(raw) else {
+            return defaultMegabytes * 1_048_576
+        }
+        guard megabytes >= 0, megabytes <= 1 << 20 else { return defaultMegabytes * 1_048_576 }
+        return megabytes * 1_048_576
+    }
+
     private func payload(_ entry: Entry) throws -> Data {
-        if verifyOnFirstUse { return try verifyRead(entry) }
-        return try readCounted(offset: entry.offset, byteCount: entry.nbytes)
+        if let cached = payloadCache.value(for: entry.name) { return cached }
+        let data: Data
+        if verifyOnFirstUse {
+            data = try verifyRead(entry)
+        } else {
+            data = try readCounted(offset: entry.offset, byteCount: entry.nbytes)
+        }
+        // Counted on the way *past* the cache, so the metric is disk traffic and a hit is invisible —
+        // which is exactly what a second forward has to show.
+        state.payloadBytesRead += data.count
+        payloadCache.store(data, named: entry.name)
+        return data
     }
 
     public func tensor(named name: String) throws -> [Float] {

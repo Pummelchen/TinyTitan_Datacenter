@@ -96,12 +96,15 @@ public protocol ForwardPass {
     /// the default and the figure would look measured while being a constant. Zero means *not
     /// counted* — the dense family holds its weights from open time.
     var sourceBytesRead: Int { get }
+    /// The payload cache's counters, on the same footing as `sourceBytesRead` (`DC-106`).
+    var payloadCacheMetrics: PayloadCacheMetrics { get }
     /// Where the source's time went — reading, verifying, unpacking — when it counts it.
     var sourceTiming: SourceTiming { get }
 }
 
 extension ForwardPass {
     public var sourceBytesRead: Int { 0 }
+    public var payloadCacheMetrics: PayloadCacheMetrics { PayloadCacheMetrics() }
     public var sourceTiming: SourceTiming { SourceTiming() }
 }
 

@@ -171,6 +171,14 @@ do {
     if let sharded {
         print("sharded: node \(sharded.node) of \(sharded.nodes), one all-reduce per mixture layer")
     }
+    // `DC-106`: the dense backbone's residency, as a **count** — whole-tensor payload bytes that had to
+    // come from disk. A generation is several forwards over the same layers, so with residency on this
+    // should be near one forward's worth rather than one per token.
+    let cache = forward.payloadCacheMetrics
+    print(
+        "dense payload: \(cache.bytesRead) B read from disk, \(cache.hits) read(s) served from "
+            + "\(cache.bytesHeld) B resident"
+    )
     print("mode: \(cached ? "cached decode" : "full sequence each step")")
     // The margins, step by step: a marginal flip is not a defect and a large-margin disagreement
     // is, and the token ids alone cannot tell them apart.

@@ -36,6 +36,7 @@ public struct Qwen3_5Forward: ForwardPass {
 
     /// `ForwardPass`: what the reading, verifying and unpacking cost, in seconds.
     public var sourceTiming: SourceTiming { source.sourceTiming }
+    public var payloadCacheMetrics: PayloadCacheMetrics { source.payloadCacheMetrics }
 
     public enum Error: Swift.Error, CustomStringConvertible {
         case missingTensor(block: String, role: TensorRole)
