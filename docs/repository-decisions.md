@@ -1334,3 +1334,33 @@ has already reserved for them, and `DC-053` carries them.
 gate-checked — `check_milestones` re-runs the trace, the claims gate re-reads the numbers, `test_run_m1_gate`
 drives the gate itself on a fixture. The cluster claims were the ones resting on memory. Asking "what has *not*
 been re-checked?" is now two for two.
+
+## D67 — "The form a reader copies" now includes paths, and the docs were already consistent
+
+The repository's own trap says it: **check the form a reader copies, not only the prose.** A previous round
+widened `check_status_claims.py` to read the `--swift-tests` flag beside the sentences, because that was the
+number most likely to be pasted. The same argument applies to **paths**, and nothing checked them: the link
+gate validates `[text](path)`, and a bare `tools/run_m1_gate.py` in a sentence or a code block is not a link.
+
+**So the claims gate now checks them**, and this is a gate about *shape* rather than about numbers: every
+`tools/…`, `docs/…`, `sources/…` or `tests/…` path with an extension in the six claim documents must exist.
+Two rules in it are worth naming, because both are properties rather than lists:
+
+* **A template is not a claim about a file.** `RELEASE.md` legitimately names
+  `docs/release-notes-vX.Y.md`, and a rule that fired on it would have to be silenced with an exception —
+  which is how a rule stops being true quietly. The test is that a path in this repository is **lower case**,
+  so a mixed-case or angle-bracketed name is a shape and is skipped by rule.
+* **An empty scan is not a pass.** The paths checked are counted into the gate's total, which went from
+  **73 claims to 126**, so "no problems" means fifty-three paths were looked at rather than that the loop did
+  nothing. That is the same distinction as `D65`'s empty-parse guard.
+
+**And the result is negative, which is the good outcome.** All fifty-three exist: the documentation's paths
+are consistent with the tree, in the README, `AGENTS.md`, the tracker, the roadmap, the testbed page and the
+architecture page. That is now enforced rather than hoped for, and a deleted script will fail the gate instead
+of leaving a command that cannot be run.
+
+**The same audit turned up one stale thing in the gate itself.** Its `--help` example still read
+`--swift-tests 184 --python-tests 200`. Those are example *values* rather than claims, so nothing checked
+them — but they are printed to a reader who may copy them, so they are now placeholders. An example that
+cannot go stale is better than an example that has to be maintained, which is the same reason the shard plan
+is generated rather than hard-coded.

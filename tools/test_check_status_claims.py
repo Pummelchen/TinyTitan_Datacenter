@@ -97,6 +97,28 @@ class StatusClaimTests(unittest.TestCase):
         self.assertGreaterEqual(checked, 3, "the counts in three documents should all be checked")
         self.assertEqual(not_checked, [])
 
+    def test_a_documented_path_that_does_not_exist_fails(self) -> None:
+        # The form a reader copies includes paths. A command that cannot be run is worse than a stale
+        # number, because the number at least reports something.
+        build(self.root, readme="see `tools/gone.py` for the detail\n")
+        problems, _, _ = self.run_gate()
+        self.assertTrue(any("tools/gone.py" in problem for problem in problems), problems)
+
+    def test_a_real_documented_path_is_checked_and_passes(self) -> None:
+        (self.root / "tools").mkdir(parents=True, exist_ok=True)
+        (self.root / "tools" / "here.py").write_text("")
+        build(self.root, readme="see `tools/here.py`\n")
+        problems, checked, _ = self.run_gate()
+        self.assertEqual(problems, [])
+        self.assertGreaterEqual(checked, 4, "the counts in three documents plus the path")
+
+    def test_a_template_path_is_not_a_claim_about_a_file(self) -> None:
+        # `docs/release-notes-vX.Y.md` and `tools/NAME.py` are shapes, not files. The rule is a property —
+        # a path in this repository is lower case — rather than a list of exceptions to maintain.
+        build(self.root, readme="`docs/release-notes-vX.Y.md` and `tools/NAME.py` are templates\n")
+        problems, _, _ = self.run_gate()
+        self.assertEqual(problems, [])
+
     def test_a_stale_test_count_fails(self) -> None:
         build(self.root, readme="**183 tests, 0 skipped, 0 failures**\n")
         problems, _, _ = self.run_gate()

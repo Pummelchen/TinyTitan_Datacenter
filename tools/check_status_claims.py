@@ -7,7 +7,7 @@ quoted after a test was added, `2 skipped` after the skips were removed, a decis
 round after it was decided. I have hand-fixed that class of defect more than a dozen times in this project,
 which is exactly the argument for a gate rather than another careful read.
 
-    python3 tools/check_status_claims.py --swift-tests 184 --swift-skipped 0 --python-tests 200
+    python3 tools/check_status_claims.py --swift-tests <n> --swift-skipped <n> --python-tests <n>
 
 What it checks, offline:
 
@@ -72,6 +72,14 @@ DECISION = re.compile(r"(?<![A-Za-z0-9])D(\d{1,3})(?![0-9])")
 # The heading that defines one: `## D34 — ...`.
 DEFINITION = re.compile(r"^##\s+D(\d+)\b", re.MULTILINE)
 NO_TAGS = re.compile(r"\*\*no releases and no tags\*\*")
+# The form a reader copies includes **paths**: `tools/run_m1_gate.py`, `docs/m1-gate.md`. The link gate checks
+# `[links](…)` and the claims above check the numbers, but a path in a code block or a sentence was checked by
+# nothing — the same gap the command claims closed for flags, in the other direction. A documented path that
+# does not exist is a command that cannot be run.
+PATH = re.compile(r"\b((?:tools|docs|sources|tests)/[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,5})\b")
+# A template is not a claim about a file. The rule is a property, not a list: an angle-bracketed or
+# mixed-case name cannot be a path in this repository, because every one of them is lower case.
+PLACEHOLDER = re.compile(r"[<>]")
 
 
 # The invariants audit: every invariant must have a section, a status from this vocabulary, and at least
@@ -210,6 +218,18 @@ def check(
                 f"D{identifier} is cited in {', '.join(sorted(set(cited[identifier])))} and has no "
                 f"definition in any of {', '.join(decision_files)}"
             )
+
+    for name in CLAIM_DOCUMENTS:
+        path = root / name
+        if not path.exists():
+            continue
+        for number, match in lines_with(path.read_text(), PATH):
+            documented = match.group(1)
+            if PLACEHOLDER.search(documented) or documented != documented.lower():
+                continue  # `docs/release-notes-vX.Y.md` is a template, not a claim about a file
+            checked += 1
+            if not (root / documented).exists():
+                problems.append(f"{name}:{number}: names {documented}, which does not exist")
 
     for name in CLAIM_DOCUMENTS:
         path = root / name
