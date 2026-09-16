@@ -1056,3 +1056,45 @@ changes it.
 That leaves the compute targets, and the order is not the one the record implied: after `mix.read`, the
 largest are **`attn.core` 4.05 s**, **`load` 2.22 s** and **`head` 1.76 s**. The head is a plain GEMM and the
 easiest of the three to make bit-exact, which is a better first kernel than the DeltaNet's chunked rule.
+
+## D61 — `D10`'s open question, measured: no math mode is enough, and `fma(x, w, 0)` is
+
+The comment on `MetalUnpack`'s pipeline recorded an open question in as many words: the GEMM that follows
+"must not assume that `.relaxed` is enough, and will have to **measure** whether `.relaxed` is enough or
+whether the accumulation needs to be guarded differently". This is that measurement, and the answer is that
+no mode is enough.
+
+**What is at stake.** The contract's matmul is `ordered_matmul`: "one multiply and one add per output, so the
+rounding sequence is fully determined" — **no FMA** — and `Ops.orderedMatmulScalar` materialises the product
+before the add because "the contract forbids fusing the two". A GPU that contracts `a * b + acc` into one
+`fma` produces a different number one ULP away, and a bit-exactness claim built on it would be false.
+
+**The method is a discriminator, not a shape.** A triple where the fused and separate roundings differ —
+found by search, `fma(a,b,c) != round(round(a*b)+c)`, and both bit patterns asserted in the test so the
+probe cannot pass by being unable to tell the difference — compiled under every `MTLMathMode` and four
+spellings of the accumulation:
+
+| | `plain` | `product-first` | `fma(x,w,0)` |
+| --- | --- | --- | --- |
+| `.fast` | fused ✗ | fused ✗ | **separate ✓** |
+| `.relaxed` | fused ✗ | fused ✗ | **separate ✓** |
+| `.safe` | fused ✗ | **separate ✓** | **separate ✓** |
+
+**`.fast` and `.relaxed` both contract**, so `D10`'s worry was right. **`.safe` does not fix it on its own** —
+it keeps a product in its own statement apart from the following add, but still fuses a single expression —
+so a GEMM written plainly would be wrong under every mode the unpack might choose. **`accumulator +
+metal::fma(x, w, 0.0f)` reproduces the contract under all three**, and that is the spelling a bit-exact GPU
+GEMM has to use. It also means the GEMM can share `.relaxed` with the unpack instead of forcing a second,
+slower pipeline.
+
+**The trap is worth more than the answer.** The same probe run over a 257-term dot **matched in all nine
+mode-and-formulation combinations**, including the ones that contract, because over a long sum the
+contraction differences cancelled. A test written against a long dot — the obvious shape to test a matmul
+with — would have concluded that the GPU was exact and been wrong. The discriminator has to be **one
+multiply and one add**, with the addend nonzero, which is why the probe is shaped that way rather than like
+the operation it is clearing the way for.
+
+Two tests carry it: `testWhichModeAndFormulationReproduceTheContractsRounding` asserts that at least one
+combination reproduces the contract and prints which, and
+`testTheFormulationThatMatchesAlsoKeepsTheOrder` checks a 257-term dot against
+`Ops.orderedMatmulScalar` — the engine's own definition of the order, not a loop written in the test.
