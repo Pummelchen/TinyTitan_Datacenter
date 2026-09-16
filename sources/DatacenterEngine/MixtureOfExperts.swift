@@ -119,9 +119,28 @@ public enum MixtureOfExperts {
         hidden: [Float], tokens: Int, provider: any ExpertWeightProvider,
         indices: [[Int]], weights: [[Float]], shape: MixtureShape, profiler: Profiler? = nil
     ) throws -> [Float] {
+        let contributions = try expertContributions(
+            hidden: hidden, tokens: tokens, provider: provider,
+            indices: indices, weights: weights, shape: shape, profiler: profiler
+        )
+        // The one-node path goes through the same contract the N-node path does (`D17`), so the two
+        // cannot accumulate in different orders. A second loop here would be a second chance to.
+        return OrderedReduction.accumulate(contributions, tokens: tokens, hiddenSize: shape.hiddenSize)
+    }
+
+    /// The per-`(token, expert)` terms the reduction sums.
+    ///
+    /// A node owns some experts and computes their terms; the terms travel as
+    /// `ExpertContribution`s and are summed in `(token, expert)` order, which is the sequence the
+    /// single-node engine performs. This is the **production** expert path, not a parallel
+    /// implementation of it — see `experts` above.
+    public static func expertContributions(
+        hidden: [Float], tokens: Int, provider: any ExpertWeightProvider,
+        indices: [[Int]], weights: [[Float]], shape: MixtureShape, profiler: Profiler? = nil
+    ) throws -> [ExpertContribution] {
         let hiddenSize = shape.hiddenSize
         let intermediate = shape.intermediate
-        var output = [Float](repeating: 0, count: tokens * hiddenSize)
+        var contributions: [ExpertContribution] = []
 
         // Each expert's (token, rank) pairs, in the order the contract collects them: token
         // ascending, then rank ascending.
@@ -132,7 +151,7 @@ public enum MixtureOfExperts {
             }
         }
 
-        for expert in pairs.keys.sorted() {
+        for expert in pairs.keys.sorted() where provider.serves(expert) {
             let assignments = pairs[expert]!
             let gateUp = try provider.gateUp(expert: expert, shape: shape)
             let down = try provider.down(expert: expert, shape: shape)
@@ -162,15 +181,18 @@ public enum MixtureOfExperts {
             )
             profiler?.mark("mix.down")
             for (position, assignment) in assignments.enumerated() {
-                let scale = weights[assignment.token][assignment.rank]
-                for index in 0..<hiddenSize {
-                    let target = assignment.token * hiddenSize + index
-                    output[target] = output[target] + projected[position * hiddenSize + index] * scale
-                }
+                let base = position * hiddenSize
+                contributions.append(
+                    ExpertContribution(
+                        token: assignment.token, expert: expert,
+                        values: Array(projected[base..<(base + hiddenSize)]),
+                        scale: weights[assignment.token][assignment.rank]
+                    )
+                )
             }
             profiler?.mark("mix.acc")
         }
-        return output
+        return contributions
     }
 
     /// The whole block: the routed sum plus the shared expert, gated by its own scalar.

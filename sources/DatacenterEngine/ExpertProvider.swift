@@ -24,6 +24,18 @@ public protocol ExpertWeightProvider {
     func gateUp(expert: Int, shape: MixtureShape) throws -> [Float]
     /// `[hidden, intermediate]`.
     func down(expert: Int, shape: MixtureShape) throws -> [Float]
+    /// Whether this provider can serve an expert at all.
+    ///
+    /// A node owns a subset of the experts while the router selects across all of them, so the expert
+    /// path asks before it reads: an unowned expert is **skipped**, not zeroed. Skipping is only safe
+    /// because every sharded run checks the reduction for completeness first
+    /// (`OrderedReduction.isComplete`) — that check is what `D17` means by "absence has to be loud".
+    /// A provider that serves everything, which is every single-node one, keeps the default.
+    func serves(_ expert: Int) -> Bool
+}
+
+extension ExpertWeightProvider {
+    public func serves(_ expert: Int) -> Bool { true }
 }
 
 /// Raised when a source hands back a width the mixture's geometry does not agree with — a

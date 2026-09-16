@@ -76,7 +76,33 @@ tests hold it:
 | `testPreSummedPartialsWouldNotBeBitIdenticalAndTheContractIs` | the trap is real (20000008 against 20000006) and the contract avoids it |
 | `testTheOrderKeyIsTokenThenExpert` | the order key itself, so a refactor cannot quietly change it |
 
-**What is not yet verified, and is the next step.** The tests use synthetic contributions. The claim
-that matters is against the **real fixture**: partition the fixture's experts across two providers,
-reduce, and compare bit-for-bit with the single-node forward. That is `DC-041`, and it is the harness
-M2's gate will run.
+### Status: implemented, and demonstrated on the fixture's real weights
+
+`MixtureOfExperts.experts` is now a thin wrapper over `expertContributions` +
+`OrderedReduction.accumulate`, so the one-node and N-node paths **are the same code** — a second loop
+beside the contract would be a second chance to accumulate in a different order, which is the thing this
+decision exists to prevent. `ShardedMixtureTests` takes the fixture's **real quantized weights**, the
+**real** router's selection, and two and four simulated nodes, and compares bit pattern by bit pattern
+with the single-node forward; it also checks that every selected expert is owned exactly once, and that a
+node asked for an expert it does not own is refused rather than handed zeros.
+
+Three things the fixture run forced, two of them because the first version was wrong:
+
+- **A node must be able to decline an expert.** The router selects across all experts while a node owns a
+  subset, so `ExpertWeightProvider` gained `serves(_:)` — defaulting to `true`, so nothing single-node
+  changed — and the expert path **skips** what a provider does not serve. The first attempt made the
+  wrapper throw instead, and the run failed at once with "node 1 was asked for expert 6, which it does
+  not own": loud absence, before there was any guard to make skipping safe.
+- **Completeness is a run-level guard, not a hope.** Skipping is only safe if something checks that the
+  reduction saw exactly the selected terms, so `OrderedReduction.selectedKeys`/`isComplete` are
+  production API, tested, and required of every sharded run — including the node-failure path, where the
+  answer is to fail the run (`DC-043`).
+- **The cost is real and accepted.** Routing the single-node forward through the contract added ~1.4 s to
+  a 16.3 s forward on the real 35 B model (40 contributions per layer × 40 layers, materialised and
+  sorted). Keeping a fast single-node loop beside the contract would buy that second back and reintroduce
+  the divergence risk, so it is not done. The real-model digest is **unchanged**
+  (`b0d382dbabf36df0…`), which is the evidence that the refactor is numerically neutral.
+
+**What remains.** The transport and the wire protocol (`DC-008`, `DC-009`). Nothing above has crossed a
+network, so the cluster's real failure modes — a slow node, a retry, a node that dies mid-run — are still
+untested, and `Q9`-style questions about the ring are answered on paper rather than over a wire.

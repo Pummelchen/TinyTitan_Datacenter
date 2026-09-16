@@ -53,6 +53,32 @@ public enum OrderedReduction {
         one.token == other.token ? one.expert < other.expert : one.token < other.token
     }
 
+    /// The `(token, expert)` keys a router's selection requires a reduction to have seen.
+    public static func selectedKeys(_ indices: [[Int]]) -> Set<String> {
+        var keys: Set<String> = []
+        for (token, experts) in indices.enumerated() {
+            for expert in experts { keys.insert("\(token):\(expert)") }
+        }
+        return keys
+    }
+
+    /// Whether a reduction saw **exactly** the terms the router selected — no missing term and no
+    /// duplicate.
+    ///
+    /// This is the guard `D17` requires and the reduction itself cannot provide: it cannot tell a
+    /// missing contribution from a contribution of zero, so a node that never answered would otherwise
+    /// produce a smaller sum that still looks like a number. Every sharded run must call this before it
+    /// reduces, including on the node-failure path (`DC-043`) — where the answer is to fail the run.
+    public static func isComplete(_ contributions: [ExpertContribution], indices: [[Int]]) -> Bool {
+        var seen: Set<String> = []
+        for contribution in contributions {
+            let key = "\(contribution.token):\(contribution.expert)"
+            if seen.contains(key) { return false }
+            seen.insert(key)
+        }
+        return seen == selectedKeys(indices)
+    }
+
     /// Sum contributions into a `[tokens, hiddenSize]` output in the canonical order.
     ///
     /// The multiplication is applied before the addition, to the same expression shape the
