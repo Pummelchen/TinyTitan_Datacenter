@@ -24,10 +24,10 @@ decision matching: `docs/m0-gate.md`), M1 on the real 35 B model, whose trace is
 `b8c976c5e7ba8816…`) with generation at **0.108 tok/s** cached and **348.6 MB** peak
 memory (`docs/m1-gate.md`, re-established 2026-09-16). It is nevertheless **incomplete**:
 no Python contract reads an install (`DC-108`), `D12` is an open design question, and
-**M2 has started**: the reduction contract (`D17`) is decided and demonstrated on the fixture's real
-weights, and the wire protocol (`D18`) is implemented and demonstrated over a socket pair — with the
-failure semantics (timeouts, retries, a node that dies mid-run) still to build. **M3–M5 have not
-started**.
+**M2 has started**: the reduction contract (`D17`), the wire protocol (`D18`) and the failure semantics
+(`D19`) are implemented and demonstrated over a socket pair — a two-node exchange is bit-identical to the
+single-node forward, a resend merges, and a missing term fails the run. What remains is a real second
+process on a real link (`DC-045`), which needs the cluster. **M3–M5 have not started**.
 There are **no releases and no tags**. The design, the plan and the status live in the
 wiki; the measurements live in `docs/`.
 
