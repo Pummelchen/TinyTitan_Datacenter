@@ -139,9 +139,9 @@ def gates() -> list[str]:
     # is there to compare against — the baselines. Naming a gate that could not run is `RELEASE.md` §1.8's
     # rule; giving it its input when the input exists is better than naming it.
     command = [sys.executable, str(TOOLS / "run_all_gates.py"), "--milestones"]
-    recorded = ROOT / ".build/baseline-check/trace/metrics.json"
-    if recorded.exists():
-        command += ["--baselines", str(recorded)]
+    recorded_run = ROOT / ".build/baseline-check/trace/metrics.json"
+    if recorded_run.exists():
+        command += ["--baselines", str(recorded_run)]
     all_gates = run(command)
     if all_gates.returncode != 0:
         raise Refused("the gate set failed:\n" + all_gates.stdout[-4000:] + all_gates.stderr[-2000:])
