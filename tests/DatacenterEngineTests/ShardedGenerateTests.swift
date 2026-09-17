@@ -16,14 +16,15 @@ final class ShardedGenerateTests: XCTestCase {
     }
 
     private final class Outcome: @unchecked Sendable {
+        var generation: Generation?
         var generated: [Int]?
         var error: Swift.Error?
     }
 
-    private func sharded(
+    private func shardedGeneration(
         install: URL, node: Int, ownership: ExpertOwnership, peers: [any ContributionTransport],
         prompt: [Int], steps: Int, cached: Bool
-    ) throws -> [Int] {
+    ) throws -> Generation {
         let forward = try Qwen3_5Forward(
             install: install,
             shard: ShardExecution(
@@ -34,21 +35,21 @@ final class ShardedGenerateTests: XCTestCase {
         let generation = cached
             ? try forward.generateCached(prompt: prompt, maxNewTokens: steps)
             : try forward.generate(prompt: prompt, maxNewTokens: steps)
-        return generation.generated
+        return generation
     }
 
     /// Run the two nodes on two threads, because each blocks on the other inside every mixture layer.
     private func runBothNodes(
         install: URL, ownership: ExpertOwnership, left: any ContributionTransport,
         right: any ContributionTransport, prompt: [Int], steps: Int, cached: Bool
-    ) throws -> ([Int], [Int]) {
+    ) throws -> (Generation, Generation) {
         nonisolated(unsafe) let rightTransport = right
         let outcome = Outcome()
         let finished = DispatchSemaphore(value: 0)
         let thread = Thread {
             defer { finished.signal() }
             do {
-                outcome.generated = try self.sharded(
+                outcome.generation = try self.shardedGeneration(
                     install: install, node: 1, ownership: ownership, peers: [rightTransport],
                     prompt: prompt, steps: steps, cached: cached
                 )
@@ -57,13 +58,13 @@ final class ShardedGenerateTests: XCTestCase {
             }
         }
         thread.start()
-        let mine = try sharded(
+        let mine = try shardedGeneration(
             install: install, node: 0, ownership: ownership, peers: [left],
             prompt: prompt, steps: steps, cached: cached
         )
         XCTAssertEqual(finished.wait(timeout: .now() + 60), .success, "node 1 did not finish")
         if let error = outcome.error { throw error }
-        return (mine, try XCTUnwrap(outcome.generated))
+        return (mine, try XCTUnwrap(outcome.generation))
     }
 
     func testShardedGenerationMatchesSingleNodeInBothDecodeModes() throws {
@@ -90,10 +91,43 @@ final class ShardedGenerateTests: XCTestCase {
                 prompt: prompt, steps: steps, cached: cached
             )
             let mode = cached ? "cached decode" : "full sequence"
-            XCTAssertEqual(mine, single.generated, "\(mode): node 0's tokens")
-            XCTAssertEqual(theirs, single.generated, "\(mode): node 1's tokens")
+            XCTAssertEqual(mine.generated, single.generated, "\(mode): node 0's tokens")
+            XCTAssertEqual(theirs.generated, single.generated, "\(mode): node 1's tokens")
         }
         XCTAssertFalse(single.generated.isEmpty)
+    }
+
+    /// The head is split by vocabulary row and then gathered (`D93`), and the test that matters is that the
+    /// **logits** come back identical — not that the tokens do. Tokens alone would pass on a head that computed
+    /// every row on every node, which is the thing being removed.
+    func testTheShardedHeadGathersBackTheSingleNodeLogits() throws {
+        let install = try installURL()
+        let prompt = [1, 2, 3]
+        let steps = 2
+        let single = try Qwen3_5Forward(install: install)
+            .generateCached(prompt: prompt, maxNewTokens: steps)
+        let experts = try Qwen3_5Forward(install: install).mixtureShape().experts
+        let ownership = ExpertOwnership(
+            plan: ShardPlan.generate(family: "tiny", experts: experts, nodes: 2)
+        )
+        let (left, right) = try SocketPair.make()
+        let (mine, theirs) = try runBothNodes(
+            install: install, ownership: ownership, left: left, right: right,
+            prompt: prompt, steps: steps, cached: true
+        )
+
+        XCTAssertEqual(mine.generated, single.generated)
+        XCTAssertEqual(theirs.generated, single.generated)
+        let mineLogits = try XCTUnwrap(mine.captured.first { $0.name == "logits" })
+        let theirsLogits = try XCTUnwrap(theirs.captured.first { $0.name == "logits" })
+        let singleLogits = try XCTUnwrap(single.captured.first { $0.name == "logits" })
+        XCTAssertEqual(mineLogits.values, singleLogits.values, "node 0's gathered head")
+        XCTAssertEqual(theirsLogits.values, singleLogits.values, "node 1's gathered head")
+
+        // And the split really happened: two nodes own disjoint halves of the vocabulary.
+        let slice = VocabSlice(node: 0, nodes: 2, vocabSize: singleLogits.values.count)
+        XCTAssertEqual(slice.range.lowerBound, 0)
+        XCTAssertEqual(slice.range.upperBound, singleLogits.values.count / 2)
     }
 
     /// Three nodes, joined the way the cluster actually joins: real sockets, a cluster config and the

@@ -2440,3 +2440,47 @@ is overlapping the wait with compute rather than removing it.
 **Why this matters to the target.** The cluster needs 4.79 → 3.59 s/step for 1.5×. The two levers are the
 exchange, 1.1-2.3 s/step of which is *waiting*, and the head shard at −0.79 s/step. Neither is a protocol
 rewrite; both are about who does which work.
+
+## D93 — The head is vocabulary-parallel, and it took the cluster from 1.13x to 1.36x
+
+The ratio is `(replicated + experts) / (replicated + experts/n + exchange)`, so the lever is the *replicated*
+work — and the head was the largest piece of it: **1.05 s/step on every node**, 19.2% of the step, identical
+everywhere (`D88`). It is also the most shardable thing in the model, because the head's rows are independent:
+row `v`'s value is a dot product over the hidden width and depends on no other row.
+
+**The design, and why it stays bit-exact.** Each node computes only its vocabulary slice, with the split
+**derived from the node count** rather than declared in the plan (so no field can disagree with it), and applies
+it *inside* the existing `headBlockRows` loop — so a node's rows are computed by exactly the same
+multiplications in exactly the same order as before. Then the slices are gathered, so **every node ends with the
+same full logits array**: the argmax, the margin and the captured trace are unchanged, which matters because the
+gate compares tokens *and* the trace digest, and a design that only agreed on tokens would have quietly weakened
+it. `VocabSlice` is a partition by construction and the test asserts it as one — every row owned exactly once,
+for vocabularies from 0 to 248,320 over one to five nodes — because a row nobody computed stays zero and shows
+up as neither an error nor a difference.
+
+**The gather is chunked, and that is not an optimisation.** A full slice is about a megabyte, and if every node
+sent a megabyte before reading anything the sends would fill the socket buffers and every node would block in
+`send` waiting for a peer blocked in `send`. Small frames never reach that and a fixture-sized test never would
+either. So the vocabulary is cut into fixed windows — the *same* windows on every node, so the message count
+matches everywhere — and within a window each node sends one 16 KB frame and reads one from each peer. A node
+whose slice misses a window sends an **empty frame rather than nothing**, which is what keeps the reads
+aligned. `HeadSliceWire` is its own format (magic `TTDH`) rather than a reused contribution frame, because a
+contribution is a keyed term that gets *summed* and a slice is a run of rows that gets *placed*; overloading the
+one frame would have meant inventing a key and excluding it from the sum.
+
+**The measurement.** Four nodes, `--allow-busy-farm`, bit-identity intact on all four:
+
+| | baseline (1 node) | cluster, before | cluster, after |
+| --- | --- | --- | --- |
+| step | 5.487 s | 4.790 s | **4.021 s** |
+| `head` | 1.083 s | 1.045 s | **0.26-0.32 s** |
+| ratio | — | 1.13x | **1.36x** |
+
+The head fell by a factor of four as intended, the step fell by 0.77 s, and **all four nodes are now identical
+to the millisecond** (4.021 s each). The gap to 1.5x is **0.36 s/step** — the cluster needs 3.658.
+
+**One number still does not reconcile, and it is recorded rather than used.** On every node the ledger's
+`exchange_seconds` (1.4-1.9 s/step) is *larger* than the `ff` phase that contains it (0.575 s), even though the
+marks are placed correctly — `ff` is marked after `mixtureOutput` returns — and the phases sum to the step. One
+of the two is not saying what it appears to say, and `D90` and `D92` both reasoned from that counter. It is not
+worth building on until it is resolved; the head shard was justified by the *phases*, which do add up.

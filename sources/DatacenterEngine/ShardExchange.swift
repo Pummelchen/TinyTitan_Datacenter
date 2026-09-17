@@ -20,6 +20,8 @@ public enum ShardExchangeError: Swift.Error, CustomStringConvertible, Equatable 
     case incomplete(missing: [String])
     /// The same `(token, expert)` arrived twice with different bits.
     case duplicateWithDifferentBits(key: String)
+    /// A head slice arrived claiming rows outside the vocabulary.
+    case headSliceOutOfRange(start: Int, count: Int, vocabulary: Int)
     case noAttempts
 
     public var description: String {
@@ -29,6 +31,8 @@ public enum ShardExchangeError: Swift.Error, CustomStringConvertible, Equatable 
                 + "a run that summed fewer experts would be quietly wrong"
         case .duplicateWithDifferentBits(let key):
             return "term \(key) arrived twice with different bits, so one of the two is not what this node computed"
+        case .headSliceOutOfRange(let start, let count, let vocabulary):
+            return "a head slice claims rows \(start)..<\(start + count) of a \(vocabulary)-row head"
         case .noAttempts:
             return "an exchange policy of zero attempts cannot complete anything"
         }

@@ -191,16 +191,28 @@ extension Qwen3_5Forward {
 
         // Only the last row's logits are needed to choose the next token, so the head is read and
         // multiplied one vocabulary block at a time for one row rather than for the sequence.
+        //
+        // In a sharded run each node computes only its **vocabulary slice** and the slices are then exchanged,
+        // so every node ends with the same array: the head is 1.05 s/step of replicated work (`D88`), and
+        // `D93` splits it without moving a single value — the dot product for a row does not depend on which
+        // other rows the same node computed.
         var logits = [Float](repeating: 0, count: config.vocabSize)
-        var row = 0
-        while row < config.vocabSize {
-            let upper = min(row + Self.headBlockRows, config.vocabSize)
+        let slice = shard.map {
+            VocabSlice(node: $0.node, nodes: $0.ownership.nodes, vocabSize: config.vocabSize)
+        }
+        let rows = slice?.range ?? 0..<config.vocabSize
+        var row = rows.lowerBound
+        while row < rows.upperBound {
+            let upper = min(row + Self.headBlockRows, rows.upperBound)
             let block = try source.rows(named: headName, range: row..<upper)
             let product = Ops.orderedMatmul(x: hidden, w: block, rows: 1, k: hiddenSize, out: upper - row)
             for column in 0..<(upper - row) { logits[row + column] = product[column] }
             row = upper
         }
         profiler?.mark("head")
+        if let shard, let slice {
+            try shard.gatherHeadSlice(into: &logits, slice: slice)
+        }
         captured.append(TraceWriter.Tensor(name: "logits", shape: [1, config.vocabSize], values: logits))
         return (captured, discrete)
     }

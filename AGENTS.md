@@ -16,7 +16,7 @@ A distributed inference engine for large MoE language models on a cluster of Mac
 minis and Mac Studios, over LAN/SFP/QSFP and Thunderbolt. The Swift engine under
 `sources/` **builds and passes its tests on Swift 6.4 / Xcode 27**, the toolchain
 `swift-tools-version:6.4` requires: `swift build` clean, `swift test --no-parallel`
-at **216 tests, 0 skipped, 0 failures** — the Metal kernel tests run on the node's GPU
+at **226 tests, 0 skipped, 0 failures** — the Metal kernel tests run on the node's GPU
 since `D34`. **M0, M1 and M2 are done and their gates have passed** — M0 on `Qwen/Qwen3.5-2B`
 (three frozen prompts, **40,683,520 bytes identical** to the contract, every discrete
 decision matching: `docs/m0-gate.md`), and **M1's gate passes in both of its forms** — the **checkpoint**
@@ -99,7 +99,14 @@ wait is a busy peer, and no distribution fixes it. So a 1.5× figure cannot be *
 window — which is what the gate's `--quiet-load 1.0` rule exists for (`D38`). What is in our hands is to make
 the **replicated** work smaller, since the ratio is `(replicated + experts) / (replicated + experts/n +
 exchange)` and the head's 1.05 s/step is identical on every node, and to **overlap the wait** with work that is
-not on the critical path. **M4–M5 have not
+not on the critical path. **The head is done and it worked** (`D93`): it is now **vocabulary-parallel** — each
+node computes its own rows with the block decomposition unchanged and the slices are gathered, so every node
+ends with the identical full logits array and the trace digest is untouched — and the cluster went from **1.13×
+to 1.36×** with bit-identity intact on all four nodes: step **4.790 → 4.021 s**, `head` **1.045 → 0.26-0.32 s**,
+and all four nodes now identical to the millisecond. The gap to 1.5× is **0.36 s/step**. One instrument question
+is recorded rather than used: the ledger's `exchange_seconds` (1.4-1.9 s/step) is larger than the `ff` phase
+that contains it (0.575 s) even though the marks are right and the phases sum to the step, and `D90`/`D92` both
+reasoned from that counter. **M4–M5 have not
 started**.
 There are **no releases and no tags**. The design, the plan and the status live in the
 wiki; the measurements live in `docs/`.
@@ -229,7 +236,7 @@ python3 tools/run_all_gates.py
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 216 --swift-skipped 0 --python-tests 410
+python3 tools/check_status_claims.py --swift-tests 226 --swift-skipped 0 --python-tests 410
 
 # The provenance position: no copied code, and no NOTICE to carry
 python3 tools/check_provenance.py
@@ -397,7 +404,7 @@ any failure.
   evidenced.** The first revision said there was no source code; the second said the
   engine runs; the third said it is "untested and does not run". The first two were
   wrong, and so is the third as written — on the toolchain the manifest requires, the
-  build is clean and **216 Swift tests pass**, while on the `macos-26` CI image (Xcode
+  build is clean and **226 Swift tests pass**, while on the `macos-26` CI image (Xcode
   26.x, below the 6.4 floor) the manifest does not even parse. **Any status claim must
   name the toolchain**, because that is the whole difference between "does not build"
   and "builds and passes". Point at a command and its output, never at an adjective.
