@@ -48,7 +48,17 @@ generation shards as well (`datacenter-generate --plan/--config/--node`), which 
 tok/s gates will use. **M3 is under way**: all four
 machines run one forward in a full mesh and produce the single-node trace exactly (`--mesh`), and
 `datacenter-generate` shards, so a two-machine cached generation produced the reference's tokens and
-digest. Its ≥3× throughput gate is a deliberate measurement for a quiet farm. **M4–M5 have not
+digest. Its ≥3× throughput gate is a deliberate measurement for a quiet farm. **A first throughput
+observation was taken on a busy farm on 2026-09-17 with the operator's authorisation** — the gate recorded it
+as `observation_only` with the loads, so it is **not** a gate result and the threshold was not asserted — and
+it measured **0.93×** with bit-identity intact on all four nodes: baseline 5.662 s/step against the slowest
+node's 6.086 s/step. The per-node metrics say why, and this is `DC-051`'s budget: a node reads **2.65× less
+payload per step** (0.592 GB against 1.570 GB — the dense 0.261 GB is **replicated** and the experts really
+are 3.95× fewer) and is nevertheless **slower**, while the exchange is **15.0%** of the step moving 4.49 MB at
+**5.0 MB/s effective**, i.e. **1.63 ms per term**, which is latency rather than bandwidth. **The step is not
+expert-read-bound, so ≥3× is not what an expert plan delivers on this design** (`D84`, `DC-107`). What is
+still unmeasured is a per-phase breakdown of the ~3.8 s/step that is neither payload read across the plan nor
+exchange. **M4–M5 have not
 started**.
 There are **no releases and no tags**. The design, the plan and the status live in the
 wiki; the measurements live in `docs/`.
@@ -178,7 +188,7 @@ python3 tools/run_all_gates.py
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 200 --swift-skipped 0 --python-tests 398
+python3 tools/check_status_claims.py --swift-tests 200 --swift-skipped 0 --python-tests 402
 
 # The provenance position: no copied code, and no NOTICE to carry
 python3 tools/check_provenance.py
@@ -351,6 +361,14 @@ any failure.
   name the toolchain**, because that is the whole difference between "does not build"
   and "builds and passes". Point at a command and its output, never at an adjective.
 
+- **A path spelled in two places will drift, and the copy that breaks is the one a reader uses.** Both cluster
+  gates staged the install into the peer's directory **under its own name** (`m1-install`) and then launched the
+  peer with the literal `./install`. `--remote-install` worked and every earlier cluster run had passed it, so
+  the broken default was never exercised — until the documented command in the gate's own docstring was run on
+  the real farm, and every peer died on a missing `install/install.json` after 21.7 GB had been copied to each.
+  The fix is one function that decides the name, used by the stager and the launcher alike; the test that
+  matters is the one that reads **both** files and refuses the literal anywhere, because the defect was the two
+  halves disagreeing and a test of either half alone passes (`D83`).
 - **A pipe hides the exit status of the thing you are testing, and it has now happened three times in one
   session.** `swift test | tail` on a failing suite; `datacenter-generate … | tail -3` on a run whose *token
   line* was the thing being verified; and `run_m3_gate.py … | tail` on a gate that had **crashed** — each

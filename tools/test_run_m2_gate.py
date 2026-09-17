@@ -33,6 +33,37 @@ def fake_install(root: Path, family: str = "qwen3_5_moe", experts: int = 8) -> P
     return root
 
 
+class RemoteInstallPathTests(unittest.TestCase):
+    """The path a peer is launched with must be the path that was staged.
+
+    It was not. Both gates copied the install into the remote directory under its own name and then launched
+    the node with `./install` — a name that only matches when the local install happens to be called
+    `install`. The default is the one the gate docstrings show a reader, so the documented command copied
+    21.7 GB to every peer and had every peer fail on a missing `install/install.json` (`D83`). These tests
+    pin the two halves together, because the defect was the two halves disagreeing.
+    """
+
+    def test_the_default_is_the_name_that_was_staged(self) -> None:
+        self.assertEqual(harness.remote_install_path(Path(".build/m1-install"), None), "./m1-install")
+
+    def test_an_explicit_remote_install_is_used_exactly_as_given(self) -> None:
+        named = "~/Downloads/m1-install"
+        self.assertEqual(harness.remote_install_path(Path(".build/m1-install"), named), named)
+
+    def test_a_differently_named_install_does_not_inherit_the_old_default(self) -> None:
+        """The old default returned `./install` whatever the install was called, which is the whole bug."""
+        self.assertEqual(harness.remote_install_path(Path("/tmp/x/35b-install"), None), "./35b-install")
+
+    def test_neither_gate_spells_the_install_directory_name_itself(self) -> None:
+        """A hardcoded name is how the two halves drifted apart; the name belongs in exactly one place."""
+        for name in ("run_m2_gate.py", "run_m3_gate.py"):
+            source = (Path(__file__).resolve().parent / name).read_text()
+            self.assertNotIn(
+                '"./install"', source,
+                f"{name} names the remote install directory itself; it must ask remote_install_path",
+            )
+
+
 class PlanTests(unittest.TestCase):
     def test_the_family_comes_from_the_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

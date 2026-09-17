@@ -2020,3 +2020,81 @@ commands in a *workflow* do not need the documented-command gate (`D81`), becaus
 a renamed flag fails the job, loudly and immediately. The commands in a *document* never run, which is exactly
 why they were the surface worth gating. Same words, different instrument — because a different thing happens to
 them.
+
+## D83 — The documented cluster command could not work: it staged the install under one name and launched with another
+
+The operator authorised a throughput run on the farm while it is busy, so the first thing I ran was the command
+`run_m3_gate.py`'s own docstring shows a reader:
+
+```
+python3 tools/run_m3_gate.py --install .build/m1-install \
+    --mesh node4@<addr>,node1@<addr>,node2@<addr>,node3@<addr> --steps 4
+```
+
+**It failed on every peer**, after copying the 21.7 GB install to each of them: `install.json` could not be
+opened at `~/Downloads/m3-gate/install/install.json`. The cause is one name spelled in two places.
+`stage_remote` copies the install into the remote directory **under its own name** — `.build/m1-install` becomes
+`~/Downloads/m3-gate/m1-install` — while both gates launched the peer with the literal path **`./install`**:
+
+    install = args.remote_install or "./install"          # run_m2_gate.py:197 and :339
+    install = str(args.install) if index == 0 else (args.remote_install or "./install")   # run_m3_gate.py
+
+That only matches when the local install happens to be *called* `install`. `--remote-install` worked all along and
+is what every earlier cluster run used, which is exactly why the default was never exercised: **the flag that
+worked hid the path that did not**, and the path that did not is the one a reader copies. It is `D67`'s family
+again — check the form a reader copies — found this time by running that form on real machines rather than by
+reading it. `stage_remote`'s docstring had drifted with it, claiming the install "is not copied here" while its own
+code copies it whenever `--remote-install` is absent.
+
+**The fix is one shared rule.** `remote_install_path(install, remote_install)` in `run_m2_gate.py`, beside
+`stage_remote` that decides where the install lands, returns `remote_install` when one is named and
+`f"./{install.name}"` otherwise; both gates use it at all three call sites, and the docstring now says what the
+code does.
+
+**Four tests pin it, and one of them is deliberately not a unit test.** Three assert the rule's behaviour — the
+default is the staged name, an explicit path passes through untouched, and a differently named install does not
+inherit the old default. The fourth reads both gates' sources and refuses the literal `"./install"` anywhere in
+them. That is the one that matters here: **the defect was the two halves disagreeing**, so a test of either half
+alone would have passed while the cluster stayed broken.
+
+## D84 — M3's first real number: 0.93x, bit-identical, and the synchronisation budget that explains it
+
+The same run, once the path was fixed (`--remote-install ./m1-install`, which is exactly what the default now
+produces), gave the cluster its first measurement. The gate labels it itself: `observation_only: true`,
+`busy_farm: true`, the loads recorded, and *"this is not a gate result and the threshold was not asserted"*. The
+farm was busy — node4 2.53, node1 2.01, node2 3.18, **node3 9.31** — and the run was 4 steps.
+
+**Correctness first, and it holds: every node's tokens and trace digest are identical to the single-node
+baseline** (`[11751, 11, 264, 3177]`). **Throughput: 0.93x** — baseline 5.662 s/step against the slowest node's
+6.086 s/step. A four-node cluster of 256 experts is *slower* than one node.
+
+**The per-node metrics explain it, and this is the budget `DC-051` has been waiting for.**
+
+| | baseline (1 node) | node (4-node plan) |
+| --- | --- | --- |
+| payload read per step | 1.570 GB | 0.592 GB |
+| — dense, replicated | 0.261 GB | 0.261 GB (identical) |
+| — experts, sharded | 1.309 GB | 0.331 GB (**3.95x fewer**) |
+| step time | 5.662 s | 5.975 s |
+| effective read rate | 277 MB/s | 99 MB/s |
+| exchange | 0 s | 0.893 s/step (**15.0%** of the step) |
+| exchange volume | 0 B | 4.49 MB/step at **5.0 MB/s** effective |
+| exchange terms | 0 | 547/step at **1.63 ms** each |
+
+Two conclusions follow, and both are arithmetic rather than opinion. First, **the exchange is latency-bound, not
+bandwidth-bound**: 4.5 MB per step moving at 5 MB/s is one round trip per term at ~1.6 ms, which is a per-message
+cost, not a link saturation — shrinking the messages would not help and batching them would. Second, and more
+important, **the step is not expert-read-bound at all**: the node reads 2.65x less payload per step than the
+baseline and is *slower* than it. The dense payload is read in full by every node because it is replicated, and
+whatever costs the remaining ~3.8 s/step is likewise not distributed by an expert plan.
+
+**So the >=3x target is not what sharding experts delivers on this design**, and this measurement says why: the
+lever is the non-shardable part — the replicated dense and attention path, and the per-term exchange — which is
+`DC-107`'s I/O-bound finding with numbers on it rather than an argument.
+
+**What this does not say.** It is not a gate result: the threshold was not asserted, the farm was busy, and four
+steps is a short measurement. A quiet window would improve the ratio — the baseline ran on a node at load 2.53
+while the slowest peer sat at 9.31 — but it cannot turn 0.93x into 3x, because the per-node step times are all
+within 2% of each other and none of them is expert-bound. What remains genuinely unmeasured is a **per-phase
+breakdown of the ~3.8 s/step that is neither payload read across the plan nor exchange**. That is the instrument
+`DC-051` and `DC-107` still need, and it is named in the tracker rather than estimated here.

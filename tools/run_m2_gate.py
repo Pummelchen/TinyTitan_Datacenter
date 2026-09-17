@@ -108,13 +108,27 @@ def stage_remote(
     """Copy what a node needs onto another machine: the binary and the plan, plus the fixture when the
     remote has no install of its own.
 
-    A 20 GB install is not copied here — `--remote-install` names one that is already on the peer, which
-    is the difference between a functional test and a data migration.
+    With `--remote-install` the install is named and not copied, which is the difference between a functional
+    test and a data migration; without it the install **is** copied, and it lands under the remote directory
+    under its own name — which is what `remote_install_path` exists to keep the launcher honest about.
     """
     subprocess.run(["ssh", remote, f"mkdir -p {directory}"], check=True, cwd=ROOT)
     sources = [str(binary), str(plan)] if remote_install else [str(binary), str(install), str(plan)]
     sources += [str(path) for path in (extra or [])]
     subprocess.run(["scp", "-q", "-r", *sources, f"{remote}:{directory}/"], check=True, cwd=ROOT)
+
+
+def remote_install_path(install: Path, remote_install: str | None) -> str:
+    """The install path to hand a peer, matching where `stage_remote` actually put it.
+
+    `stage_remote` copies the install into the remote directory **under its own name**, so the path a node is
+    launched with has to be that name. Both gates passed `./install` instead — a name that only matches when
+    the local install happens to be called `install`. The default path, which is the one the gate's own
+    docstring shows a reader, therefore copied 21.7 GB to every peer and then had every peer fail on a missing
+    `install/install.json`. It was found by running the documented command on the real farm; the fix is to
+    derive the name from the directory that was staged rather than spell it out twice (`D83`).
+    """
+    return remote_install or f"./{install.name}"
 
 
 def remote_address(host: str) -> str:
@@ -194,7 +208,7 @@ def run_mesh(args, binaries, plan_path: Path, reference: Path, plan: dict) -> in
         )
     )
     for index, remote in enumerate(entries[1:], start=1):
-        install = args.remote_install or "./install"
+        install = remote_install_path(args.install, args.remote_install)
         processes.append(
             (
                 index,
@@ -336,7 +350,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.remote, args.remote_dir, args.install, binaries["node"], plan_path, args.remote_install
             )
             print(f"[3/4] two machines: node 1 listening on {args.remote}, node 0 connecting from here")
-            remote_install = args.remote_install or "./install"
+            remote_install = remote_install_path(args.install, args.remote_install)
             remote = subprocess.Popen(
                 [
                     "ssh", args.remote,

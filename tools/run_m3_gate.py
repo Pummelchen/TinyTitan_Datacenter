@@ -238,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
                " because --remote-install was not given")
         )
     for index, host in enumerate(addresses):
-        install = str(args.install) if index == 0 else (args.remote_install or "./install")
+        install = str(args.install) if index == 0 else gate.remote_install_path(args.install, args.remote_install)
         if index == 0:
             command = [
                 str(binaries["generate"]), install, str(OUT / f"node-{index}"), args.prompt,
