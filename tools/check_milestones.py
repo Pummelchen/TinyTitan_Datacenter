@@ -80,17 +80,23 @@ def run_engine_trace(install: Path, tokens: list[int], out: Path) -> str | None:
     return read_digest(out)
 
 
-def install_problems(install: Path) -> list[str] | None:
-    """The install verifier's problems, or `None` when there is no install to verify.
+def install_report(install: Path, sample: int = 0) -> dict | None:
+    """The install verifier's report, or `None` when there is no install to verify.
 
     `I4` says the policy is data and `I6` says the artifact carries its own provenance, and both are checked by
     `tools/verify_install.py` — which until now only ever ran **by hand**. The milestone check is where this
-    repository re-checks its claims, so it is where the artifact those claims rest on should be checked too:
-    schema, roles, policy coverage, tiling and the provenance header, and deliberately **not** the payload
-    digests, which are `--digests` and cost a full read of the install.
+    repository re-checks its claims, so it is where the artifact those claims rest on gets checked too: schema,
+    roles, policy coverage, tiling, the provenance header, and **every payload digest**.
 
-    A verifier that cannot run at all is a problem rather than a pass, so a missing report is reported: the one
-    outcome this must never produce is silence.
+    The digests are included rather than left to a separate run because their cost was measured before this
+    decision: on the 21.7 GB install the whole pass takes **26.7 s** and peaks at **29.4 MB**, and free disk and
+    swap do not move, because it is one sequential `pread` pass and never a page-cached mapping. What that buys
+    is `I6` in its strongest form — the manifest *records* a sha256 per payload and, until this round, nothing
+    compared them to it. `--sample` bounds the work for a quick run.
+
+    The verifier's own output is inherited rather than captured, because it is the evidence: it prints the
+    payload coverage and, on failure, the problems themselves. A verifier that cannot run at all is a problem
+    rather than a pass, so a missing report is reported — the one outcome this must never produce is silence.
     """
     if not (install / "install.json").exists():
         return None
@@ -98,15 +104,21 @@ def install_problems(install: Path) -> list[str] | None:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     if report_path.exists():
         report_path.unlink()
-    done = subprocess.run(
-        [sys.executable, str(ROOT / "tools" / "verify_install.py"), str(install), "--json", str(report_path)],
-        cwd=ROOT, capture_output=True, text=True,
-    )
+    command = [
+        sys.executable, str(ROOT / "tools" / "verify_install.py"), str(install), "--json", str(report_path),
+    ]
+    command += ["--sample", str(sample)] if sample else ["--digests"]
+    done = subprocess.run(command, cwd=ROOT, text=True)
     try:
-        report = json.loads(report_path.read_text())
+        return json.loads(report_path.read_text())
     except (OSError, ValueError):
-        return [f"the install verifier wrote no readable report (exit {done.returncode}): {done.stderr.strip()[-300:]}"]
-    return list(report.get("problems", []))
+        return {"problems": [f"the install verifier wrote no readable report (exit {done.returncode})"]}
+
+
+def install_problems(install: Path, sample: int = 0) -> list[str] | None:
+    """The install verifier's problems, or `None` when there is no install to verify."""
+    report = install_report(install, sample=sample)
+    return None if report is None else list(report.get("problems", []))
 
 
 def evaluate(document: dict, digest: str | None) -> tuple[list[str], list[tuple[str, str, str, str]]]:
@@ -141,6 +153,10 @@ def main(argv: list[str] | None = None) -> int:
         help="use an existing trace instead of running one (the tests do this)",
     )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--sample", type=int, default=0,
+        help="verify this many payload digests rather than all of them (the default reads the whole payload)",
+    )
     args = parser.parse_args(argv)
 
     document = load_milestones(args.data)
@@ -153,17 +169,15 @@ def main(argv: list[str] | None = None) -> int:
         # Verify the artifact before trusting a digest computed from it. A trace that reproduces its recorded
         # digest on an install whose provenance or policy coverage is broken is a green light over a broken
         # artifact, which is the shape of failure this repository keeps finding.
-        found = install_problems(args.install)
-        if found:
-            for problem in found[:10]:
-                print(f"INSTALL: {problem}", file=sys.stderr)
+        report = install_report(args.install, sample=args.sample)
+        if report is not None and report.get("problems"):
+            # The verifier has already printed the problems themselves, above.
             print(
-                f"MILESTONE CHECK FAILED: the install does not verify ({len(found)} problem(s))",
+                f"MILESTONE CHECK FAILED: the install does not verify "
+                f"({len(report['problems'])} problem(s))",
                 file=sys.stderr,
             )
             return 1
-        if found is not None:
-            print(f"install: {args.install} verifies (structure, policy, tiling, provenance)")
         out = ROOT / ".build" / "milestone-check" / "single-node"
         digest = run_engine_trace(args.install, tokens, out)
         source = str(out)

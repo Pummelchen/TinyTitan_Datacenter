@@ -102,6 +102,22 @@ class InstallVerificationTests(unittest.TestCase):
     def test_a_sound_install_verifies(self) -> None:
         self.assertEqual(install_problems(FIXTURE_INSTALL), [])
 
+    def test_a_single_flipped_byte_is_caught_by_the_payload_digests(self) -> None:
+        """`I6` in its strongest form: the manifest records a sha256 per payload, and something compares them.
+
+        Nothing did until `D79`. The check costs a full read — 26.7 s and 29.4 MB on the 21.7 GB install, with
+        free disk and swap unmoved — and what it buys is that a corrupted or drifted payload cannot pass as a
+        verified artifact. Without it the digest fields were an assertion the tooling never honoured.
+        """
+        shutil.copytree(FIXTURE_INSTALL, self.root / "install")
+        payload = self.root / "install" / "data.bin"
+        contents = bytearray(payload.read_bytes())
+        contents[len(contents) // 2] ^= 0xFF
+        payload.write_bytes(bytes(contents))
+        found = install_problems(self.root / "install", sample=0)
+        self.assertTrue(found, "a changed payload must be reported")
+        self.assertTrue(any("digest" in problem for problem in found), found)
+
     def test_an_install_whose_payload_disagrees_with_its_manifest_is_a_problem(self) -> None:
         """The tiling check, reached through the helper: `nbytes` is what the payload has to account for."""
         shutil.copytree(FIXTURE_INSTALL, self.root / "install")

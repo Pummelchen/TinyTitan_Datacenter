@@ -1883,3 +1883,33 @@ and a new test pins the other side: a gap smaller than the alignment is the form
 invariants, and a verifier that cries wolf about a valid artifact teaches its reader to ignore it. Both installs
 now verify cleanly: the fixture at 55 tensors, and the real one at **693 tensors tiling 21,700,655,616 bytes**,
 after which the milestone check reproduces M1's digest and exits 0.
+
+## D79 — I6's strongest form had never been run: the payload digests were an assertion the tooling did not honour
+
+`verify_install.py --digests` hashes **every payload** and compares it to the manifest's `sha256`. It had never
+been run on the real install. The manifest has carried those digests, and `slab_sha256` beside them, since the
+format was written — the point of a per-payload digest is that a reader can check one slab instead of a whole
+tensor — and nothing in the repository had ever compared them to the bytes. `I6` said the artifact carries its
+own provenance, and the strongest available evidence for it was unexercised.
+
+**Measured, and then decided.** The whole install: **693 payload digests, 21,700,655,616 bytes, 26.69 s,
+29,392,896 bytes peak RSS, zero problems**. Free disk stayed at 8 GB and swap did not move, because this is one
+sequential `pread` pass and never a page-cached mapping — the envelope `verify_install.py`'s own docstring
+describes, now confirmed by a run instead of by its author's intent.
+
+**And then it became routine, which is the part that matters.** A check that runs when someone remembers is the
+state this round found `I6` in. The **milestone check** now runs it — with the digest pass included rather than
+left to a separate invocation, because its cost was measured *before* the decision rather than assumed, and
+because the milestone check is already the mode that re-checks the claims with the artifacts in hand. `--sample
+N` bounds the work for a quick run, and the verifier's output is **inherited rather than captured**: it prints
+the payload coverage on success and the problems themselves on failure, so the evidence appears in the run
+instead of behind a summary line.
+
+**The check has teeth, and they are tested.** A copied install with **one byte flipped** in its payload is
+reported, by the digest rather than by the geometry — which is the whole difference between checking that a
+payload is the right *shape* and checking that it is the right *bytes*.
+
+**What was verified here for the first time.** Not a claim about the engine, and not a claim about the
+quantisation: that the artifact every M1 and M2 and M3 claim is computed *from* is the artifact the manifest
+describes, byte for byte, across 693 tensors and 21.7 GB. Every earlier verification in this repository has been
+downstream of that assumption.
