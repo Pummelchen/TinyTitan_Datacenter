@@ -2539,3 +2539,43 @@ objective: **≥1.5x, measured, bit-identical, on the real model.**
 the same phase down 2.4x with no device work, no protocol, no bit-exactness argument to make and none of the
 silent-CPU-fallback risk `D91` found in the sister project. The GEMV remains a candidate for absolute speed; it is
 no longer on the path to a number.
+
+## D95 — The first release: an identity a build can enforce, and an archive that can be checked
+
+`RELEASE.md` was written before there was anything to release, and it says so in its own Part 2: no
+`VERSION`, no tag, no release script, no packaging step — while the compiled artifacts *do* exist and the
+arm64 rules therefore already applied. Cutting `v1.0.0` is what turned that section from a description of an
+absence into a process, and three of its demands shaped the work more than the rest.
+
+**Identity is single-sourced and enforced (§1.3), and "enforced" needed measuring.** `VERSION` holds
+`1.0.0`; `sources/DatacenterEngine/Version.swift` is **generated** from it by `tools/version.py --write`, so a
+bump is one edit plus one command and the mirror is never hand-maintained. Every tool answers `--version`,
+because §1.3 wants identity observable from the artifact and a number that lives only in an archive's
+filename is not observable from the binary inside it. Two checks compare the mirror with the authority, and
+the difference between them is the finding: `tools/version.py --check` fails on **every** run, while
+`Package.swift` reads both files when the manifest is evaluated — and **SwiftPM caches the compiled
+manifest**, so a mangled mirror slipped past an incremental `swift build` and only stopped it once the
+manifest itself changed. That is written into the manifest's own comment, because a guard believed to be
+stronger than it is, is worse than one known to be narrow. The release script runs the gate before it
+packages anything, so a mismatch cannot reach a release at all.
+
+**Gates run before packaging, and the scratch build is clean (§1.5).** `tools/release.py` refuses a dirty
+tree, a machine without ~8 GB free, a competing build or model process (it names one and stops — never
+terminates it), a `gh` account that is not the repository's owner, the repository's whole gate set, and a
+clean scratch build whose log is scanned for **warnings** — a fresh scratch path, because a warning scan over
+an incremental build compiles nothing and passes vacuously. It also asks the *plan* what it declares
+(`swift package describe`) rather than checking for artifacts after the fact.
+
+**The architecture is asserted on what ships (§1.2.2), and the notes cannot lie about the digest (§1.8).**
+`lipo -archs` is checked on each binary **extracted from the archive** — checking the build directory would
+assert the wrong thing — together with a smoke test that each shipped tool answers `--version` correctly. The
+notes are the changelog's section for the version, and `--publish` **refuses** unless they carry the
+checksum placeholder or quote the digest the script has just computed; a dry run's size is never copied
+forward, because publishing rebuilds. Eight tests cover that refusal, since a check that has never been seen
+to fail is not yet trusted.
+
+**What the release measures, and what it does not.** Single Mac mini M2: **0.23 tok/s prefill, 0.23 tok/s
+decode**. Four nodes: **0.41 tok/s decode — 1.7x** over one node, bit-identical on every node. The M3
+throughput gate is still **not asserted**: it refuses a busy farm by design (`D38`) and the farm was shared,
+so every figure is an observation with its loads and the README says so. The GPU matmul stays opt-in and this
+release claims nothing about the tiled kernel written after `D63` measured its predecessor slower.

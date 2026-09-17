@@ -184,6 +184,10 @@ def main(argv: list[str] | None = None) -> int:
             problems.append(f"{name}: {result.stdout.strip() or result.stderr.strip()}")
 
     simple("toolchain", [sys.executable, str(TOOLS / "check_toolchain.py")])
+    # `RELEASE.md` §1.3: the identity is single-sourced in `VERSION` and this is the check that fails when a
+    # mirror disagrees. It runs on every gate run; `Package.swift` makes the same comparison at configure
+    # time, but only when SwiftPM re-evaluates the manifest, so neither replaces the other.
+    simple("version", [sys.executable, str(TOOLS / "version.py"), "--check"])
     simple("markdown tables", [sys.executable, str(TOOLS / "check_markdown_tables.py")])
     simple("markdown links", [sys.executable, str(TOOLS / "check_markdown_links.py")])
     simple("provenance", [sys.executable, str(TOOLS / "check_provenance.py")])

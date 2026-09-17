@@ -121,8 +121,12 @@ and the gate remains the certification instrument. `DC-113`'s GPU GEMV is retire
 the CPU path took the same phase down without a device, a protocol, or `D91`'s silent-CPU-fallback risk — and
 remains a candidate for absolute speed. **M4–M5 have not
 started**.
-There are **no releases and no tags**. The design, the plan and the status live in the
-wiki; the measurements live in `docs/`.
+**v1.0.0 is released** (`RELEASE.md` §1.3 gave it an identity: `VERSION` is the authority,
+`sources/DatacenterEngine/Version.swift` is generated from it, every tool answers `--version`, and both
+`tools/version.py --check` and `Package.swift` refuse a disagreement). `tools/release.py` builds the
+archive — **dry run by default**, gates first, a clean scratch build scanned for warnings, `lipo -archs`
+asserted on the binaries *inside* the archive, one checksum beside it — and publishes only with
+`--publish`. The design, the plan and the status live in the wiki; the measurements live in `docs/`.
 
 ## Scope of this checkout
 
@@ -249,7 +253,7 @@ python3 tools/run_all_gates.py
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 226 --swift-skipped 0 --python-tests 410
+python3 tools/check_status_claims.py --swift-tests 226 --swift-skipped 0 --python-tests 425
 
 # The provenance position: no copied code, and no NOTICE to carry
 python3 tools/check_provenance.py
@@ -411,8 +415,10 @@ any failure.
   ad-hoc `python - <<EOF` has no command line for any watchdog to match, so a script that loads model data
   asserts its own peak (`ru_maxrss`) and aborts above its budget (`D54`). Never `dequantize` a tensor you are
   not going to use whole; `rows()` is the streaming form.
-- **No architecture assertion exists anywhere in the repository**, and there is no
-  release artifact to assert against — do not invent a `lipo` step.
+- **The architecture is asserted on the artifact, not in CI.** There is still no CI `lipo` step and none
+  should be invented from nothing; what exists is `tools/release.py`, which checks `lipo -archs` on every
+  binary **extracted from the packaged archive** and refuses anything but exactly `arm64` (`D95`). A check
+  that runs against the build directory instead would assert the wrong thing — the archive is what ships.
 - **The public status of this repository has swung three times, and only the latest is
   evidenced.** The first revision said there was no source code; the second said the
   engine runs; the third said it is "untested and does not run". The first two were

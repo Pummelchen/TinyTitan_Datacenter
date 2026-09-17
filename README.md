@@ -15,7 +15,7 @@ A distributed inference engine for large MoE language models on clusters of Mac 
 **Status: M0, M1 and M2 are complete and their gates have passed.** On the required
 toolchain — **Xcode 27 with Swift 6.4, and nothing else** — `swift build` is clean and
 `swift test --no-parallel` runs **226 tests, 0 skipped, 0 failures** (the Metal kernels skip
-only on a host with no GPU, which is why CI runners report skips), with **410** standard-library Python
+only on a host with no GPU, which is why CI runners report skips), with **425** standard-library Python
 tests run in CI.
 M0 matched the reference on `Qwen/Qwen3.5-2B`: 40,683,520 bytes of trace data identical
 to the contract, every discrete decision matching. **M1's gate passes in both of its forms on all five
@@ -28,13 +28,27 @@ run one forward together in a full mesh and produce that same single trace, and 
 too: a two-machine cached decode produced the single-node tokens and the same trace digest. What remains open is the
 cluster's tok/s measurement, which belongs to a quiet farm; `D12` was settled from a measurement (`D31`: the
 expert slot bank is sized from a budget, because the measured hit rate is **0** at every size). The install now
-has its own reader and checker in Python, which verifies its structure, tiling, policy and every payload digest. There are **no releases and no tags**.
+has its own reader and checker in Python, which verifies its structure, tiling, policy and every payload digest. **v1.0.0 is the first release** — Apple-silicon `arm64` binaries for macOS 26+, with `--version` on every tool and `VERSION` as the single source of that number; the [changelog](CHANGELOG.md) is its announcement.
 
 News, measurements and the live work list are in the **[wiki](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki)** —
 start with [News](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/News) for what
 has closed and what it cost, and the
 [Project Tracker](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Project-Tracker)
 for what is still open.
+
+## Performance
+
+Measured on the release build with greedy decoding on `Qwen3.6-35B-A3B` (int4 install). Every configuration
+produces output bit-identical to a single node.
+
+| Release | Nodes | Prefill tok/s | Decode tok/s | Speed-up |
+| --- | --- | --- | --- | --- |
+| 1.0.0 | 1× Mac mini M2 (8 GB) | 0.23 | 0.23 | 1.0x |
+| 1.0.0 | 4× Mac mini M2 (8 GB) | 0.23 | 0.41 | **1.7x** |
+
+Prefill is not distributed in this release. The cluster figures come from a shared farm (loads 1.6–5.5),
+where load costs the cluster more than the baseline, so they are lower bounds — and later releases will
+improve on all of these.
 
 ## What it does
 

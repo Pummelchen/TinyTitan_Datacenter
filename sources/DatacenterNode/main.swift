@@ -19,6 +19,14 @@ func fail(_ message: String) -> Never {
     exit(2)
 }
 
+// `--version` answers before anything else: §1.3 wants the identity of an artifact to be observable from
+// the artifact itself, and a version that exists only in an archive's filename is not observable from the
+// binary inside it.
+if CommandLine.arguments.contains("--version") {
+    print(TinyTitanVersion.string)
+    exit(0)
+}
+
 var arguments = Array(CommandLine.arguments.dropFirst())
 var node = -1
 var listen: String?
