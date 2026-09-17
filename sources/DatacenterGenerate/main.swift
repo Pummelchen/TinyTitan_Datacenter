@@ -228,6 +228,9 @@ do {
         metrics["plan_digest"] = sharded.planDigest
     }
     metrics["install_bytes_read_total"] = forward.sourceBytesRead
+    // No `profile_seconds` here yet: `Generation` does not carry a profile, and the cached decode loop that
+    // builds it is the one path the profiler's marks do not reach. The trace CLI reports the breakdown for a
+    // full-sequence forward; extending the marks to the cached path is what this gate needs next (`D86`).
     if let data = try? JSONSerialization.data(withJSONObject: metrics, options: [.prettyPrinted, .sortedKeys]) {
         try? data.write(to: output.appendingPathComponent("metrics.json"))
     }

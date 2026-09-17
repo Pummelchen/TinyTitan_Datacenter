@@ -123,12 +123,10 @@ if !result.expertMetrics.isEmpty {
     }
     metrics["expert_distinct"] = Set(result.discrete.flatMap { $0.values }).count
     metrics["layers"] = result.expertMetrics.count
-    if let profile = result.profile {
-        // `SHARD_PROFILE=1` asked for these. Seconds per phase, accumulated over every layer, so a
-        // share is a division by the sum rather than a claim about where time goes.
-        metrics["profile_seconds"] = profile.seconds
-        metrics["profile_layers"] = profile.layers
-    }
+    // `SHARD_PROFILE=1` asked for these. Seconds per phase, accumulated over every layer, so a share is a
+    // division by the sum rather than a claim about where time goes; with the instrument off this adds
+    // nothing at all rather than zeroes.
+    metrics.merge(ProfileMetrics.fields(result.profile)) { _, new in new }
     let directory = output
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     if let data = try? JSONSerialization.data(withJSONObject: metrics, options: [.prettyPrinted, .sortedKeys]) {

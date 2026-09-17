@@ -2098,3 +2098,83 @@ while the slowest peer sat at 9.31 — but it cannot turn 0.93x into 3x, because
 within 2% of each other and none of them is expert-bound. What remains genuinely unmeasured is a **per-phase
 breakdown of the ~3.8 s/step that is neither payload read across the plan nor exchange**. That is the instrument
 `DC-051` and `DC-107` still need, and it is named in the tracker rather than estimated here.
+
+## D86 — The profiler is real and two-layered; the path the speed work measures is the one path it does not reach
+
+Looking for the instrument to answer "where do the ~3.8 s/step go", I found a good one already built.
+`Qwen3_5Forward` marks nine phases around a full-sequence forward — `embed`, `load`, `attn.norm`, `attn.core`,
+`attn.add`, `ff.norm`, `ff`, `head`, `trace.copy` — and `MixtureOfExperts` marks **ten** more inside the mixture:
+`mix.read`, `mix.router`, `mix.experts`, `mix.gateup`, `mix.act`, `mix.down`, `mix.combine`, `mix.acc`,
+`mix.gather`, `mix.shared`. It is turned on with `SHARD_PROFILE=1`, it is allocated only when on, and it has been
+used before: `D62`'s record cites `mix.read`, `mix.gateup` and `head` by name when it established that the GPU
+matmul was slower.
+
+**What it is not wired to is the tool the throughput gate runs.** M3's gate measures `datacenter-generate
+--cached`, and the cached decode loop (`ModelCache.decodeOne`) calls the mixture **without a profiler**, while
+`Generation` — the struct that loop returns — **carries no profile at all**. So the one path the speed work needs
+is the one path with no breakdown, which is why the first M3 observation could report only a step total,
+`exchange_seconds` and byte counts. The absence was not a missing instrument; it was a missing wire.
+
+**What changed here.** `ProfileMetrics.fields(_:)` now turns a profile into the metrics fields, in one place, and
+the trace CLI uses it instead of spelling the two keys out inline. It takes the **optional** report rather than a
+report, so that "the profiler was off" produces **no fields at all** instead of zeroes — the distinction
+`ForwardResult.profile` already documents, and the reason it is optional: zero is a measurement and says a phase
+took no measurable time, while nil says nobody looked. Four Swift tests pin the marks landing in the phase they
+name, the fields carrying every phase and the layer count, an absent profile contributing nothing, and an empty
+report still being a report (**measured and found nothing** is not the same state as **not measured**).
+
+**What was deliberately not done, and is said in the code rather than left silent.** `datacenter-generate` does
+not yet report `profile_seconds`, because `Generation` cannot carry one yet. The file says so where a reader
+would look for the key, and names what comes next: pass a profiler from `decodeOne` into the mixture — the marks
+are already there, so this is plumbing rather than new instrumentation — carry the report on `Generation`, and
+the gate then reports phases per node. Printing zeroes under a phase name would have been the easier change and
+the wrong one.
+
+**Also decided by looking:** the gates require a **release** build (`"run swift build -c release first"`), so the
+0.93x observation was taken on optimised binaries and is not a debug-build artefact. That was worth checking
+before spending an hour profiling a build nobody measures.
+
+## D87 — The first phase breakdown: two thirds of a forward is reading payload, and an expert plan can only reach a third of it
+
+`SHARD_PROFILE=1` on the release trace binary, on the real install, with the frozen M1 prompt:
+
+```
+SHARD_PROFILE=1 .build/out/Products/Release/datacenter-trace \
+    .build/m1-install .build/profile-trace 760,6511,314,9338,369
+```
+
+It produced the **same digest as ever** (`b0d382dbabf36df0…`, 83 tensors, 40 discrete decisions), so the
+instrument does not perturb what it measures, and a breakdown over **40 layers, 17.363 s measured**:
+
+| phase | seconds | share | |
+| --- | --- | --- | --- |
+| `mix.read` | 6.521 | **37.6%** | the expert slices, read from the install |
+| `attn.core` | 4.102 | 23.6% | attention and the Gated DeltaNet |
+| `head` | 2.339 | 13.5% | the LM head: 1.02 GB of weights (`D62`) |
+| `load` | 2.338 | 13.5% | the layer's dense weights |
+| `mix.gateup` / `mix.down` | 1.255 / 0.550 | 7.2% / 3.2% | expert matmuls |
+| `mix.shared` | 0.202 | 1.2% | the shared expert |
+| `mix.router`, `mix.act`, `mix.gather`, `mix.experts`, `mix.acc`, `mix.combine`, `attn.norm`, `ff.norm`, `ff`, `embed`, `final_norm`, `trace.copy` | 0.264 | 1.5% | everything else, together |
+
+**Two thirds of the forward is reading.** `mix.read` + `load` + `head` is **11.198 s = 64.5%** of the measured
+time. That is `DC-107`'s I/O-bound finding at phase resolution rather than as an argument, and it settles the
+scaling question the 0.93x observation raised.
+
+**And it explains the arithmetic of the target.** A four-node expert plan divides `mix.read` by four and leaves
+everything else where it is. Perfect, instantaneous, cost-free sharding of the expert reads is therefore worth
+`6.521 × 3/4 = 4.891 s` — a step of **12.472 s instead of 17.363 s, or 1.39x** — before any exchange cost, and
+measured against the *forward* rather than the cached step. **A 3x target cannot be reached by sharding experts
+on this design, and that is now arithmetic rather than opinion.** The measured 0.93x on the cluster is what is
+left of that 1.39x after the exchange and the farm's load.
+
+**Where the lever therefore is.** Not the expert plan: the *replicated* reads (`load` 13.5% + `head` 13.5%) which
+every node pays in full, the attention core at 23.6%, and the read path itself. The effective read rate is the
+number to attack — `mix.read` moves roughly 33 MB per layer in 163 ms, about **200 MB/s**, in the same range as
+the whole-node figure, which is what a scattered uncached slice read costs rather than what the device can do.
+`DC-052` (cache and prefetch) and `DC-107` (the I/O path) are where the speed target lives, and `DC-112`'s bf16
+idea moves in the wrong direction for it: more bytes, no reads saved.
+
+**What this breakdown is not.** It is a **full-sequence forward of five tokens**, while M3's gate measures a
+**cached decode**, one token per step — so the shares are indicative and not the measured step. The cached path
+has no marks of its own (`D86`: `decodeOne` passes no profiler into the mixture, and `Generation` cannot carry a
+report), which is the next wiring step before the cluster's own per-phase numbers exist.

@@ -50,6 +50,19 @@ public struct ProfileReport: Sendable {
     public let layers: Int
 }
 
+/// Turns a profile into the metrics fields both CLIs write.
+///
+/// It lives here rather than being spelled out in each tool so the two cannot drift, and it takes the
+/// **optional** report so that "profiling was off" is expressed by *no fields at all*. That distinction is the
+/// whole point of `ForwardResult.profile` being optional: an absent profile means the instrument was not run,
+/// and writing zeroes for it would claim a measurement that never happened.
+public enum ProfileMetrics {
+    public static func fields(_ profile: ProfileReport?) -> [String: Any] {
+        guard let profile else { return [:] }
+        return ["profile_seconds": profile.seconds, "profile_layers": profile.layers]
+    }
+}
+
 /// Accumulates phase timings between `mark` calls. Allocated only when profiling is on, so the
 /// instrument costs nothing when it is off.
 public final class Profiler {
