@@ -10,12 +10,20 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import shutil
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from check_milestones import DEFAULT_DATA, evaluate, load_milestones, main, read_digest  # noqa: E402
+from check_milestones import (  # noqa: E402
+    DEFAULT_DATA,
+    evaluate,
+    install_problems,
+    load_milestones,
+    main,
+    read_digest,
+)
 
 DOCUMENT = {
     "prompt": {"id": "capital", "tokens": [1, 2, 3], "length": 3},
@@ -66,6 +74,46 @@ class LoadTests(unittest.TestCase):
         path.write_text(json.dumps({"prompt": {"tokens": [1]}, "milestones": []}))
         with self.assertRaises(ValueError):
             load_milestones(path)
+
+
+FIXTURE_INSTALL = (
+    Path(__file__).resolve().parent.parent
+    / "tests" / "DatacenterEngineTests" / "Fixtures" / "tiny-qwen35" / "install"
+)
+
+
+class InstallVerificationTests(unittest.TestCase):
+    """The milestone check verifies the artifact before it trusts a digest computed from it.
+
+    A digest that reproduces its record on an install whose policy coverage or provenance is broken is a green
+    light over a broken artifact. `tools/verify_install.py` could always catch that, and until this round it
+    only ever ran by hand — so `D78` put it where the repository re-checks its claims.
+    """
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+
+    def test_no_install_is_not_a_problem(self) -> None:
+        """A machine without the artifact has nothing to verify, and the milestone check says so elsewhere."""
+        self.assertIsNone(install_problems(self.root))
+
+    def test_a_sound_install_verifies(self) -> None:
+        self.assertEqual(install_problems(FIXTURE_INSTALL), [])
+
+    def test_an_install_whose_payload_disagrees_with_its_manifest_is_a_problem(self) -> None:
+        """The tiling check, reached through the helper: `nbytes` is what the payload has to account for."""
+        shutil.copytree(FIXTURE_INSTALL, self.root / "install")
+        manifest_path = self.root / "install" / "install.json"
+        manifest = json.loads(manifest_path.read_text())
+        # The mutation has to be larger than the padding slack, or it only eats padding and changes nothing:
+        # `nbytes` is validated against the shape as well, and a padded tensor's byte count has room in it.
+        manifest["tensors"][0]["nbytes"] = int(manifest["tensors"][0]["nbytes"]) * 2
+        manifest_path.write_text(json.dumps(manifest))
+        found = install_problems(self.root / "install")
+        self.assertTrue(found, "a payload that does not account for the manifest must be reported")
+        self.assertTrue(any("byte" in problem or "payload" in problem for problem in found), found)
 
 
 class EvaluateTests(unittest.TestCase):

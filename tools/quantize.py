@@ -37,6 +37,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
 from heavy_job import require_heavy_headroom  # noqa: E402
+from install_reader import ALIGNMENT  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -317,7 +318,7 @@ class InstallWriter:
         return digests
 
     def add(self, entry: dict) -> None:
-        padding = (64 - self._written % 64) % 64
+        padding = (ALIGNMENT - self._written % ALIGNMENT) % ALIGNMENT
         self._blob.write(b"\0" * padding)
         self._written += padding
         offset = self._written

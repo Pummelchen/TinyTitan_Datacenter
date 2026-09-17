@@ -1848,3 +1848,38 @@ instrument narrower than the claim it is supposed to check. The repository alrea
 It has now been found four times — the flags (`D69`, `D73`, `D74`), the document list, the phrasing, the markup —
 and the pattern in every case is that the *gate reported success*, because a claim it cannot parse is a claim it
 does not disagree with.
+
+## D78 — The install verifier was never run by a gate, and the first time it was, it was wrong
+
+`I4` says the policy is data and `I6` says the artifact carries its own provenance, and both are checked by
+`tools/verify_install.py` — which **only ever ran by hand**. So the milestone check, which is where this
+repository re-checks its claims, now verifies the install **before trusting a digest computed from it**: a trace
+that reproduces its recorded digest on an install whose policy coverage or provenance is broken is a green light
+over a broken artifact, which is the shape of failure this repository keeps finding. The step covers schema,
+roles, policy coverage, tiling and the provenance header, and deliberately not the payload digests, which are
+`--digests` and cost a full read.
+
+**Then the new step immediately failed, and it was right to.** The verifier reported the **checked-in fixtures**
+as mis-tiled — and they are the installs every quantisation and install test uses. The cause is a rule stricter
+than the format: `D13` measured that the payload is **64-byte aligned**, because that is what `SIMD4<Float>`
+loads and a `pread` want, and `InstallWriter.add` pads each tensor up to it. The verifier demanded **exact
+contiguity** instead, so every install with a tensor whose size is not a multiple of 64 was reported broken —
+while the engine and the contract read it without complaint. It looked correct because it had only ever been
+pointed at the real install, whose tensors are all far larger than the alignment and therefore tile exactly.
+That is `D69` and `D73` again in a different tool: a check that agrees with the one case it has seen.
+
+**The fix gives the alignment one home.** `install_reader.ALIGNMENT` is now the format's constant, used by the
+writer that pads and by the verifier that checks; the rule became *no overlaps, and no gap at least as large as
+the alignment*. A second correction came out of the tests: the **start** of a tensor is not required to be
+aligned, because the writer guarantees that but a reader does not need it — and the hand-built fixtures in the
+tests are not aligned, which is how that requirement was caught rather than shipped.
+
+**Two tests encoded the stricter rule and were updated rather than deleted.** `test_a_gap_is_reported` used an
+eight-byte gap and `test_a_payload_longer_than_its_tensors_is_reported` appended two bytes; both are now a whole
+alignment wide, which preserves what each test is *for* — a gap that is not padding, a tail that is not padding —
+and a new test pins the other side: a gap smaller than the alignment is the format, not a defect.
+
+**Why a false positive in this tool matters more than it looks.** `verify_install.py` is the evidence for two
+invariants, and a verifier that cries wolf about a valid artifact teaches its reader to ignore it. Both installs
+now verify cleanly: the fixture at 55 tensors, and the real one at **693 tensors tiling 21,700,655,616 bytes**,
+after which the milestone check reproduces M1's digest and exits 0.

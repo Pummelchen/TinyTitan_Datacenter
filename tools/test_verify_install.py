@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from install_reader import Install  # noqa: E402
 from test_install_reader import InstallFixture  # noqa: E402
+from install_reader import ALIGNMENT  # noqa: E402
 from verify_install import coverage, main, policy_for, provenance  # noqa: E402
 
 
@@ -63,7 +64,9 @@ class CoverageTests(unittest.TestCase):
              "padded_columns": 2, "shape": [1, 2]},
             struct.pack("<2f", 1.0, 2.0),
         )
-        fixture.payload.extend(b"\x00" * 8)
+        # The filler is a whole alignment wide: a smaller gap is indistinguishable from the padding the writer
+        # leaves, and `D78` made that padding legal. The point of the test is a gap that is *not* padding.
+        fixture.payload.extend(b"\x00" * ALIGNMENT)
         fixture.add(
             "b",
             {"role": "head.lm", "dtype": "fp32", "quant": "fp32", "group": 0,
@@ -73,6 +76,30 @@ class CoverageTests(unittest.TestCase):
         install = fixture.write()
         problems, _ = coverage(install)
         self.assertTrue(any("starts at" in problem for problem in problems), problems)
+
+    def test_a_gap_smaller_than_the_alignment_is_padding_not_a_problem(self) -> None:
+        """The case `D78` found: the writer pads every tensor to `ALIGNMENT`, so a small gap is the format.
+
+        The rule was exact contiguity, which held on the only install anyone ran it against — the real one,
+        whose tensors are all far larger than 64 bytes — and reported the tiny fixtures as broken while the
+        engine and the contract read them without complaint.
+        """
+        fixture = InstallFixture(self.root)
+        fixture.add(
+            "a",
+            {"role": "embed", "dtype": "fp32", "quant": "fp32", "group": 0,
+             "padded_columns": 2, "shape": [1, 2]},
+            struct.pack("<2f", 1.0, 2.0),
+        )
+        fixture.payload.extend(b"\x00" * (ALIGNMENT - 8))
+        fixture.add(
+            "b",
+            {"role": "head.lm", "dtype": "fp32", "quant": "fp32", "group": 0,
+             "padded_columns": 2, "shape": [1, 2]},
+            struct.pack("<2f", 3.0, 4.0),
+        )
+        problems, _ = coverage(fixture.write())
+        self.assertEqual(problems, [])
 
     def test_an_overlap_is_reported(self) -> None:
         fixture = two_tensors(self.root)
@@ -85,7 +112,7 @@ class CoverageTests(unittest.TestCase):
         fixture = two_tensors(self.root)
         install = fixture.write()
         with open(install.data_path, "ab") as handle:
-            handle.write(b"\x00\x00")
+            handle.write(b"\x00" * ALIGNMENT)
         install = Install(self.root, uncached=False)
         problems, _ = coverage(install)
         self.assertTrue(any("the payload is" in problem for problem in problems), problems)

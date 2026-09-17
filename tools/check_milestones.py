@@ -80,6 +80,35 @@ def run_engine_trace(install: Path, tokens: list[int], out: Path) -> str | None:
     return read_digest(out)
 
 
+def install_problems(install: Path) -> list[str] | None:
+    """The install verifier's problems, or `None` when there is no install to verify.
+
+    `I4` says the policy is data and `I6` says the artifact carries its own provenance, and both are checked by
+    `tools/verify_install.py` — which until now only ever ran **by hand**. The milestone check is where this
+    repository re-checks its claims, so it is where the artifact those claims rest on should be checked too:
+    schema, roles, policy coverage, tiling and the provenance header, and deliberately **not** the payload
+    digests, which are `--digests` and cost a full read of the install.
+
+    A verifier that cannot run at all is a problem rather than a pass, so a missing report is reported: the one
+    outcome this must never produce is silence.
+    """
+    if not (install / "install.json").exists():
+        return None
+    report_path = ROOT / ".build" / "milestone-check" / "install-verify.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    if report_path.exists():
+        report_path.unlink()
+    done = subprocess.run(
+        [sys.executable, str(ROOT / "tools" / "verify_install.py"), str(install), "--json", str(report_path)],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    try:
+        report = json.loads(report_path.read_text())
+    except (OSError, ValueError):
+        return [f"the install verifier wrote no readable report (exit {done.returncode}): {done.stderr.strip()[-300:]}"]
+    return list(report.get("problems", []))
+
+
 def evaluate(document: dict, digest: str | None) -> tuple[list[str], list[tuple[str, str, str, str]]]:
     """`(problems, rows)` — a problem is an undeclared divergence, not a declared one."""
     problems: list[str] = []
@@ -121,6 +150,20 @@ def main(argv: list[str] | None = None) -> int:
         digest = read_digest(args.trace_dir)
         source = str(args.trace_dir)
     else:
+        # Verify the artifact before trusting a digest computed from it. A trace that reproduces its recorded
+        # digest on an install whose provenance or policy coverage is broken is a green light over a broken
+        # artifact, which is the shape of failure this repository keeps finding.
+        found = install_problems(args.install)
+        if found:
+            for problem in found[:10]:
+                print(f"INSTALL: {problem}", file=sys.stderr)
+            print(
+                f"MILESTONE CHECK FAILED: the install does not verify ({len(found)} problem(s))",
+                file=sys.stderr,
+            )
+            return 1
+        if found is not None:
+            print(f"install: {args.install} verifies (structure, policy, tiling, provenance)")
         out = ROOT / ".build" / "milestone-check" / "single-node"
         digest = run_engine_trace(args.install, tokens, out)
         source = str(out)

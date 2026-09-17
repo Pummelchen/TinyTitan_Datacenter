@@ -34,6 +34,12 @@ from pathlib import Path
 
 SCHEMA = 1
 
+# The payload aligns every tensor to this, and the gap it leaves is part of the format rather than a defect:
+# `D13` measured that 64 bytes is what `SIMD4<Float>` loads and a `pread` want, and `InstallWriter.add` pads to
+# it. The verifier demanded exact contiguity until `D78`, which reported every install whose tensors are not
+# multiples of 64 bytes long as broken -- the tiny fixtures -- while reading them perfectly.
+ALIGNMENT = 64
+
 # Float32's least normal magnitude, from its bit pattern rather than from a decimal nobody can check.
 LEAST_NORMAL_FP32 = struct.unpack("<f", struct.pack("<I", 0x00800000))[0]
 
