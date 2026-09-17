@@ -61,6 +61,10 @@ single-node result exactly, with a measured decode speed-up of **1.7x** over one
 - **M3's throughput gate was not asserted.** It refuses a busy farm by design (`D38`), and the farm was
   shared throughout; every speed-up figure above is an `observation_only` run with its loads recorded
   beside it. The gate's own roadmap target of **≥3x on a quiet farm** is therefore **not** claimed.
+- **The warning scan covers the release products, not the test targets.** A clean release build of the
+  products is what this release scans; the test targets are built and run by the gate set in the **debug**
+  configuration, where a fresh scratch build passes all 226 tests. A release-configuration test build does
+  not resolve `DatacenterIR` on this toolchain, which is recorded as observed and not diagnosed.
 - **No GPU matmul path is enabled.** `MetalMatmul` remains opt-in (`SHARD_GPU_MATMUL=1`) because `D63`
   measured it slower than the CPU; the threadgroup-tiled kernel written since has **not** been re-measured,
   so this release claims nothing about it.
