@@ -296,7 +296,11 @@ any failure.
   step this replaced read `swift --version | tail -1` — the **target** line — so its
   pattern could never match and it took its skip branch on every runner it ever saw;
   `tools/check_toolchain.py` parses the output properly and its tests pin both halves of
-  that mistake. Run the gates locally, on Xcode 27.
+  that mistake. Run the gates locally, on Xcode 27. The job now runs the **whole gate set** rather than
+  `swift build` and `swift test` by hand, because it is the only job that can see both halves at once and the
+  documented test counts are a claim about them: the other workflow skips the Swift half and reports it *not
+  checked*, so before that change the claimed count was compared to a real run nowhere in CI, and a deleted test
+  would have left every document correct about a suite that no longer existed (`D82`).
 - **A patch script that aborts leaves the code committed without the documentation.** Twice in one
   session a documentation patch stopped on a failed anchor, the shell carried on past it, and a commit
   went out with code whose message described documents that were never written. The pattern is not the

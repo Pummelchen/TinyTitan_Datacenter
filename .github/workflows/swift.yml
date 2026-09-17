@@ -58,9 +58,16 @@ jobs:
         # it ever saw. `tools/check_toolchain.py` parses the output properly and refuses
         # anything that is not the standard, with tests that pin both halves of that mistake.
         run: python3 tools/check_toolchain.py
-      - name: Build and test
+      - name: Build, test, and check the claims about them
         # Unconditional, because the step above has already established the toolchain. A red
         # run here means the runner image is below the standard, not that the code is broken.
-        run: |
-          swift build
-          swift test --no-parallel
+        #
+        # The whole gate set rather than `swift build` and `swift test` by hand, because this job
+        # is the only one that can see both halves at once and the counts in the documentation are
+        # a claim about them. The other workflow runs `--skip-swift`, which reports the Swift half
+        # NOT CHECKED — the honest thing for it to say — so before this step the claimed
+        # "200 tests, 0 skipped, 0 failures" was compared to a real run **nowhere in CI**: a
+        # silently deleted test would have left every document correct about a suite that no
+        # longer existed. `run_all_gates.py` reads the counts from the runs themselves and hands
+        # them to the claims gate, so this step cannot go stale against them.
+        run: python3 tools/run_all_gates.py

@@ -1989,3 +1989,34 @@ a *different* way for a claim to be invisible — the flags, the list, the phras
 each time the failure mode was silence: a gate reporting success over something it never read. This one closes
 the surface a reader copies from, and it is the first widening whose audit came back clean. Both outcomes are
 recorded because both are results: a check that finds nothing is evidence, and a check that is never run is not.
+
+## D82 — The Swift CI job built and tested, but nothing in CI compared that to the documented counts
+
+The surface this round examined had not been read in this session: `.github/workflows/`. Both files are in good
+shape — the standard-library job runs `run_all_gates.py --skip-swift` rather than a list maintained beside the
+tools, clones the wiki to check its tables, and reports a check it cannot run as *not checked* rather than as a
+pass — and the Swift job selects the newest Xcode explicitly, prints the toolchain, and refuses a runner below
+the standard with no skip branch. One hole was real.
+
+**`swift.yml` ran `swift build` and `swift test --no-parallel` and never compared the result to the numbers the
+documentation claims.** The other workflow cannot: it skips the Swift half, and the claims gate then honestly
+reports that half *not checked*, and `run_all_gates.py` says so too. So **"200 tests, 0 skipped, 0 failures" was
+compared to a real run nowhere in CI** — a test deleted from the suite would have left every document correct
+about a suite that no longer existed, and both jobs green. That is the `D46` shape at the CI level: a claim no
+instrument reads.
+
+**The Swift job now runs the whole gate set**, which is what its own header already said it was — *"the engine's
+gates, on a clean machine"* — and which it was not doing. `run_all_gates.py` reads the counts from the runs
+themselves and hands them to the claims gate, so the step cannot go stale against them; the standard-library job
+keeps the half a machine without the toolchain can run.
+
+**Stated plainly, because it would be easy to imply otherwise: CI still fails today, by design.** `macos-26`
+carries Xcode 26.x, below the manifest's 6.4 floor, so the toolchain gate stops the job before this step — which
+is the correct signal and the reason `AGENTS.md` says to run the gates locally. This change is fidelity for the
+day an image ships Xcode 27, not a green build now.
+
+**A distinction that came out of it, and belongs in this record because it decides where the check lives.** The
+commands in a *workflow* do not need the documented-command gate (`D81`), because a workflow's commands **run**:
+a renamed flag fails the job, loudly and immediately. The commands in a *document* never run, which is exactly
+why they were the surface worth gating. Same words, different instrument — because a different thing happens to
+them.
