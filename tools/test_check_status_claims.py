@@ -72,6 +72,7 @@ def build(
         (".wiki/Roadmap.md", "# Roadmap\n" if wiki else None),
         (".wiki/Testbed.md", "# Testbed\n" if wiki else None),
         (".wiki/Architecture.md", "# Architecture\n" if wiki else None),
+        (".wiki/Home.md", "# Home\n" if wiki else None),
     ):
         if text is None:
             continue
@@ -118,6 +119,23 @@ class StatusClaimTests(unittest.TestCase):
         build(self.root, readme="`docs/release-notes-vX.Y.md` and `tools/NAME.py` are templates\n")
         problems, _, _ = self.run_gate()
         self.assertEqual(problems, [])
+
+    def test_a_stale_count_is_seen_through_a_wrap_and_a_blockquote(self) -> None:
+        """The shape `.wiki/Home.md` actually used, which three separate narrownesses hid.
+
+        The page was not a claim document at all (the list), its number was phrased differently from the house
+        style (the patterns), and the claim was wrapped across two lines *inside a blockquote*, so the `>`
+        marker sat between two words of the same sentence (line-at-a-time reading). Each defect masked the next.
+        """
+        build(self.root, agents="> the build is clean and **105 Swift\n> tests pass** with 174 standard-library Python tests\n")
+        problems, _, _ = self.run_gate()
+        self.assertTrue(any("105 Swift" in problem for problem in problems), problems)
+        self.assertTrue(any("174 Python" in problem for problem in problems), problems)
+
+    def test_a_current_count_is_accepted_in_the_same_wrapped_form(self) -> None:
+        build(self.root, agents="> **184 Swift\n> tests pass** with 200 standard-library Python tests\n")
+        problems, _, _ = self.run_gate()
+        self.assertEqual([p for p in problems if "test(s)" in p], [])
 
     def test_a_stale_test_count_fails(self) -> None:
         build(self.root, readme="**183 tests, 0 skipped, 0 failures**\n")
@@ -171,7 +189,9 @@ class StatusClaimTests(unittest.TestCase):
         build(self.root, wiki=False)
         problems, _, not_checked = self.run_gate()
         self.assertEqual(problems, [])
-        self.assertIn(".wiki/Project-Tracker.md", not_checked)
+        # Discovery checks what is there, so when the whole directory is absent it names the wiki rather
+        # than listing pages it cannot know about.
+        self.assertTrue(any(".wiki" in entry for entry in not_checked), not_checked)
 
     def test_a_missing_readme_fails(self) -> None:
         build(self.root, readme=None)

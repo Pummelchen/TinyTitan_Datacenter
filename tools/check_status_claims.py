@@ -36,14 +36,24 @@ ROOT = Path(__file__).resolve().parent.parent
 # not here: it is a dated log, so "105 tests, 2 skipped" in an entry from an earlier milestone is a true
 # statement about that day, not a stale one — and this gate's first run failed on exactly that, which is
 # the difference between a claim and a record.
-CLAIM_DOCUMENTS = [
-    "README.md",
-    "AGENTS.md",
-    ".wiki/Project-Tracker.md",
-    ".wiki/Roadmap.md",
-    ".wiki/Testbed.md",
-    ".wiki/Architecture.md",
-]
+# Claim documents are **discovered**, not listed. They were a list until `.wiki/Home.md` sat outside it
+# carrying "its gate is still open" and a test count from the era it was written in — the trap this module
+# already names for the decision records, biting a second time in the same file. A page is a claim document
+# if it is the README, `AGENTS.md`, or **any wiki page that is not the log**: `News.md` records what was true
+# when each entry was written, so a stale number there is history rather than an error, and GitHub's own
+# `_`-prefixed pages are furniture.
+FIXED_CLAIM_DOCUMENTS = ["README.md", "AGENTS.md"]
+LOG_PAGE = "News.md"
+
+
+def claim_documents(root: Path) -> list[str]:
+    """The documents whose numbers are claims about *today*."""
+    discovered = sorted(
+        f".wiki/{path.name}"
+        for path in (root / ".wiki").glob("*.md")
+        if path.name != LOG_PAGE and not path.name.startswith("_")
+    )
+    return FIXED_CLAIM_DOCUMENTS + discovered
 # Documents whose *citations* matter, log or not: a decision cited anywhere must exist.
 REFERENCE_DOCUMENTS = [".wiki/News.md"]
 # The two that must be present; the wiki is a separate checkout and is gitignored here, so a missing wiki
@@ -67,6 +77,13 @@ COMMAND_CLAIMS = (
     ("--swift-skipped", "swift_skipped"),
     ("--python-tests", "python_tests"),
 )
+# The same claims in the forms prose actually uses. The two patterns above are the house style; a document
+# that phrased its number differently was not checked *at all*, which is how `.wiki/Home.md` carried "105 Swift
+# tests" and "174 standard-library Python tests" for ninety rounds while this gate reported success. These are
+# deliberately narrow -- a bolded count immediately before "tests", and an unbolded count before
+# "standard-library Python tests" -- because widening further would start reading historical asides as claims.
+SWIFT_TESTS_PROSE = re.compile(r"\*\*(\d+)\s+(?:Swift\s+)?tests?\b")
+PYTHON_TESTS_PROSE = re.compile(r"(\d+)\s+standard-library Python tests?\b")
 # A decision citation: `D17`, `D34`, but not `3D4`.
 DECISION = re.compile(r"(?<![A-Za-z0-9])D(\d{1,3})(?![0-9])")
 # The heading that defines one: `## D34 — ...`.
@@ -126,14 +143,51 @@ def lines_with(text: str, pattern: re.Pattern[str]):
             yield number, match
 
 
+def collapsed_matches(text: str, pattern: re.Pattern[str]):
+    """Matches against the text with whitespace collapsed, reporting the line the match starts on.
+
+    A claim wrapped across two lines is still a claim. `.wiki/Home.md` wrote "**105 Swift\ntests pass**", and a
+    reader that works line by line cannot see it — which is how a count from the era the page was written in
+    survived a gate that reported success. The line number is kept because the message has to point at a place.
+    """
+    # A blockquote's leading `>` is markup, not prose, and `.wiki/Home.md` wrapped its claim inside one:
+    # "**105 Swift\n> tests pass**". Collapsing whitespace alone leaves the marker sitting between two words
+    # of the same sentence, so it is removed first. Newlines are untouched, so the line numbers stay true.
+    text = re.sub(r"(?m)^[ \t]*>[ \t]?", " ", text)
+    pieces: list[str] = []
+    origin: list[int] = []
+    line = 1
+    index = 0
+    while index < len(text):
+        if text[index].isspace():
+            start = index
+            while index < len(text) and text[index].isspace():
+                index += 1
+            pieces.append(" ")
+            origin.append(line)
+            line += text[start:index].count("\n")
+        else:
+            pieces.append(text[index])
+            origin.append(line)
+            index += 1
+    for match in pattern.finditer("".join(pieces)):
+        yield origin[match.start()], match
+
+
 def check(
     root: Path, swift_tests: int, swift_skipped: int, python_tests: int
 ) -> tuple[list[str], int, list[str]]:
     problems: list[str] = []
     checked = 0
 
+    claims = claim_documents(root)
     not_checked: list[str] = []
-    for name in CLAIM_DOCUMENTS:
+    if not (root / ".wiki").is_dir():
+        # The wiki is a separate checkout and is gitignored here, so a run that cannot see it says so rather
+        # than passing. Discovery cannot name the pages that are missing when the whole directory is gone --
+        # it can only check what is there -- so it names the wiki itself.
+        not_checked.append(".wiki (the wiki is a separate checkout and is not present here)")
+    for name in claims:
         path = root / name
         if not path.exists():
             (problems if name in REQUIRED else not_checked).append(name)
@@ -150,6 +204,24 @@ def check(
                 problems.append(
                     f"{name}:{number}: claims {tests} tests with {skipped} skipped; the suite reports "
                     f"{swift_tests} with {swift_skipped}"
+                )
+        for number, match in collapsed_matches(text, SWIFT_TESTS_PROSE):
+            if swift_tests is None:
+                continue
+            checked += 1
+            claimed = int(match.group(1))
+            if claimed != swift_tests:
+                problems.append(
+                    f"{name}:{number}: claims {claimed} Swift test(s) in prose; the suite reports {swift_tests}"
+                )
+        for number, match in collapsed_matches(text, PYTHON_TESTS_PROSE):
+            if python_tests is None:
+                continue
+            checked += 1
+            claimed = int(match.group(1))
+            if claimed != python_tests:
+                problems.append(
+                    f"{name}:{number}: claims {claimed} Python test(s) in prose; the suite reports {python_tests}"
                 )
         for number, match in lines_with(text, PAIR):
             if swift_tests is None or python_tests is None:
@@ -173,7 +245,7 @@ def check(
 
     decision_files = sorted(str(path) for path in root.glob(DECISION_GLOB))
     observed = {"swift_tests": swift_tests, "swift_skipped": swift_skipped, "python_tests": python_tests}
-    for name in CLAIM_DOCUMENTS:
+    for name in claims:
         path = root / name
         if not path.exists():
             continue
@@ -205,7 +277,7 @@ def check(
         problems.append("no decision headings were found at all, so citations cannot be checked")
 
     cited: dict[int, list[str]] = {}
-    for name in CLAIM_DOCUMENTS + REFERENCE_DOCUMENTS + decision_files:
+    for name in claims + REFERENCE_DOCUMENTS + decision_files:
         path = root / name
         if not path.exists():
             continue
@@ -219,7 +291,7 @@ def check(
                 f"definition in any of {', '.join(decision_files)}"
             )
 
-    for name in CLAIM_DOCUMENTS:
+    for name in claims:
         path = root / name
         if not path.exists():
             continue
@@ -231,7 +303,7 @@ def check(
             if not (root / documented).exists():
                 problems.append(f"{name}:{number}: names {documented}, which does not exist")
 
-    for name in CLAIM_DOCUMENTS:
+    for name in claims:
         path = root / name
         if not path.exists() or not NO_TAGS.search(path.read_text()):
             continue

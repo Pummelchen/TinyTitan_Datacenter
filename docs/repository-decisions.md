@@ -1799,3 +1799,52 @@ can disagree with itself.
 invocations that did not pass what their own documents required, and every one was found by reading code against
 a document. After this round the class is assertable: a gate that stops passing a required flag fails a test
 naming the flag. That is the difference between a defect that is discoverable and one that is caught.
+
+## D77 — Three narrownesses hid a false status, each masking the next
+
+`D76`'s follow-through was to bring the status surfaces current, and the wiki's landing page turned out to carry
+one that was not stale but **false**: `.wiki/Home.md` said *"M1 has run on the real 35B model with all five
+frozen prompts at exit 0 and two byte-identical re-runs, and **its gate is still open**"*, and quoted **105 Swift
+tests** and **174 standard-library Python tests** — figures from the era it was written in, while the suites
+report **200** and **384**. Two rounds earlier the same page class had been corrected in `AGENTS.md` and
+`README.md`; this one had never been read by anything.
+
+**It survived three separate narrownesses, and each hid the next.** That is the part worth recording, because
+fixing any one of them alone would have left the claim exactly where it was.
+
+1. **It was not a claim document.** `CLAIM_DOCUMENTS` was a hand-maintained list of six, and the wiki's landing
+   page was not one of them. This is the trap this module already names — "*a gate whose configuration is a list
+   will go stale*" — biting a **second time in the same file** that records it. The fix is the one the trap
+   prescribes: **discover** the pages. A page is a claim document if it is the README, `AGENTS.md`, or any
+   `.wiki/*.md` that is not the log and not GitHub's `_`-prefixed furniture. The exclusions are rules with
+   reasons rather than exceptions: `News.md` records what was true when each entry was written, so a number that
+   has since moved is *history* there, not an error.
+2. **Its phrasing was not recognised.** The house-style patterns are `**N tests, M skipped**` and
+   `**N** standard-library Python tests`; the page wrote "**105 Swift tests pass** (2 skipped" and "174
+   standard-library Python tests" — so even once the page was read, neither count matched a pattern and neither
+   was checked. Two prose patterns were added, deliberately narrow: a bolded count immediately before "tests",
+   and an unbolded count before "standard-library Python tests".
+3. **The claim was inside a blockquote, wrapped.** After both fixes the Python count was caught and the Swift one
+   was still invisible, because the raw text is `"**105 Swift\n> tests pass**"` — a blockquote's continuation
+   marker sits between two words of the same sentence. Reading line at a time cannot see a claim that spans a
+   line break; collapsing whitespace cannot see one split by markup. `collapsed_matches` now does both, and
+   keeps the line number so the message still points at a place.
+
+**The instrument found the false claim before it was corrected**, which is the evidence that widening it was the
+right move rather than a cosmetic one:
+
+```
+.wiki/Home.md:7: claims 105 Swift test(s) in prose; the suite reports 200
+.wiki/Home.md:8: claims 174 Python test(s) in prose; the suite reports 384
+```
+
+Then the numbers were made true, the status was replaced with what rounds 56-61 established — M1's gate passes in
+both forms on all five frozen prompts — and the gate reports **148 claims checked**, against 126 before this
+round: twenty-two claims in three wiki pages that nothing had ever read. Two tests pin the widened instrument,
+using the exact shape that hid the claim.
+
+**What the round is really about.** Every one of the three defects is the same defect in a different costume: an
+instrument narrower than the claim it is supposed to check. The repository already has that trap written down.
+It has now been found four times — the flags (`D69`, `D73`, `D74`), the document list, the phrasing, the markup —
+and the pattern in every case is that the *gate reported success*, because a claim it cannot parse is a claim it
+does not disagree with.
