@@ -18,16 +18,17 @@ toolchain — **Xcode 27 with Swift 6.4, and nothing else** — `swift build` is
 only on a host with no GPU, which is why CI runners report skips), with **384** standard-library Python
 tests run in CI.
 M0 matched the reference on `Qwen/Qwen3.5-2B`: 40,683,520 bytes of trace data identical
-to the contract, every discrete decision matching. M1 runs the real 35 B model on one node
-and its trace is **byte-identical to the contract** — 83 tensors and 40 discrete
-decisions, digest `b8c976c5e7ba8816…` — generating at **0.108 tok/s** cached with
-**348.6 MB** peak memory. **M2 shards that same 35 B model across two machines** and
+to the contract, every discrete decision matching. **M1's gate passes in both of its forms on all five
+frozen prompts** — the engine against a contract reading the same **checkpoint** (`b8c976c5e7ba8816…`) and
+against one reading the same **install** (`b0d382dbabf36df0…`) — every comparison 83 tensors, 0 differing
+elements and 40 discrete decisions, generating at **0.108 tok/s** cached with **348.6 MB** peak memory. **M2 shards that same 35 B model across two machines** and
 produces **the same digest as the single-node baseline** (`b0d382dbabf36df0…`): 83 tensors,
 0 differing elements, 40 discrete decisions, checked by `trace_diff` on both nodes. All four machines also
 run one forward together in a full mesh and produce that same single trace, and **generation** shards
-too: a two-machine cached decode produced the single-node tokens and the same trace digest. What remains
-open is the tok/s measurement and `D12`; the install now has its own reader and checker in Python, which
-verifies its structure, tiling, policy and every payload digest. There are **no releases and no tags**.
+too: a two-machine cached decode produced the single-node tokens and the same trace digest. What remains open is the
+cluster's tok/s measurement, which belongs to a quiet farm; `D12` was settled from a measurement (`D31`: the
+expert slot bank is sized from a budget, because the measured hit rate is **0** at every size). The install now
+has its own reader and checker in Python, which verifies its structure, tiling, policy and every payload digest. There are **no releases and no tags**.
 
 News, measurements and the live work list are in the **[wiki](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki)** —
 start with [News](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/News) for what

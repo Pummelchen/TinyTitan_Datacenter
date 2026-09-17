@@ -19,22 +19,21 @@ minis and Mac Studios, over LAN/SFP/QSFP and Thunderbolt. The Swift engine under
 at **200 tests, 0 skipped, 0 failures** — the Metal kernel tests run on the node's GPU
 since `D34`. **M0, M1 and M2 are done and their gates have passed** — M0 on `Qwen/Qwen3.5-2B`
 (three frozen prompts, **40,683,520 bytes identical** to the contract, every discrete
-decision matching: `docs/m0-gate.md`), M1 on the real 35 B model, whose trace was
-**byte-identical to the contract** (83 tensors, 40 discrete decisions, digest
-`b8c976c5e7ba8816…`) with generation at **0.108 tok/s** cached and **348.6 MB** peak
-memory (`docs/m1-gate.md`, re-established 2026-09-16) — **but that pass does not hold today.** Re-checked on
-2026-09-17 against a contract **re-run** on the current artifacts (the reference can now read the checkpoint
-without mapping it, and fetch experts by index, so the run costs two minutes here instead of the node's
-safety), the engine differs by **40 discrete decisions and 1 float** — and that is now **resolved with
-evidence, and it was never the arithmetic**. The install holds the Gated DeltaNet's three projections
-(`linear.in_qkv`, `linear.in_z`, `linear.out`) and `attn.q/k/v/o` as **int4-affine**, by
-`tools/quant_policy.json`, while the contract was generated from the **checkpoint's bf16**: the two sides
-were reading different weights. Point the contract at the **install** — `tools/install_source.py`, which reads
-through the same dequantiser the Swift reader mirrors — and the pair is **byte-identical**: `trace_diff`
-reports **83 tensors, 0 differing elements, 40 discrete decisions, matching digests `b0d382dbabf36df0…`**
-(`D56`). Against the checkpoint contract the difference is the **declared, measured** cost of int4 — `D55`:
-0.0156 max / 24.5% median relative at layer 0 — tracked in `DC-112`. M1's claim is restated in
-`tools/milestones.json` to the form that can be falsified, and `docs/m1-gate.md` has the evidence. It is nevertheless **incomplete**:
+decision matching: `docs/m0-gate.md`), and **M1's gate passes in both of its forms** — the **checkpoint**
+pair and the **install** pair, which is the restatement — on **all five frozen prompts**, every comparison
+`IDENTICAL — 83 tensors, 0 differing elements, 40 discrete decisions`, with digests `b8c976c5e7ba8816…` for
+the checkpoint and `b0d382dbabf36df0…` for the install, peaks 3.60-3.79 GB and 0.98-1.41 GB
+(`docs/m1-gate.md`, re-verified 2026-09-17). Generation is measured at **0.108 tok/s** cached, **348.6 MB**
+peak. The history matters because it is *why* the claims are shaped as they are: a re-check on 2026-09-17
+first reported the engine differing by **40 discrete decisions and 1 float**, and **it was never the
+arithmetic**. The install holds the Gated DeltaNet's three projections (`linear.in_qkv`, `linear.in_z`,
+`linear.out`) and `attn.q/k/v/o` as **int4-affine** by `tools/quant_policy.json`, while that contract had been
+generated from the **checkpoint's bf16**: the two sides were reading different weights. Point the contract at
+the **install** — `tools/install_source.py`, which reads through the same dequantiser the Swift reader
+mirrors — and the pair is byte-identical (`D56`). Against a checkpoint contract the difference is the
+**declared, measured** cost of int4 — `D55`: 0.0156 max / 24.5% median relative at layer 0 — tracked in
+`DC-112`. M1's claim is restated in `tools/milestones.json` to the form that can be falsified, and
+`docs/m1-gate.md` has the evidence. It is nevertheless **incomplete**:
 `D12` was an open design question and is now decided from a measurement (`D31`: the expert slot bank
 is sized from a budget, one slot, because the measured hit rate is 0 at every size), and
 **M2 shards the real model across two machines**: the reduction contract (`D17`), the wire protocol (`D18`), the failure semantics
