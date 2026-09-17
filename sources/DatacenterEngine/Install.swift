@@ -647,7 +647,10 @@ public struct InstallFile: WeightSource {
         // `SHARD_DECODE_THREADS=1` restores the single-threaded path, and it exists so the two can be compared
         // on one binary instead of across builds: `D62` is what happens when that is not done.
         let shape = layout
-        nonisolated(unsafe) let rows = shape.rows
+        // No `nonisolated(unsafe)` here: an `Int` is `Sendable`, so the annotation would be a claim about
+        // the type that the type does not need — and the clean scratch build's warning scan said so, having
+        // been invisible to every incremental build up to that point.
+        let rows = shape.rows
         data.withUnsafeBytes { raw in
             let base = raw.baseAddress!
             nonisolated(unsafe) let codePointer = base
