@@ -178,10 +178,14 @@ python3 tools/run_all_gates.py
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 200 --swift-skipped 0 --python-tests 391
+python3 tools/check_status_claims.py --swift-tests 200 --swift-skipped 0 --python-tests 398
 
 # The provenance position: no copied code, and no NOTICE to carry
 python3 tools/check_provenance.py
+
+# Every command the documentation gives a reader, against the flags its tool actually accepts. A tool that
+# cannot be asked is reported NOT CHECKED rather than passed.
+python3 tools/check_documented_commands.py
 
 # The recorded baselines, against a run's metrics.json. Counts are asserted exactly; seconds and
 # memory are reported and only asserted with --assert-observed, which belongs on a quiet farm (D40).

@@ -1948,3 +1948,44 @@ position that has to be taken on trust, so the file now names the files, the doc
 audits lives in another repository and cannot be a gate here. What is automated is our own side — the provenance
 gate inspects **158 files** and reports no third-party attribution to account for — and the third-party claims
 themselves are re-read on a stated date and left in the file with their evidence.
+
+## D81 — The last copyable surface: documented commands are now checked against the tools
+
+The repository's trap says *check the form a reader copies, not only the prose*, and that check had been widened
+three times: to the flags in the claims gate's own examples (`D67`), to the paths named in the claim documents
+(`D67`), and to the invocations the gates make (`D76`). What was left is the surface a reader meets **first** and
+copies **most often** — the commands in `docs/`, `README.md`, `AGENTS.md`, `RELEASE.md` and the wiki. A
+documented command naming a flag its tool no longer accepts is a command that cannot be run, and nothing checked
+one.
+
+**The audit found nothing wrong, which is worth saying plainly.** Forty-five flags across every document, all of
+them accepted by the tool they are written against, and no command naming a script that does not exist. Two
+lessons came out of reaching the number: a first, narrower pass found only **thirty-two**, because it skipped the
+wiki and did not join backslash continuations — the instrument's own reach decided the answer, again — and the
+reason the count is worth publishing at all is that a *silent* surface looks identical whether it was checked or
+not.
+
+**So it became a gate rather than a paragraph.** `check_documented_commands.py` parses the commands out of the
+documents, asks each tool what it accepts, caches the answers, and holds three properties that decide whether it
+is honest:
+
+* **A tool that cannot be asked is NOT CHECKED, not passed.** `install_reader.py` is a library with a
+  self-description rather than an `argparse` CLI and exits non-zero for `--help`; the gate says so instead of
+  counting its flags as fine. The one outcome it must never produce is silence dressed as success.
+* **Prose that names a tool is not a command.** A sentence is not something a reader copies into a shell, and
+  treating one as a command would invent flags to check — tested, because the first version of the pattern would
+  have.
+* **A wrapped command is still a command.** The gate docs break their examples across lines, and a flag on the
+  continuation is one a reader copies.
+
+**And the same pass answered a second question: there is no dead code.** All **fifty** non-test tools are
+referenced outside their own tests — by another tool, a gate, a document or a fixture builder. The twelve files
+that appear unreferenced are all `test_*.py`, which `unittest discover` finds by pattern rather than by name, so
+the naive rule that flagged them was wrong about what a reference is. Nothing was removed, because nothing should
+be.
+
+**Why this is the last one of these, and why it was still worth doing.** Every widening in this series has found
+a *different* way for a claim to be invisible — the flags, the list, the phrasing, the markup, the commands — and
+each time the failure mode was silence: a gate reporting success over something it never read. This one closes
+the surface a reader copies from, and it is the first widening whose audit came back clean. Both outcomes are
+recorded because both are results: a check that finds nothing is evidence, and a check that is never run is not.

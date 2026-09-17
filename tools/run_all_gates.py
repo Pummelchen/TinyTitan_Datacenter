@@ -187,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     simple("markdown tables", [sys.executable, str(TOOLS / "check_markdown_tables.py")])
     simple("markdown links", [sys.executable, str(TOOLS / "check_markdown_links.py")])
     simple("provenance", [sys.executable, str(TOOLS / "check_provenance.py")])
+    simple("documented commands", [sys.executable, str(TOOLS / "check_documented_commands.py")])
 
     python_tests, python_problems, python_missing, python_detail = run_python_tests()
     summary.append(("python tests", f"{python_tests} test(s)" + ("" if not python_problems else ", FAILED")))
