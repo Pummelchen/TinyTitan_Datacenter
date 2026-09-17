@@ -32,6 +32,31 @@ was learned by refusing a reader that demanded a padded width).
 | **Repository conventions** (lower-case `sources/`, one directory per module, the language-feature register) | Ideas, deliberately kept (`docs/repository-layout.md`) | None. Ideas and conventions are not copyrightable subject matter |
 | **Model weights** (`Qwen/Qwen3.6-35B-A3B`, Apache-2.0; the M4/M5 targets likewise) | Used, **never redistributed** — `.gitignore` excludes model payloads and the release rules forbid committing them | Attribution, kept in `docs/reference-qwen36-35b-a3b.md`. If weights were ever redistributed, Apache-2.0's attribution and NOTICE terms would apply to them |
 
+## The two install formats are not interchangeable, re-verified 2026-09-17
+
+`AGENTS.md` states that *"its int4 is **unsigned with a bias** while this repository's install container is its
+own — signed codes, fp32 scales, int8 zero points — so a file from one is not readable by the other"*. That is a
+claim about a third party's format, so it is worth recording what it rests on. Re-read in the sister checkout on
+2026-09-17:
+
+* **Its int4 is unsigned, with a bias, and the bias is BF16.** Its own reference says so in the first line of the
+  function that consumes the format: `tools/qwen35_reference.py`, `dequantize()`, *"`bits`-wide unsigned lanes
+  packed low-first inside each uint32, one BF16 scale and bias per group"* — the codes are masked, widened and
+  used directly, and the value is `grouped * scales + biases`. Its Swift side names the same thing:
+  `Sources/TinyTitan/Infrastructure/ModelIO/Quantization.swift` has `dequantizeInt4Affine`.
+* **Ours is signed, with an int8 zero point, and fp32 scales.** `tools/install_reader.py` reads each four-bit
+  code through `_signed()` — two's complement in four bits — and computes `(code - zero) * scale`, with the
+  per-group zero stored as an `int8` and the scale as an `fp32` (`docs/m0c-quantization.md`, `D39`).
+* **Its container family is `GTurbo*V1`**: `GTurboFormatV1`, `GTurboExpertV1`, `GTurboLayerV1`,
+  `GTurboManifestArchV1` and `GTurboManifestFileV1` in the same checkout. Ours is `install.json` plus
+  `data.bin`.
+
+The conclusion is therefore not a matter of opinion but of arithmetic: the same bytes mean different numbers
+under the two rules, and the bias types differ besides. **No defect is to be reported upstream**, because its
+reader and its converter agree with each other — the finding is only that the formats are different, which is
+what makes the two projects independent implementations rather than copies. This re-check confirms the review of
+2026-09-16 and adds the file-level evidence it did not name.
+
 ## The NOTICE requirement, as it stands
 
 Apache-2.0 §4(d) requires a distributor to reproduce a `NOTICE` file **when the distribution includes the

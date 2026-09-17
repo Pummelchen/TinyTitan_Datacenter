@@ -1913,3 +1913,38 @@ payload is the right *shape* and checking that it is the right *bytes*.
 quantisation: that the artifact every M1 and M2 and M3 claim is computed *from* is the artifact the manifest
 describes, byte for byte, across 693 tensors and 21.7 GB. Every earlier verification in this repository has been
 downstream of that assumption.
+
+## D80 — DC-085 re-audited: the format claim holds, and it now has file-level evidence
+
+`DC-085` is the one open row whose action is *tracking* rather than timing or missing weights — "track its
+releases, report cluster-relevant defects upstream" — so this round re-ran its audit rather than waiting for a
+quiet farm.
+
+**The checkout cannot answer the "releases" half.** `/Users/node4/TinyTitan` is a source drop with **no git
+history** and files dated before the original audit of 2026-09-16, so there is nothing to compare against and no
+release list to read. What *can* be audited is the snapshot itself, and the claim worth re-checking is the one
+`AGENTS.md` makes about it: that the two install formats are not interchangeable.
+
+**Re-verified, with the evidence the original review did not name.** The sister project's own reference states
+its layout in the first line of the function that consumes it — `tools/qwen35_reference.py`, `dequantize()`:
+*"`bits`-wide **unsigned** lanes packed low-first inside each uint32, one BF16 scale and **bias** per group"* —
+and the arithmetic that follows is `grouped * scales + biases`. Its Swift side names the same thing:
+`dequantizeInt4Affine`. **Ours** reads each four-bit code through `_signed()` — two's complement in four bits —
+and computes `(code - zero) * scale`, with the zero stored as an **int8** and the scale as an **fp32**. The
+container families differ too: `GTurboFormatV1`, `GTurboExpertV1`, `GTurboLayerV1`, `GTurboManifestArchV1` and
+`GTurboManifestFileV1` against our `install.json` plus `data.bin`.
+
+So the conclusion is arithmetic rather than opinion: the same bytes mean different numbers under the two rules,
+and the bias types differ besides. **There is no defect to report upstream**, because its reader and its
+converter agree with each other — the finding is that the formats are *different*, which is what makes the two
+projects independent implementations rather than copies of one another.
+
+**The evidence is now in the statement rather than only in a decision record.** `THIRD_PARTY_NOTICES.md`
+recorded the *code* review of 2026-09-16 — the four coincident basenames, the measured overlap, the shared
+vocabulary — and did **not** record what the format claim rests on. A position that a reader cannot check is a
+position that has to be taken on trust, so the file now names the files, the docstring and the two formulas.
+
+**One boundary, stated rather than glossed.** This is a *recorded* audit, not an automated check: the artifact it
+audits lives in another repository and cannot be a gate here. What is automated is our own side — the provenance
+gate inspects **158 files** and reports no third-party attribution to account for — and the third-party claims
+themselves are re-read on a stated date and left in the file with their evidence.
