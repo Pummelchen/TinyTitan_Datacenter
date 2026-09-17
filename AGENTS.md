@@ -106,7 +106,20 @@ to 1.36×** with bit-identity intact on all four nodes: step **4.790 → 4.021 s
 and all four nodes now identical to the millisecond. The gap to 1.5× is **0.36 s/step**. One instrument question
 is recorded rather than used: the ledger's `exchange_seconds` (1.4-1.9 s/step) is larger than the `ff` phase
 that contains it (0.575 s) even though the marks are right and the phases sum to the step, and `D90`/`D92` both
-reasoned from that counter. **M4–M5 have not
+reasoned from that counter. **And the target is met** (`D94`): `load` was ~1 G parameters of int4 constants
+dequantised with SIMD4 **on one core of eight**, the same constants on every token and every node, so the row
+loop of `InstallFile.dequantizeInt4` — whose rows are independent — is now spread across the cores
+(`SHARD_DECODE_THREADS=1` restores the single-threaded path, so the two are compared on one binary). Bit-exactness
+is guarded by `Int4UnpackTests`, which compares the vector path against `dequantizeInt4Scalar` over more than
+fifty shapes. Single node, alternated: `load` **1.33 → 0.56 s/step** (2.4x) and the step **5.14 → 4.36 s**. Cluster,
+four alternated runs, every one bit-identical on all four nodes, loads 1.6-5.5: **1.74x and 1.70x** with eight
+threads, and **1.66x with one** — so **the 35 B runs at 1.70-1.74x over a single node**, and at 1.66x even with the
+thread work disabled. The farm was **busy** throughout and load hurts the ratio (four nodes are exposed to a spike
+and the baseline is one), so these are lower bounds. **The gate's own roadmap target of ≥3x on a quiet farm
+(`DC-053`) is not asserted by any of this**: every figure is an `observation_only` run with its loads beside it,
+and the gate remains the certification instrument. `DC-113`'s GPU GEMV is retired from the path to this number —
+the CPU path took the same phase down without a device, a protocol, or `D91`'s silent-CPU-fallback risk — and
+remains a candidate for absolute speed. **M4–M5 have not
 started**.
 There are **no releases and no tags**. The design, the plan and the status live in the
 wiki; the measurements live in `docs/`.

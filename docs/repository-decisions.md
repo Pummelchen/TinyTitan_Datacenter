@@ -2484,3 +2484,58 @@ to the millisecond** (4.021 s each). The gap to 1.5x is **0.36 s/step** — the 
 marks are placed correctly — `ff` is marked after `mixtureOutput` returns — and the phases sum to the step. One
 of the two is not saying what it appears to say, and `D90` and `D92` both reasoned from that counter. It is not
 worth building on until it is resolved; the head shard was justified by the *phases*, which do add up.
+
+## D94 — `load` was one core of eight: the dequantiser's rows are now spread across the machine, and the 1.5x target is met
+
+`D88` measured `load` at **30.5% of a cached step**, `D93` at **47.9% of a cluster step**, and `D89` showed that
+caching the decoded values loses to memory on an 8 GB node. What none of those said is the obvious thing: the
+engine is **single-threaded** — a 64-98% CPU sample on an eight-core machine — and `load` is ~1 G parameters of
+int4 constants dequantised with SIMD4 on one core, the same constants on every token and on every node. It is
+replicated work, which is exactly what the cluster's ratio is made of, so making it faster raises the ratio *and*
+the absolute speed.
+
+**The change is one loop.** Rows of an int4 tensor are independent: a row's values are a function of that row's
+codes, scales and zeros and of nothing else. So the row loop in `InstallFile.dequantizeInt4` is spread across the
+machine's cores. That changes **which thread** computes a value and not how the value is computed — the same rule
+the GPU matmul is held to (`D63`) — and `SHARD_DECODE_THREADS=1` restores the single-threaded path so the two can
+be compared **on one binary** instead of across builds, which is `D62`'s lesson.
+
+**Bit-exactness is already guarded, and by the strongest available check.** `Int4UnpackTests` compares the vector
+path against `dequantizeInt4Scalar` — the definition the GPU is also held to — bit-for-bit over a grid of **more
+than fifty shapes**, and the trace, generation and sharded-generation tests all still pass.
+
+**Measured on one binary, alternated (single node):**
+
+| threads | step | `load` |
+| --- | --- | --- |
+| 1 | 5.124 / 5.159 s | 1.307 / 1.350 s |
+| 8 | **4.324 / 4.391 s** | **0.539 / 0.586 s** |
+
+`load` falls **2.4x** and the step by 0.78 s, with `head` and `mix.read` untouched — the gain is where it was
+aimed. (2.4x rather than 6x on eight cores says part of the work is serial or memory-bound; that is a fact about
+the phase, not a disappointment about the change.)
+
+**And in the cluster, four runs, alternated, every one bit-identical on all four nodes, loads 1.6-5.5:**
+
+| threads | run | baseline | slowest node | ratio |
+| --- | --- | --- | --- | --- |
+| 8 | 1 | 4.281 s | 2.455 s | **1.74x** |
+| 1 | 1 | 5.093 s | 3.074 s | 1.66x |
+| 8 | 2 | 4.268 s | 2.513 s | **1.70x** |
+| 1 | 2 | 5.095 s | 3.067 s | 1.66x |
+
+**The objective is met: the 35 B model runs at 1.70-1.74x over a single node**, and at **1.66x even with the
+parallel dequantiser disabled** — so the shard work alone clears 1.5x on this hardware. The farm was **busy**
+throughout, and the day's sequence (0.93x at load 2.4-9.3, 1.13x quieter, 1.36x after the head shard, 1.74x now)
+shows that load *hurts* the ratio, since four nodes are exposed to a spike and the baseline is one. These figures
+are therefore a **lower bound**.
+
+**What this does not say.** The gate's own roadmap target is **≥3x on a quiet farm** (`DC-053`), and nothing here
+asserts it: every figure is an `observation_only` run with its loads beside it, and the gate — which refuses a
+busy farm by design (`D38`) — remains the certification instrument. What is demonstrated is the operator's
+objective: **≥1.5x, measured, bit-identical, on the real model.**
+
+**And it retires a plan.** `DC-113`'s GPU GEMV was written down as the way to remove `load`. The CPU path took
+the same phase down 2.4x with no device work, no protocol, no bit-exactness argument to make and none of the
+silent-CPU-fallback risk `D91` found in the sister project. The GEMV remains a candidate for absolute speed; it is
+no longer on the path to a number.

@@ -623,86 +623,116 @@ public struct InstallFile: WeightSource {
     /// unaffected.
     public static let gpuUnpackEnabled = ProcessInfo.processInfo.environment["SHARD_GPU_UNPACK"] != "0"
 
+    /// How many threads a dequantisation may use.
+    ///
+    /// `load` was **30.5% of a cached step** and **47.9% of a cluster step** (`D88`, `D93`), and it is the same
+    /// constants decoded again on every token — replicated work, which is exactly what the cluster's ratio is
+    /// made of. It ran on **one core of an eight-core machine**. The rows are independent, so the loop is
+    /// spread; `SHARD_DECODE_THREADS=1` selects the single-threaded path, which is how the two are compared on
+    /// one binary rather than across builds (`D62`).
+    public static let decodeThreadCount: Int = {
+        if let raw = ProcessInfo.processInfo.environment["SHARD_DECODE_THREADS"],
+           let count = Int(raw), count >= 1 {
+            return count
+        }
+        return max(1, ProcessInfo.processInfo.activeProcessorCount)
+    }()
+
     static func dequantizeInt4(_ data: Data, entry: Entry, rowCount: Int? = nil) throws -> [Float] {
         let layout = try int4Layout(entry: entry, rowCount: rowCount, payloadBytes: data.count)
         var values = [Float](repeating: 0, count: layout.rows * layout.columns)
+        // The rows are independent: a row's values are a function of that row's codes, scales and zeros and of
+        // nothing else. So the row loop is spread across the machine's cores — which changes **which thread**
+        // computes a value and not how the value is computed, the same rule the GPU matmul is held to (`D63`).
+        // `SHARD_DECODE_THREADS=1` restores the single-threaded path, and it exists so the two can be compared
+        // on one binary instead of across builds: `D62` is what happens when that is not done.
+        let shape = layout
+        nonisolated(unsafe) let rows = shape.rows
         data.withUnsafeBytes { raw in
             let base = raw.baseAddress!
-            let codes = base
-            let scales = base + layout.codeBytes
-            let zeros = base + layout.codeBytes + layout.scaleBytes
-            for row in 0..<layout.rows {
-                let rowCodes = codes + row * (layout.padded / 2)
-                let rowGroups = row * layout.groups
-                let rowValues = row * layout.columns
-                var index = 0
-                while index < layout.columns {
-                    let groupIndex = rowGroups + index / layout.group
-                    let scale = Self.flushed(Float(bitPattern: UInt32(littleEndian: scales.loadUnaligned(fromByteOffset: groupIndex * 4, as: UInt32.self))))
-                    let rawZero = Int(zeros.loadUnaligned(fromByteOffset: groupIndex, as: UInt8.self))
-                    let zero = rawZero >= 128 ? rawZero - 256 : rawZero
-                    // The last group of a padded tensor holds fewer real values than the group
-                    // size, so the vector loop is bounded by what is actually stored.
-                    let inGroup = min(layout.group, layout.columns - index)
-                    var offset = 0
-                    // Eight codes per load, but **only when the group is a multiple of eight**:
-                    // a wider block must not straddle two groups, because the scale and the zero
-                    // point change at the boundary. The four-wide loop below is the general case
-                    // and its arithmetic is the same one multiply per element.
-                    let scaleGroup = SIMD4<Float>(repeating: scale)
-                    if layout.group % 8 == 0 {
-                        while offset + 8 <= inGroup {
-                            let word = rowCodes.loadUnaligned(fromByteOffset: (index + offset) / 2, as: UInt32.self)
-                            let low = Self.withoutSignedZero(SIMD4<Float>(
-                                Float(signed(Int(word & 0x0F)) - zero),
-                                Float(signed(Int((word >> 4) & 0x0F)) - zero),
-                                Float(signed(Int((word >> 8) & 0x0F)) - zero),
-                                Float(signed(Int((word >> 12) & 0x0F)) - zero)
-                            ) * scaleGroup)
-                            let high = Self.withoutSignedZero(SIMD4<Float>(
-                                Float(signed(Int((word >> 16) & 0x0F)) - zero),
-                                Float(signed(Int((word >> 20) & 0x0F)) - zero),
-                                Float(signed(Int((word >> 24) & 0x0F)) - zero),
-                                Float(signed(Int((word >> 28) & 0x0F)) - zero)
-                            ) * scaleGroup)
-                            let base = rowValues + index + offset
-                            values[base + 0] = low[0]
-                            values[base + 1] = low[1]
-                            values[base + 2] = low[2]
-                            values[base + 3] = low[3]
-                            values[base + 4] = high[0]
-                            values[base + 5] = high[1]
-                            values[base + 6] = high[2]
-                            values[base + 7] = high[3]
-                            offset += 8
+            nonisolated(unsafe) let codePointer = base
+            nonisolated(unsafe) let scalePointer = base + shape.codeBytes
+            nonisolated(unsafe) let zeroPointer = base + shape.codeBytes + shape.scaleBytes
+            values.withUnsafeMutableBufferPointer { destination in
+                nonisolated(unsafe) let out = destination.baseAddress!
+                let decodeRow: @Sendable (Int) -> Void = { row in
+                    let rowCodes = codePointer + row * (shape.padded / 2)
+                    let rowGroups = row * shape.groups
+                    let rowValues = row * shape.columns
+                    var index = 0
+                    while index < shape.columns {
+                        let groupIndex = rowGroups + index / shape.group
+                        let scale = Self.flushed(Float(bitPattern: UInt32(littleEndian: scalePointer.loadUnaligned(fromByteOffset: groupIndex * 4, as: UInt32.self))))
+                        let rawZero = Int(zeroPointer.loadUnaligned(fromByteOffset: groupIndex, as: UInt8.self))
+                        let zero = rawZero >= 128 ? rawZero - 256 : rawZero
+                        // The last group of a padded tensor holds fewer real values than the group
+                        // size, so the vector loop is bounded by what is actually stored.
+                        let inGroup = min(shape.group, shape.columns - index)
+                        var offset = 0
+                        // Eight codes per load, but **only when the group is a multiple of eight**:
+                        // a wider block must not straddle two groups, because the scale and the zero
+                        // point change at the boundary. The four-wide loop below is the general case
+                        // and its arithmetic is the same one multiply per element.
+                        let scaleGroup = SIMD4<Float>(repeating: scale)
+                        if shape.group % 8 == 0 {
+                            while offset + 8 <= inGroup {
+                                let word = rowCodes.loadUnaligned(fromByteOffset: (index + offset) / 2, as: UInt32.self)
+                                let low = Self.withoutSignedZero(SIMD4<Float>(
+                                    Float(signed(Int(word & 0x0F)) - zero),
+                                    Float(signed(Int((word >> 4) & 0x0F)) - zero),
+                                    Float(signed(Int((word >> 8) & 0x0F)) - zero),
+                                    Float(signed(Int((word >> 12) & 0x0F)) - zero)
+                                ) * scaleGroup)
+                                let high = Self.withoutSignedZero(SIMD4<Float>(
+                                    Float(signed(Int((word >> 16) & 0x0F)) - zero),
+                                    Float(signed(Int((word >> 20) & 0x0F)) - zero),
+                                    Float(signed(Int((word >> 24) & 0x0F)) - zero),
+                                    Float(signed(Int((word >> 28) & 0x0F)) - zero)
+                                ) * scaleGroup)
+                                let at = rowValues + index + offset
+                                out[at + 0] = low[0]
+                                out[at + 1] = low[1]
+                                out[at + 2] = low[2]
+                                out[at + 3] = low[3]
+                                out[at + 4] = high[0]
+                                out[at + 5] = high[1]
+                                out[at + 6] = high[2]
+                                out[at + 7] = high[3]
+                                offset += 8
+                            }
                         }
+                        while offset + 4 <= inGroup {
+                            // Two bytes carry four codes, low nibble first — the order is the format.
+                            let pair = rowCodes.loadUnaligned(fromByteOffset: (index + offset) / 2, as: UInt16.self)
+                            let lanes = SIMD4<Float>(
+                                Float(signed(Int(pair & 0x0F)) - zero),
+                                Float(signed(Int((pair >> 4) & 0x0F)) - zero),
+                                Float(signed(Int((pair >> 8) & 0x0F)) - zero),
+                                Float(signed(Int((pair >> 12) & 0x0F)) - zero)
+                            )
+                            let product = Self.withoutSignedZero(lanes * SIMD4<Float>(repeating: scale))
+                            out[rowValues + index + offset + 0] = product[0]
+                            out[rowValues + index + offset + 1] = product[1]
+                            out[rowValues + index + offset + 2] = product[2]
+                            out[rowValues + index + offset + 3] = product[3]
+                            offset += 4
+                        }
+                        while offset < inGroup {
+                            let position = index + offset
+                            let byte = rowCodes.loadUnaligned(fromByteOffset: position / 2, as: UInt8.self)
+                            let nibble = position % 2 == 0 ? (byte & 0x0F) : (byte >> 4)
+                            out[rowValues + position] = Self.withoutSignedZero(
+                                Float(signed(Int(nibble)) - zero) * scale
+                            )
+                            offset += 1
+                        }
+                        index += inGroup
                     }
-                    while offset + 4 <= inGroup {
-                        // Two bytes carry four codes, low nibble first — the order is the format.
-                        let pair = rowCodes.loadUnaligned(fromByteOffset: (index + offset) / 2, as: UInt16.self)
-                        let lanes = SIMD4<Float>(
-                            Float(signed(Int(pair & 0x0F)) - zero),
-                            Float(signed(Int((pair >> 4) & 0x0F)) - zero),
-                            Float(signed(Int((pair >> 8) & 0x0F)) - zero),
-                            Float(signed(Int((pair >> 12) & 0x0F)) - zero)
-                        )
-                        let product = Self.withoutSignedZero(lanes * SIMD4<Float>(repeating: scale))
-                        values[rowValues + index + offset + 0] = product[0]
-                        values[rowValues + index + offset + 1] = product[1]
-                        values[rowValues + index + offset + 2] = product[2]
-                        values[rowValues + index + offset + 3] = product[3]
-                        offset += 4
-                    }
-                    while offset < inGroup {
-                        let position = index + offset
-                        let byte = rowCodes.loadUnaligned(fromByteOffset: position / 2, as: UInt8.self)
-                        let nibble = position % 2 == 0 ? (byte & 0x0F) : (byte >> 4)
-                        values[rowValues + position] = Self.withoutSignedZero(
-                            Float(signed(Int(nibble)) - zero) * scale
-                        )
-                        offset += 1
-                    }
-                    index += inGroup
+                }
+                if Self.decodeThreadCount > 1, rows > 1 {
+                    DispatchQueue.concurrentPerform(iterations: rows, execute: decodeRow)
+                } else {
+                    for row in 0..<rows { decodeRow(row) }
                 }
             }
         }
