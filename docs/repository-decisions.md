@@ -2579,3 +2579,36 @@ decode**. Four nodes: **0.41 tok/s decode — 1.7x** over one node, bit-identica
 throughput gate is still **not asserted**: it refuses a busy farm by design (`D38`) and the farm was shared,
 so every figure is an observation with its loads and the README says so. The GPU matmul stays opt-in and this
 release claims nothing about the tiled kernel written after `D63` measured its predecessor slower.
+
+## D96 — Dense models are outside this design, and the 4 B measured why
+
+The question was an overview across model sizes: Qwen3.5 4B, 9B and Qwen3.6 35B-A3B. The 4 B is a real
+checkpoint and was built into a real install — 426 tensors, 4,204,789,760 weights, **3.34 GB** at 6.36
+bits/weight — on a helper MacBook M3, because this node had neither the checkpoint nor the disk for it, and
+the install was copied here to measure. **It is slower than the model seven times its size, and the reason is
+structural.**
+
+**A dense model cannot be distributed at all.** The shard plan is an *expert* plan: `ShardPlan`/`ExpertOwnership`
+assign expert ids to nodes and the mixture all-reduces their contributions. A dense model has no experts, so
+there is nothing for the plan to divide — the 4 B and the 9 B are single-node models in this engine by
+construction, not by omission. That also means the cluster work of the last three rounds (`D92`–`D94`) does
+nothing for them.
+
+**And a dense model streams its whole self every token.** The engine holds a bounded payload cache —
+`SHARD_DENSE_CACHE_MB`, **1 GiB by default** — and for the 35 B that is enough, because the dense backbone is
+1.04 GB and the 18 GB of experts are read a row range at a time and never cached. For a dense 4 B the payload
+*is* the model: 3.34 GB against a 1 GiB cache, so the run read **18,638,208,000 bytes in four steps with zero
+hits**, and every step paid for most of the model again.
+
+The measurement follows from those two facts rather than surprising us: **5.870 s/step = 0.170 tok/s** on one
+Mac mini M2 at load 5.05 (`load` 2.707 s, `head` 1.908 s, `ff` 0.747 s, `attn.core` 0.506 s), against the
+35 B MoE's **0.230 tok/s** on the same node. The 35 B wins because it is **sparse** — ~3 B active of 35 B — and
+that is not a coincidence of this release: it is the property that makes a 35 B model runnable on an 8 GB
+machine at all. The 9 B would be worse again: ~5.5 GB of payload against ~4.5 GB of usable RAM, still
+undividable.
+
+**So the design's model class is MoE, and the README now says so** — with the 4 B row kept in the table,
+its prefill left unmeasured rather than invented, and the three MoE rows beside it. Two tooling gaps were
+found on the way and are worth recording: `tools/quantize.py` needs `safetensors` and `torch` as *direct*
+dependencies (it reaches them through `SafetensorsSource`), so a helper machine without the reference stack
+fails on the first shard until both are installed — which is how this install was finally built.

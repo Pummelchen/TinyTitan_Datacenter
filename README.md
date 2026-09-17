@@ -38,17 +38,21 @@ for what is still open.
 
 ## Performance
 
-Measured on the release build with greedy decoding on `Qwen3.6-35B-A3B` (int4 install). Every configuration
-produces output bit-identical to a single node.
+Measured on the release build with greedy decoding on int4 installs. The MoE figures are the four M2 nodes
+(8 GB each, loads 1.6–5.5); the dense 4 B was measured on one node at load 5.05.
 
-| Release | Nodes | Prefill tok/s | Decode tok/s | Speed-up |
-| --- | --- | --- | --- | --- |
-| 1.0.0 | 1× Mac mini M2 (8 GB) | 0.23 | 0.23 | 1.0x |
-| 1.0.0 | 4× Mac mini M2 (8 GB) | 0.23 | 0.41 | **1.7x** |
+| Release | Model | Nodes | Prefill tok/s | Decode tok/s | Speed-up |
+| --- | --- | --- | --- | --- | --- |
+| 1.0.0 | Qwen3.6-35B-A3B (MoE, ~3 B active) | 1× Mac mini M2 (8 GB) | 0.23 | 0.23 | 1.0x |
+| 1.0.0 | Qwen3.6-35B-A3B (MoE, ~3 B active) | 4× Mac mini M2 (8 GB) | 0.23 | 0.41 | **1.7x** |
+| 1.0.0 | Qwen3.5-4B (dense) | 1× Mac mini M2 (8 GB) | — | 0.17 | — |
 
-Prefill is not distributed in this release. The cluster figures come from a shared farm (loads 1.6–5.5),
-where load costs the cluster more than the baseline, so they are lower bounds — and later releases will
-improve on all of these.
+**Dense models are outside this design**, and it was measured rather than assumed. The shard plan divides
+*experts*, so a dense model cannot be distributed at all, and its whole payload is re-read for every token: a
+dense 4 B measured **0.17 tok/s**, slower than the 35 B MoE on the same node, because the MoE activates only
+~3 B of its 35 B. A dense 9 B needs more memory than an 8 GB node has. Prefill is not distributed in this
+release either, and the cluster figures are lower bounds from a shared farm; later releases will improve on
+all of these.
 
 ## What it does
 
