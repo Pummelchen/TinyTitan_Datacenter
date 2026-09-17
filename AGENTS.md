@@ -121,7 +121,15 @@ and the gate remains the certification instrument. `DC-113`'s GPU GEMV is retire
 the CPU path took the same phase down without a device, a protocol, or `D91`'s silent-CPU-fallback risk — and
 remains a candidate for absolute speed. **M4–M5 have not
 started**.
-**v1.0.0 is released** (`RELEASE.md` §1.3 gave it an identity: `VERSION` is the authority,
+**The operator re-scoped the work on 2026-09-17, and it overrides the order above: single-node throughput
+first, and *no network or cluster measurement until this engine reaches **7 tok/s** decode on one Mac mini M2*
+(`D97`, `DC-117`).** The engine is at **0.230 tok/s** on that machine, so the gap is ~30x, and the reference is
+the sister project's own measurement of a 35 B-A3B at 4-bit on a comparable 8 GB M-series node: **5.164 tok/s
+at a 1 GB expert cache, 6.019 at 2 GB, 7.075 at 3 GB, and 2.756 at 4 GB** — the last one collapsing because a
+4 GB wired cache, the dense weights, the KV and the prompt cache no longer fit in 8 GiB, so the machine swaps
+(host wait per token 55 ms → 219 ms, GPU occupancy 42.8% → 17.4%, and the spread 3.167 → 2.756 → 2.429
+degrading run over run). Its verdict is that the workload is **bandwidth-bound**: the lever is expert I/O, not
+prefill, and its launcher's "at most 30% of physical RAM" warning is calibrated by that data. **v1.0.0 is released** (`RELEASE.md` §1.3 gave it an identity: `VERSION` is the authority,
 `sources/DatacenterEngine/Version.swift` is generated from it, every tool answers `--version`, and both
 `tools/version.py --check` and `Package.swift` refuse a disagreement). `tools/release.py` builds the
 archive — **dry run by default**, gates first, a clean scratch build scanned for warnings, `lipo -archs`
@@ -144,7 +152,9 @@ asserted on the binaries *inside* the archive, one checksum beside it — and pu
   while this repository's install container is its own — signed codes, fp32 scales, int8 zero points
   (`D39`) — so a file from one is not readable by the other; the earlier claim here that it "holds the
   install format" was imprecise. Treat it as
-  read-only unless a change there is explicitly requested. It is **Apache-2.0**; this
+  read-only unless a change there is explicitly requested. **Reading it for approach is authorised** (the operator
+  said so on 2026-09-17, and `docs/reference-tinytitan-decode.md` is the study that came out of it); *copying*
+  from it is not, and the position above is unchanged. It is **Apache-2.0**; this
   repository is **MIT**, and `DC-013`'s review found **no code copied from it**, so no `NOTICE` transfers —
   the measurement and the three conditions that would change it are in `THIRD_PARTY_NOTICES.md` and
   `D36`, and `tools/check_provenance.py` guards the position offline.

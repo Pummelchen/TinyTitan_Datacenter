@@ -2612,3 +2612,58 @@ its prefill left unmeasured rather than invented, and the three MoE rows beside 
 found on the way and are worth recording: `tools/quantize.py` needs `safetensors` and `torch` as *direct*
 dependencies (it reaches them through `SafetensorsSource`), so a helper machine without the reference stack
 fails on the first shard until both are installed — which is how this install was finally built.
+
+## D97 — Single-node throughput first: 7 tok/s on this machine, and the five gaps between here and there
+
+The operator set the order on 2026-09-17: **the engine reaches 7 tok/s decode on one Mac mini M2 before any
+further network or cluster measurement.** The cluster work is not wrong, it is early — `D92`-`D94` bought 1.7x
+on a design whose single-node step is 4.32 s, when the reference implementation runs the same class of model
+seven times faster on the same class of machine. A network measurement taken against a 0.23 tok/s engine
+optimises the wrong tail.
+
+**The reference, measured by the sister project on a comparable 8 GB M-series node** (35 B-A3B at 4-bit, 46-token
+prompt, 512 tokens generated, identical output digest `bfe8fa42b239e55b` across every configuration, so the
+differences are purely speed):
+
+| expert cache | decode tok/s | expert hit | I/O hidden | GPU busy | occupancy | host wait/token |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 GB | 5.164 | 60.5% | 8.1% | 34.5% | 32.9% | 55 ms (at 3 GB) |
+| 2 GB | 6.019 | 72.3% | 11.1% | 40.1% | 37.9% | — |
+| 3 GB | **7.075** | 79.8% | 21.4% | 45.7% | 42.8% | 55 ms |
+| 4 GB | 2.756 | 84.6% | 46.6% | 17.9% | 17.4% | 219 ms |
+
+The 4 GB row is the most useful one: the **highest** hit rate produced the **slowest** run, because a 4 GB wired
+cache plus the dense weights, KV and prompt cache stop fitting in 8 GiB and the machine swaps against a cache
+that its own pressure paged out. Its spread (3.167 → 2.756 → 2.429 run over run) is accumulated pressure, not
+noise, and TTFT is flat across all four (4.91-5.36 s) — so the workload is **bandwidth-bound on expert I/O, not
+prefill**, and the safe cap is about **30% of physical RAM**.
+
+**Our engine, read against that table, has five gaps and they are structural.** In the order they cost time:
+
+1. **The expert cache cannot outlive a layer.** `case mixture(MixtureWeights, provider: ExpertSlotCache)` is
+   constructed in the layer-load path (`Qwen3_5Forward.swift`) and dies with the layer's weights. For a cached
+   decode that makes cross-token reuse impossible and the hit rate **structurally 0** — `D31` measured 0 and was
+   read as "experts are never reused"; the truth is worse and simpler: they could not be reused by construction.
+   `SHARD_EXPERT_BANK_MB` (512 MB default) sizes a bank that is dropped before the next token asks for anything.
+2. **The GPU is off.** `MetalMatmul` is opt-in because `D63` measured it slower — with the *older* kernel, whose
+   access pattern it blames; the threadgroup-tiled kernel written since has never been re-measured (`DC-113`
+   carries the question). The reference runs 33-46% GPU busy; ours is one CPU core for everything the unpack
+   does not touch.
+3. **Nothing overlaps I/O.** There is no asynchronous file I/O in the engine at all — no `DispatchIO`, no reader
+   thread — so 0% of expert reads are hidden, against 8-21% there. On a bandwidth-bound workload that is the
+   single largest structural difference in the list.
+4. **The per-token matmul is one core with a strided access pattern.** `Ops.orderedMatmulVectorized` walks four
+   output rows `k*4` bytes apart per `k` step — 8 KB at the head's width — so a cache line delivers four useful
+   floats. Outputs are independent, so parallelising across them is bit-exact (`D63`'s rule), and the loop order
+   for a one-row GEMV wants one contiguous weight row per output.
+5. **The head materialises 2.03 GB of fp32 from bf16 every token** — 1.017 GB read, 508 M values converted
+   single-threaded, 1.05 s of the 4.32 s step — when a bf16-weight GEMV could convert in-register and never
+   write the fp32 array at all.
+
+**The order of work** follows the table: make the expert bank live for the generation and instrument it (hit
+rate, bytes read, read seconds — the columns the reference has and we do not), because that is the one gap the
+reference quantifies and the only one that is free of arithmetic risk (caching decoded weights cannot change a
+value, so the trace digest is the check). Then the head and the CPU matmul shape, then the tiled GPU kernel
+re-measured and batched one command buffer per layer, then asynchronous expert prefetch on top of a bank worth
+prefetching into. Every step is measured on one binary with the conditions alternated (`D62`) and the load
+recorded, and **7 tok/s is the gate**: no cluster measurement resumes before it.
