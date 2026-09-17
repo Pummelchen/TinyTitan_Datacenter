@@ -7,6 +7,7 @@ left alone, because a test that edits it is a test that can ship wrong notes.
 """
 
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -73,6 +74,31 @@ class NotesTests(unittest.TestCase):
         release.notes(self.archive, "1.0.0", self.notes)
         written = self.notes.read_text(encoding="utf-8")
         self.assertNotIn("older, and not in these notes", written)
+
+    def testBundlesComeFromThePlanAndExcludeTestTargets(self) -> None:
+        # The first published release carried the two *test* bundles: 2 MB of fixtures in `bin/`, and a wrong
+        # story about what the executables need. Reachability from an executable is what decides it.
+        plan = json.dumps({
+            "name": "TinyTitanDatacenter",
+            "targets": [
+                {"name": "datacenter-generate", "type": "executable",
+                 "dependencies": [{"byName": ["DatacenterEngine"]}], "resources": []},
+                {"name": "DatacenterEngine", "type": "library",
+                 "dependencies": [{"byName": ["DatacenterIR"]}], "resources": []},
+                {"name": "DatacenterIR", "type": "library", "dependencies": [],
+                 "resources": [{"path": "Shaders", "rule": {"copy": {}}}]},
+                {"name": "DatacenterEngineTests", "type": "test",
+                 "dependencies": [{"byName": ["DatacenterEngine"]}],
+                 "resources": [{"path": "Fixtures", "rule": {"copy": {}}}]},
+            ],
+        })
+        self.assertEqual(release.declared_bundles(plan), ["TinyTitanDatacenter_DatacenterIR.bundle"])
+
+    def testAnExecutableThatDeclaresNoResourcesNeedsNoBundle(self) -> None:
+        plan = json.dumps({"name": "P", "targets": [
+            {"name": "datacenter-generate", "type": "executable", "dependencies": [], "resources": []},
+        ]})
+        self.assertEqual(release.declared_bundles(plan), [])
 
     def testTheArchiveNameFollowsTheConvention(self) -> None:
         # §1.6's shape, asserted rather than eyeballed: `<project>-<version>-macos-arm64.tar.gz`.

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import platform
 import re
@@ -126,7 +127,7 @@ def preconditions() -> list[str]:
     return recorded
 
 
-def gates() -> list[str]:
+def gates() -> tuple[list[str], str]:
     """§1.5 — in order, and each of them able to fail."""
     recorded: list[str] = []
 
@@ -157,7 +158,7 @@ def gates() -> list[str]:
     if missing:
         raise Refused(f"the package no longer declares {missing}; the archive would be missing them")
     recorded.append("package plan declares: " + ", ".join(EXECUTABLES))
-    return recorded
+    return recorded, plan.stdout
 
 
 def scratch_build(scratch: Path) -> list[str]:
@@ -182,12 +183,42 @@ def scratch_build(scratch: Path) -> list[str]:
     return [f"clean scratch build: ok, 0 warnings ({scratch})"]
 
 
+def declared_bundles(plan_json: str) -> list[str]:
+    """Which resource bundles the shipped executables can actually need, read from the **plan** (§1.5).
+
+    The release that shipped first carried two bundles, and both were the *test* targets' fixtures: the
+    executables declare no resources at all, so nothing in them loads a bundle. Carrying them was harmless and
+    wrong — 2 MB of test fixtures in `bin/` and a wrong story about what the archive needs. The plan knows
+    which targets have resources and which depend on which, so the set is computed rather than guessed:
+    a bundle is carried when its target is **reachable from an executable**.
+    """
+    plan = json.loads(plan_json)
+    targets = {target["name"]: target for target in plan.get("targets", [])}
+    reachable: set[str] = set()
+    frontier = [name for name in EXECUTABLES if name in targets]
+    while frontier:
+        name = frontier.pop()
+        if name in reachable:
+            continue
+        reachable.add(name)
+        for dependency in targets.get(name, {}).get("dependencies", []):
+            # A dependency is `{"byName": [...]}` or a bare name, depending on the toolchain's shape.
+            names = dependency.get("byName", []) if isinstance(dependency, dict) else [dependency]
+            frontier.extend(candidate for candidate in names if candidate in targets)
+    package = plan.get("name", PROJECT)
+    return sorted(
+        f"{package}_{name}.bundle"
+        for name in reachable
+        if targets[name].get("resources")
+    )
+
+
 def archive_name(version_string: str) -> str:
     """§1.6 — `<project>[-<library>]-<version>-macos-arm64.tar.gz`. A single-library project omits the segment."""
     return f"{PROJECT}-{version_string}-macos-arm64.tar.gz"
 
 
-def package(scratch: Path, version_string: str, stage: Path) -> tuple[Path, Path]:
+def package(scratch: Path, version_string: str, stage: Path, bundles: list[str]) -> tuple[Path, Path]:
     """§1.6 — the archive, with the licence, the notices and the binaries' own README."""
     release_dir = scratch / "release"
     if stage.exists():
@@ -200,11 +231,14 @@ def package(scratch: Path, version_string: str, stage: Path) -> tuple[Path, Path
         if not source.exists():
             raise Refused(f"{source} is not there; the clean build did not produce {name}")
         shutil.copy2(source, root / "bin" / name)
-    # §1.6: a Swift binary without its resource bundle fails at runtime, not at build time — so whatever
-    # the build produced is carried, and the count is reported rather than assumed to be zero.
-    bundles = sorted(release_dir.glob("*.bundle"))
-    for bundle in bundles:
-        shutil.copytree(bundle, root / "bin" / bundle.name)
+    # §1.6: a Swift binary without its resource bundle fails at runtime, not at build time — so every bundle
+    # the executables can need is carried, decided by the plan (`declared_bundles`) rather than by whatever
+    # happens to be lying in the build directory, which is how the test targets' fixtures got in once.
+    for name in bundles:
+        source = release_dir / name
+        if not source.exists():
+            raise Refused(f"the plan says {name} is needed and the build did not produce it")
+        shutil.copytree(source, root / "bin" / name)
 
     for name in ["LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md", "VERSION"]:
         shutil.copy2(ROOT / name, root / name)
@@ -219,7 +253,7 @@ def package(scratch: Path, version_string: str, stage: Path) -> tuple[Path, Path
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     (stage / f"{archive.name}.sha256").write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
     say(f"  archive: {archive.name}  {archive.stat().st_size} bytes  sha256 {digest[:16]}…")
-    say(f"  resource bundles carried: {len(bundles)}")
+    say(f"  resource bundles carried: {len(bundles)}" + (f" ({', '.join(bundles)})" if bundles else " (none declared)"))
     return archive, stage / f"{archive.name}.sha256"
 
 
@@ -319,13 +353,15 @@ def main() -> int:
         say("  " + line)
 
     say("\nGATES (§1.5)")
-    for line in gates():
+    gate_records, plan_json = gates()
+    for line in gate_records:
         say("  " + line)
     for line in scratch_build(Path(arguments.scratch)):
         say("  " + line)
 
     say("\nPACKAGE (§1.6)")
-    archive, checksum = package(Path(arguments.scratch), version_string, Path(arguments.stage))
+    bundles = declared_bundles(plan_json)
+    archive, checksum = package(Path(arguments.scratch), version_string, Path(arguments.stage), bundles)
 
     say("\nVERIFY (§1.2.2)")
     for line in verify_archive(archive, version_string):
