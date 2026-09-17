@@ -75,8 +75,15 @@ built and measured (`D89`), and on this node it loses.** The cache is bit-identi
 budgets alternated on one binary, 1 GB and 2 GB made the step *worse* (5.33 → 5.46 and 5.60 s/step), because the
 resident fp32 arrays cost more elsewhere than they saved (`head` +0.20 s/step, `attn.core` +0.27) on a machine
 already swapping. So its **default budget is 0** and `SHARD_LAYER_CACHE_MB` is the knob for a node with headroom.
-**For 1.5× the lever is the plan side:** `mix.read` 33.0%, which the plan divides, `head` 19.2% (vocabulary-
-parallel and identical on every node), `mix.gateup`/`mix.down` 6.6%, and the exchange at 0.89 s of a cluster step. **M4–M5 have not
+**The cluster then gave the same answer about itself** (`D90`): with the gate now forwarding `SHARD_PROFILE` to
+every node, a four-node run shows **the plan working** — reads fall from 6.281 GB to 2.31-2.40 GB per node,
+`mix.read` 1.80 → ~0.49 s/step, `mix.gateup` 0.25 → 0.06 — and **the exchange eating it**: 4.250, 4.136, 0.672 and
+3.739 s/step, that is **71.5%, 69.5%, 11.2% and 63.1%** of the step. Four nodes doing identical work, one waiting
+0.67 s and three waiting ~4 s: the cause is in `allReduce`, which sends to every peer and then receives
+**sequentially, in peer order, blocking** — so a slow peer delays everyone queued behind it, forty times per
+token. **That, not the expert plan, is the 1.5×**: receive concurrently and skip peers that own none of the
+chosen experts, and the exchange returns to the shape of node 2's 0.67 s. The head shard (`head` 19.2%,
+identical on every node) is the margin on top. **M4–M5 have not
 started**.
 There are **no releases and no tags**. The design, the plan and the status live in the
 wiki; the measurements live in `docs/`.
@@ -206,7 +213,7 @@ python3 tools/run_all_gates.py
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 215 --swift-skipped 0 --python-tests 402
+python3 tools/check_status_claims.py --swift-tests 215 --swift-skipped 0 --python-tests 406
 
 # The provenance position: no copied code, and no NOTICE to carry
 python3 tools/check_provenance.py

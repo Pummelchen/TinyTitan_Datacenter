@@ -237,6 +237,9 @@ def main(argv: list[str] | None = None) -> int:
                f", plus the {_install_bytes(args.install) / 1e9:.1f} GB install"
                " because --remote-install was not given")
         )
+    # The measurement switches, built once and used by every launch — the local node inherits them from this
+    # process, the peers are told them explicitly.
+    prefix = gate.environment_prefix(gate.forwarded_environment())
     for index, host in enumerate(addresses):
         install = str(args.install) if index == 0 else gate.remote_install_path(args.install, args.remote_install)
         if index == 0:
@@ -250,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
                 "./datacenter-generate", install, f"./node-{index}", args.prompt, str(args.steps),
                 "--cached", "--plan", "./plan.json", "--config", "./cluster.json", "--node", str(index),
             ])
-            command = ["ssh", entries[index], f"cd {args.remote_dir} && {remote}"]
+            command = ["ssh", entries[index], f"cd {args.remote_dir} && {prefix}{remote}"]
         processes.append(
             (index, subprocess.Popen(
                 command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True

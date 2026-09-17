@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import shutil
 import subprocess
@@ -118,6 +119,32 @@ def stage_remote(
     subprocess.run(["scp", "-q", "-r", *sources, f"{remote}:{directory}/"], check=True, cwd=ROOT)
 
 
+def forwarded_environment(source: dict[str, str] | None = None) -> dict[str, str]:
+    """The measurement switches a gate passes through to the peers it launches.
+
+    Both of these are read by the engine from its **own** environment, and a gate that set them for the local
+    node alone would profile one node of four and report the rest as unprofiled — or, worse, hand one node a
+    different cache budget and call the difference a cluster result. They are named here rather than spelled at
+    each launch site so the two halves cannot drift (`D83`).
+    """
+    environment = os.environ if source is None else source
+    return {
+        name: environment[name]
+        for name in ("SHARD_PROFILE", "SHARD_LAYER_CACHE_MB")
+        if environment.get(name)
+    }
+
+
+def environment_prefix(environment: dict[str, str]) -> str:
+    """`NAME=value … ` for a shell command line, or nothing when there is nothing to pass.
+
+    Sorted, so a command is the same string every time it is built and a test can compare it.
+    """
+    if not environment:
+        return ""
+    return " ".join(f"{name}={environment[name]}" for name in sorted(environment)) + " "
+
+
 def remote_install_path(install: Path, remote_install: str | None) -> str:
     """The install path to hand a peer, matching where `stage_remote` actually put it.
 
@@ -207,6 +234,7 @@ def run_mesh(args, binaries, plan_path: Path, reference: Path, plan: dict) -> in
             ),
         )
     )
+    prefix = environment_prefix(forwarded_environment())
     for index, remote in enumerate(entries[1:], start=1):
         install = remote_install_path(args.install, args.remote_install)
         processes.append(
@@ -215,7 +243,7 @@ def run_mesh(args, binaries, plan_path: Path, reference: Path, plan: dict) -> in
                 subprocess.Popen(
                     [
                         "ssh", remote,
-                        f"cd {args.remote_dir} && ./datacenter-node {install} ./node-{index} "
+                        f"cd {args.remote_dir} && {prefix}./datacenter-node {install} ./node-{index} "
                         f"{args.tokens} ./plan.json --node {index} --config ./cluster.json",
                     ],
                     cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -351,10 +379,11 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"[3/4] two machines: node 1 listening on {args.remote}, node 0 connecting from here")
             remote_install = remote_install_path(args.install, args.remote_install)
+            prefix = environment_prefix(forwarded_environment())
             remote = subprocess.Popen(
                 [
                     "ssh", args.remote,
-                    f"cd {args.remote_dir} && ./datacenter-node {remote_install} ./node-1 {args.tokens} "
+                    f"cd {args.remote_dir} && {prefix}./datacenter-node {remote_install} ./node-1 {args.tokens} "
                     f"./plan.json --node 1 --listen 0.0.0.0:0",
                 ],
                 cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,

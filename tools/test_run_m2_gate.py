@@ -33,6 +33,34 @@ def fake_install(root: Path, family: str = "qwen3_5_moe", experts: int = 8) -> P
     return root
 
 
+class ForwardedEnvironmentTests(unittest.TestCase):
+    """A gate must tell every peer the same measurement switches it told the local node.
+
+    `SHARD_PROFILE` and `SHARD_LAYER_CACHE_MB` are read by the engine from its own environment. A gate that set
+    them locally only would profile one node of four and report the rest as unprofiled — or hand one node a
+    different cache budget and call the difference a cluster result (`D90`).
+    """
+
+    def test_nothing_is_forwarded_when_nothing_was_asked_for(self) -> None:
+        self.assertEqual(harness.forwarded_environment({}), {})
+        self.assertEqual(harness.environment_prefix({}), "")
+
+    def test_the_measurement_switches_are_forwarded(self) -> None:
+        forwarded = harness.forwarded_environment(
+            {"SHARD_PROFILE": "1", "SHARD_LAYER_CACHE_MB": "256", "PATH": "/usr/bin"}
+        )
+        self.assertEqual(forwarded, {"SHARD_PROFILE": "1", "SHARD_LAYER_CACHE_MB": "256"})
+
+    def test_the_prefix_is_sorted_so_a_command_is_a_stable_string(self) -> None:
+        prefix = harness.environment_prefix({"SHARD_PROFILE": "1", "SHARD_LAYER_CACHE_MB": "256"})
+        self.assertEqual(prefix, "SHARD_LAYER_CACHE_MB=256 SHARD_PROFILE=1 ")
+
+    def test_an_empty_value_is_not_forwarded_as_a_switch(self) -> None:
+        # `SHARD_PROFILE=` means "not set" to the engine, so passing it on would say nothing either way; it is
+        # omitted rather than sent as an empty switch.
+        self.assertEqual(harness.forwarded_environment({"SHARD_PROFILE": ""}), {})
+
+
 class RemoteInstallPathTests(unittest.TestCase):
     """The path a peer is launched with must be the path that was staged.
 

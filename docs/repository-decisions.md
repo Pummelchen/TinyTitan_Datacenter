@@ -2273,3 +2273,101 @@ still lose to the resource it spends.**
 parts are `mix.read` at 33.0% (the plan divides it), `head` at 19.2% (vocabulary-parallel, and identical on every
 node), `mix.gateup`/`mix.down` at 6.6%, and the exchange at 0.89 s of a cluster step. That is where the next
 rounds go.
+
+## D90 — The cluster's cost is the exchange, and the exchange blocks on peers one at a time
+
+`D88` and `D89` were both about one node. This round asked the cluster the same question, and to do that the gate
+had to be able to ask it: `SHARD_PROFILE` and `SHARD_LAYER_CACHE_MB` are read by the engine from **its own**
+environment, and the gate launched peers over `ssh` without them — so a profiled run would have profiled the local
+node and reported the other three as unprofiled, and a cache budget would have reached one node of four. One
+helper (`forwarded_environment`/`environment_prefix`, beside `remote_install_path` and for the same reason: one
+rule, three launch sites) now passes them through, with four tests.
+
+**Then the per-node profile of a real four-node run.** Bit-identity held on every node, and the phases say two
+things at once:
+
+| node | step | exchange | share | reads |
+| --- | --- | --- | --- | --- |
+| 0 | 5.946 s | **4.250 s** | **71.5%** | 2.402 GB |
+| 1 | 5.954 s | **4.136 s** | **69.5%** | 2.369 GB |
+| 2 | 5.989 s | 0.672 s | 11.2% | 2.313 GB |
+| 3 | 5.925 s | **3.739 s** | **63.1%** | 2.328 GB |
+
+**The plan works.** Against the baseline's 6.281 GB read per run, each node reads 2.31-2.40 GB, and the phases
+follow: `mix.read` falls from 1.80 s/step to about 0.49, `mix.gateup` from 0.25 to 0.06. The expert sharding is
+doing exactly what it was built to do.
+
+**And the exchange eats all of it and more**, on a farm whose nodes sat at load 2.4-4.1 with one at 8 earlier in
+the day. The tell is the **spread**: four nodes doing identical work, one of them waiting 0.67 s and three waiting
+3.7-4.3 s.
+
+**The cause is in the code, not in the network.** `ShardExchange.allReduce` sends its frame to every peer and then
+receives **sequentially, in peer order, blocking**:
+
+```swift
+for peer in peers { try peer.send(frame) }
+for peer in peers { let answer = try peer.receive() }
+```
+
+A peer that is slow to answer does not delay itself — it delays **everyone else in the list behind it**, and the
+node that happens to be read last pays the whole sum of its peers' latencies. That is head-of-line blocking, and
+the 6× spread between nodes doing the same arithmetic is its signature. One all-reduce per layer, forty per step,
+so the latency is paid forty times per generated token: 4.25 s ÷ 40 ≈ **105 ms per layer**, which is not a LAN
+round trip but a LAN round trip **behind a busy node**.
+
+**What the fix is, and why it is worth more than the head shard.** Two contained changes, neither of which touches
+the arithmetic — the received frames are merged by key with a deterministic order (`OrderedReduction`), so *when*
+a frame arrives cannot change a result:
+
+* **Do not block on one peer at a time.** Receive from peers concurrently, so the cost is the slowest peer rather
+  than the sum of the ones queued behind it.
+* **Do not talk to a peer that owns none of the chosen experts.** With 256 experts over four nodes and eight
+  chosen per token, roughly six are remote — so one or two peers matter per layer, not all three.
+
+With the exchange at its floor (node 2's 0.67 s shows the shape of that floor on a busy farm), the cluster step
+becomes the work plus a small wait: ~3.4 s of dense work plus ~0.7 s of local mixture work plus a few hundred
+milliseconds, against a 5.55 s baseline. **That is the 1.5×**, and the head shard (`head` is 1.05 s/step,
+identical on every node) is the margin on top of it.
+
+## D91 — What the sister project does for ANE prefill and GPU decode, and what it changes here
+
+The direction is: **ANE for prefill, GPU for decode.** The sister checkout is the reference, and reading it
+changes the plan in three concrete ways.
+
+**What they actually run.** Prefill is chunked, and an **opt-in** path (`TINYTITAN_PREFILL_ANE=on`) runs the
+**full-attention prefill blocks on the Neural Engine** from an exported Core ML sidecar
+(`tools/export_ane_prefill.py` → `ane_prefill/layer_<L>.mlpackage`). Decode **stays on the GPU**: quantized
+**GEMV** kernels (`Metal/Quant/bf16_gemv.metal`, `dequant_int4.metal`) with a tiled GPU Top-K for sampling
+(`Metal/Sampling/logit.metal`), while their prefill matmuls use **Metal Performance Primitives tensor ops**
+(`Metal/TensorCore/tensorops.metal`: `matmul2d_descriptor`, affine tiles, fp16 threadgroup tensors). Their
+measurement method is ours: **one variable per arm, a fresh process, one discarded warmup, off/on/on/off
+interleaved** — and `prefill_s` is the qualification metric.
+
+**Three things they learned by measuring, which we would otherwise have learned the hard way.**
+
+1. **The ANE path is not bit-identical, and they say so in the benchmark's docstring.** The sidecar is fp16 with
+   a different reduction order — *"~1% per-layer deviation"* — so their A/B **expects the digests to differ
+   between arms**. That is irreconcilable with our `I3` as it stands: a gate that asserts a byte-identical trace
+   cannot have an ANE prefill in it. So an ANE path here is **opt-in, declared, and never inside a bit-identity
+   claim** — the same shape as the Gated DeltaNet's declared tolerance in `D8`.
+2. **The fused SDPA op produces NaN/inf on their M3's ANE from sequence length 2048**, so they build attention
+   decomposed instead. A hardware/compiler defect that only a real run shows.
+3. **Core ML exits 0 while dispatching to the CPU.** Their words: an export could *"succeed" into a sidecar that
+   the runtime then runs on the CPU at ~38x the GPU prefill cost"*. Their fix is a flag —
+   `aneCompileVerified` — that only a verified export writes, and a **runtime that refuses a sidecar without
+   it**, written through a staging directory and an atomic replace. This is our own rule in someone else's code:
+   *a check that cannot run must never look like a pass*, and it is worth copying as a discipline for **any**
+   device path we add — a GPU kernel selection that silently falls back to the CPU would be the same defect with
+   a different name.
+
+**What it changes in our plan, and it is a real correction.** Decode is **M=1**, so the right GPU kernel for it is
+a **quantized GEMV that dequantises in-kernel**, not a tiled matmul. That is not a detail: it means `D88`'s
+`load` phase — 30.5% of a cached step, the same constants dequantised every token — **stops existing** rather
+than being cached, which is what `D89` tried and lost to memory. The weights stay int4 on the device and are
+consumed in the kernel. `head`, `attn.core` and the mixture matmuls get the same treatment.
+
+**And it stays bit-exact**, which the ANE path cannot: `D63` already established the rule — one thread per output
+element, accumulating `k` in the same order, changes *which thread* does the work and not the order of the sum —
+and the existing opt-in GPU matmul was already proven byte-identical on a real trace before it was proven slow.
+So the order of work is: **the decode GEMV first** (it removes the largest reducible phase and is bit-exact),
+then the exchange (`D90`, the ratio's real lever), then the ANE prefill sidecar with its verification.
