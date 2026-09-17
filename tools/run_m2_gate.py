@@ -60,21 +60,38 @@ def install_family(install: Path) -> str:
     return str(manifest["family"])
 
 
-def write_plan(install: Path, nodes: int, path: Path) -> dict:
-    """The plan every node will read. Contiguous blocks, which is the engine's default too."""
+DISTRIBUTIONS = ("contiguous", "round-robin")
+
+
+def write_plan(
+    install: Path, nodes: int, path: Path, distribution: str = "contiguous"
+) -> dict:
+    """The plan every node will read, with its experts split one way or the other.
+
+    `contiguous` is the engine's default: a node's experts are adjacent in the stacked tensor. `round-robin`
+    interleaves them instead, which exists because of a measurement (`D92`): the cluster's exchange is 99.6%
+    **receive** time — 1.11-2.31 s/step of every node waiting for its peers to *have* something to send — and
+    the cheapest explanation is that a contiguous block of expert ids carries a skewed share of the routing.
+    Interleaving is how that is tested rather than assumed.
+    """
     experts = expert_count(install)
     if experts < nodes:
         raise SystemExit(f"{experts} experts over {nodes} nodes leaves nodes idle; not a useful gate")
-    base, extra = divmod(experts, nodes)
+    if distribution not in DISTRIBUTIONS:
+        raise SystemExit(f"unknown distribution {distribution!r}; expected one of {', '.join(DISTRIBUTIONS)}")
     owners: list[int] = []
-    for node in range(nodes):
-        owners.extend([node] * (base + (1 if node < extra else 0)))
+    if distribution == "round-robin":
+        owners = [index % nodes for index in range(experts)]
+    else:
+        base, extra = divmod(experts, nodes)
+        for node in range(nodes):
+            owners.extend([node] * (base + (1 if node < extra else 0)))
     plan = {
         "schema": 1,
         "family": install_family(install),
         "experts": experts,
         "nodes": nodes,
-        "distribution": "contiguous",
+        "distribution": distribution,
         "owners": owners,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -306,6 +323,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--install", type=Path, default=FIXTURE)
     parser.add_argument("--tokens", default="1,2,3")
     parser.add_argument("--nodes", type=int, default=2, help="2 for M2's gate; the CLI is two-node for now")
+    parser.add_argument(
+        "--distribution", default="contiguous", choices=DISTRIBUTIONS,
+        help="how the plan splits experts: contiguous blocks, or interleaved (see write_plan)",
+    )
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--keep", action="store_true", help="leave .build/m2-gate in place")
     parser.add_argument(
@@ -350,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
 
     OUT.mkdir(parents=True, exist_ok=True)
     plan_path = OUT / "plan.json"
-    plan = write_plan(args.install, args.nodes, plan_path)
+    plan = write_plan(args.install, args.nodes, plan_path, args.distribution)
     print(
         f"[1/4] plan: {plan['experts']} experts over {plan['nodes']} nodes, "
         f"{plan['distribution']}, written to {plan_path.relative_to(ROOT)}"

@@ -130,6 +130,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--remote-dir", default="Downloads/m3-gate")
     parser.add_argument("--prompt", default="760,6511,314,9338,369")
     parser.add_argument("--steps", type=int, default=4)
+    parser.add_argument(
+        "--distribution", default="contiguous", choices=gate.DISTRIBUTIONS,
+        help="how the plan splits experts: contiguous blocks, or interleaved (`D92`)",
+    )
     parser.add_argument("--min-speedup", type=float, default=3.0)
     parser.add_argument("--quiet-load", type=float, default=1.0)
     parser.add_argument("--allow-busy-farm", action="store_true")
@@ -192,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
 
     OUT.mkdir(parents=True, exist_ok=True)
     plan_path = OUT / "plan.json"
-    plan = gate.write_plan(args.install, len(entries), plan_path)
+    plan = gate.write_plan(args.install, len(entries), plan_path, args.distribution)
     print(f"[2/4] plan: {plan['experts']} experts over {len(entries)} nodes; baseline is one node, same install")
 
     # 2. The baseline: one node, the same prompt, the same decode mode.

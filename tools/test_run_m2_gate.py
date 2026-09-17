@@ -92,6 +92,45 @@ class RemoteInstallPathTests(unittest.TestCase):
             )
 
 
+class DistributionTests(unittest.TestCase):
+    """The plan's two splits, because the choice is now a measurement rather than a default.
+
+    `D92` measured the cluster's exchange as 99.6% **receive** — nodes waiting for peers to have something to
+    send — so whether a contiguous block of expert ids carries a skewed share of the routing is a question with
+    a cheap test: interleave them and look.
+    """
+
+    def plan(self, distribution: str, nodes: int = 4, experts: int = 8) -> dict:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        install = Path(directory.name) / "install"
+        install.mkdir()
+        (install / "install.json").write_text(
+            # The manifest is the authority on the expert count: `expert_count` reads it from the
+            # stacked tensor's leading dimension rather than trusting the caller.
+            json.dumps({
+                "family": "tiny",
+                "tensors": [{"role": "expert.stack_gate_up", "shape": [experts, 2, 4]}],
+            })
+        )
+        return harness.write_plan(install, nodes, install / "plan.json", distribution)
+
+    def test_contiguous_hands_each_node_a_block(self) -> None:
+        self.assertEqual(self.plan("contiguous")["owners"], [0, 0, 1, 1, 2, 2, 3, 3])
+
+    def test_round_robin_interleaves_them(self) -> None:
+        self.assertEqual(self.plan("round-robin")["owners"], [0, 1, 2, 3, 0, 1, 2, 3])
+
+    def test_both_record_what_they_are(self) -> None:
+        # The plan is data a node validates, so a split that did not name itself would be unusable.
+        self.assertEqual(self.plan("contiguous")["distribution"], "contiguous")
+        self.assertEqual(self.plan("round-robin")["distribution"], "round-robin")
+
+    def test_an_unknown_split_is_refused_rather_than_defaulted(self) -> None:
+        with self.assertRaises(SystemExit):
+            self.plan("interleaved")
+
+
 class PlanTests(unittest.TestCase):
     def test_the_family_comes_from_the_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -2371,3 +2371,72 @@ element, accumulating `k` in the same order, changes *which thread* does the wor
 and the existing opt-in GPU matmul was already proven byte-identical on a real trace before it was proven slow.
 So the order of work is: **the decode GEMV first** (it removes the largest reducible phase and is bit-exact),
 then the exchange (`D90`, the ratio's real lever), then the ANE prefill sidecar with its verification.
+
+## D92 — The exchange is 99.6% *waiting*, so the cost is imbalance and not the protocol
+
+`D90` measured the exchange at 4.25 s/step on three of four nodes and named the suspect in the code: `allReduce`
+sends to every peer and then receives **sequentially, in peer order, blocking**. That is a real defect, and acting
+on it would have been guessing, because a blocking receive and a peer that has nothing to send look identical
+from outside. So the timer was split: `ExchangeMetrics` now carries **encode**, **send**, **receive** and
+**merge** seconds beside the total, `allReduce` marks each segment, and `datacenter-generate` writes all four
+into `metrics.json`. The segments **cover 100.0% of the total**, so the instrument is exact rather than
+indicative — and it says something different from the hypothesis.
+
+A four-node run, loads 1.8-4.5:
+
+| node | step | exchange | encode | send | **receive** | merge | reduces |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | 4.790 s | 2.323 | 0.002 | 0.007 | **2.311** | 0.002 | 90/step |
+| 1 | 4.785 s | 2.023 | 0.002 | 0.007 | **2.011** | 0.003 | 90/step |
+| 2 | 4.790 s | 1.128 | 0.002 | 0.009 | **1.114** | 0.002 | 90/step |
+| 3 | 4.789 s | 1.578 | 0.002 | 0.007 | **1.567** | 0.002 | 90/step |
+
+**Receive is 99.6% of the exchange.** Encoding costs 2 ms per *step*, sending 7 ms — the protocol and the wire
+format are not the problem, and neither is the head-of-line blocking I suspected: making the receives concurrent
+would shorten a *sum of latencies*, and there is no latency here to sum. Ninety reduces per step at 13-26 ms
+each is one node waiting for its peers to **have** something to send. **That is compute imbalance**, and its
+natural home is the plan: a **contiguous** split gives each node a *block* of expert ids, and if the router's
+traffic is skewed across ids — which it is, that is what a learned router does — one block is hotter than the
+others and everyone waits on whoever owns it.
+
+**The same run also put the previous number in context.** With the farm quieter, the identical measurement is
+**1.13×** — cluster 4.790 s/step against a 5.389 s/step baseline, bit-identity intact — where the busy farm gave
+**0.93×**. So the engine's own cluster step was never below one node; the earlier figure was mostly the farm, and
+`D90`'s four-second exchange was mostly a peer at load 8. **The measurement to trust is the one with the load
+beside it**, which is exactly why the gate records it.
+
+**The experiment ran, and it falsified the hypothesis.** Four runs, contiguous and round-robin alternated:
+**1.06x / 0.96x / 0.86x / 0.88x** — the two distributions are indistinguishable — with a run-to-run spread of
+**24%** (slowest node 5.135 → 6.359 s/step). The loads beside them are the explanation, and one is decisive:
+
+| run | baseline | slowest node | ratio | loads at the start |
+| --- | --- | --- | --- | --- |
+| contiguous 1 | 5.465 | 5.135 | 1.06x | 3.7 3.0 2.6 2.7 |
+| contiguous 2 | 5.495 | 6.359 | 0.86x | 4.2 3.4 3.6 3.4 |
+| round-robin 1 | 5.452 | 5.657 | 0.96x | 4.0 2.8 3.1 3.1 |
+| round-robin 2 | 5.453 | 6.193 | 0.88x | 5.0 **18.7** 4.3 2.8 |
+
+**The run with the slowest cluster step is the run with a peer at load 18.7.** On this farm the cluster step
+measures the farm, and no distribution can fix a peer that is doing something else. So: the per-id skew
+hypothesis is **falsified** by four interleaved runs, the receive wait is a busy peer rather than a slow
+protocol or an unbalanced plan, and a 1.5x figure cannot be *certified* here without a quiet window — which is
+precisely what the gate's `--quiet-load 1.0` rule exists for (`D38`), and why every figure above carries its
+loads.
+
+**What that leaves in our hands.** Two things, and neither depends on the farm: make the **replicated** work
+smaller, because the ratio is `(replicated + experts) / (replicated + experts/n + exchange)` and the head's
+1.05 s/step is identical on every node; and **overlap the wait with work that is not on the critical path** —
+a node waiting for a peer can prefetch the next layer's weights, which turns the exchange's seconds into time
+already spent. Both are engine work.
+
+**And the original experiment, for the record.** The engine already supports `roundRobin`, which interleaves
+expert ownership and so spreads a hot id's traffic across nodes; the gate now exposes it as `--distribution`
+with the two values validated and refused rather than defaulted, and four tests pin the owner lists
+(`[0,0,1,1,2,2,3,3]` against `[0,1,2,3,0,1,2,3]`). Four runs follow — contiguous, round-robin, contiguous,
+round-robin, alternating as `D62` requires — and the question they answer is whether the receive time falls. If
+it does not, the imbalance is elsewhere (per-token routing variance rather than per-id skew) and the next lever
+is overlapping the wait with compute rather than removing it.
+
+**Why this matters to the target.** The cluster needs 4.79 → 3.59 s/step for 1.5×. The two levers are the
+exchange, 1.1-2.3 s/step of which is *waiting*, and the head shard at −0.79 s/step. Neither is a protocol
+rewrite; both are about who does which work.

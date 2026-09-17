@@ -220,6 +220,12 @@ do {
         "exchange_bytes_sent": exchange.bytesSent,
         "exchange_bytes_received": exchange.bytesReceived,
         "exchange_seconds": exchange.seconds,
+        // Where the exchange's seconds went (`D92`): encode, send, receive, merge. The total alone says how
+        // bad it is; these say which of the four to change.
+        "exchange_encode_seconds": exchange.encodeSeconds,
+        "exchange_send_seconds": exchange.sendSeconds,
+        "exchange_receive_seconds": exchange.receiveSeconds,
+        "exchange_reduce_seconds": exchange.reduceSeconds,
         "dense_payload_bytes_read": payloadMetrics.bytesRead,
         "dense_payload_cache_hits": payloadMetrics.hits,
         "dense_payload_bytes_held": payloadMetrics.bytesHeld,

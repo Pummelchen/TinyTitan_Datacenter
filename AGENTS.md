@@ -16,7 +16,7 @@ A distributed inference engine for large MoE language models on a cluster of Mac
 minis and Mac Studios, over LAN/SFP/QSFP and Thunderbolt. The Swift engine under
 `sources/` **builds and passes its tests on Swift 6.4 / Xcode 27**, the toolchain
 `swift-tools-version:6.4` requires: `swift build` clean, `swift test --no-parallel`
-at **215 tests, 0 skipped, 0 failures** — the Metal kernel tests run on the node's GPU
+at **216 tests, 0 skipped, 0 failures** — the Metal kernel tests run on the node's GPU
 since `D34`. **M0, M1 and M2 are done and their gates have passed** — M0 on `Qwen/Qwen3.5-2B`
 (three frozen prompts, **40,683,520 bytes identical** to the contract, every discrete
 decision matching: `docs/m0-gate.md`), and **M1's gate passes in both of its forms** — the **checkpoint**
@@ -83,7 +83,23 @@ every node, a four-node run shows **the plan working** — reads fall from 6.281
 **sequentially, in peer order, blocking** — so a slow peer delays everyone queued behind it, forty times per
 token. **That, not the expert plan, is the 1.5×**: receive concurrently and skip peers that own none of the
 chosen experts, and the exchange returns to the shape of node 2's 0.67 s. The head shard (`head` 19.2%,
-identical on every node) is the margin on top. **M4–M5 have not
+identical on every node) is the margin on top. **The exchange was then split into its parts and the answer was
+unambiguous** (`D92`): on a four-node run the segments are **encode 0.002 s, send 0.007 s, receive 1.11-2.31 s,
+merge 0.002 s** — receive is **99.6%** of the exchange and the segments cover **100.0%** of the total. The
+cluster is not waiting on the *protocol*, it is waiting for its peers to **have** something to send: 90 reduces
+per step at 13-26 ms each is compute imbalance, not overhead. With the farm quieter (loads 1.8-4.5 rather than
+2.4-9.3) the same run measured **1.13×** — the engine's own cluster step is 4.790 s/step against a 5.389 s/step
+baseline — so the earlier 0.93× was largely the farm. The target needs 4.79 → 3.59 s/step, and the two levers
+are the exchange (1.1-2.3 s/step of waiting) and the head shard (−0.79 s/step). **The waiting was then tested
+with a plan change and turned out to be the farm** (`D92`): four interleaved runs of `contiguous` against
+`round-robin` (which interleaves expert ownership) gave **1.06, 0.96, 0.86 and 0.88×** — indistinguishable —
+with a **24%** run-to-run spread, and **the run with the slowest cluster step is the one whose peer sat at load
+18.7**. On this farm the cluster step measures the farm: the per-id skew hypothesis is falsified, the receive
+wait is a busy peer, and no distribution fixes it. So a 1.5× figure cannot be *certified* without a quiet
+window — which is what the gate's `--quiet-load 1.0` rule exists for (`D38`). What is in our hands is to make
+the **replicated** work smaller, since the ratio is `(replicated + experts) / (replicated + experts/n +
+exchange)` and the head's 1.05 s/step is identical on every node, and to **overlap the wait** with work that is
+not on the critical path. **M4–M5 have not
 started**.
 There are **no releases and no tags**. The design, the plan and the status live in the
 wiki; the measurements live in `docs/`.
@@ -213,7 +229,7 @@ python3 tools/run_all_gates.py
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 215 --swift-skipped 0 --python-tests 406
+python3 tools/check_status_claims.py --swift-tests 216 --swift-skipped 0 --python-tests 410
 
 # The provenance position: no copied code, and no NOTICE to carry
 python3 tools/check_provenance.py
@@ -381,7 +397,7 @@ any failure.
   evidenced.** The first revision said there was no source code; the second said the
   engine runs; the third said it is "untested and does not run". The first two were
   wrong, and so is the third as written — on the toolchain the manifest requires, the
-  build is clean and **215 Swift tests pass**, while on the `macos-26` CI image (Xcode
+  build is clean and **216 Swift tests pass**, while on the `macos-26` CI image (Xcode
   26.x, below the 6.4 floor) the manifest does not even parse. **Any status claim must
   name the toolchain**, because that is the whole difference between "does not build"
   and "builds and passes". Point at a command and its output, never at an adjective.

@@ -81,11 +81,17 @@ public final class ExchangeLedger: @unchecked Sendable {
     private var _bytesSent = 0
     private var _bytesReceived = 0
     private var _seconds = 0.0
+    private var _encodeSeconds = 0.0
+    private var _sendSeconds = 0.0
+    private var _receiveSeconds = 0.0
+    private var _reduceSeconds = 0.0
 
     public init() {}
 
     func record(
-        termsSent: Int, termsReceived: Int, bytesSent: Int, bytesReceived: Int, seconds: Double
+        termsSent: Int, termsReceived: Int, bytesSent: Int, bytesReceived: Int, seconds: Double,
+        encodeSeconds: Double = 0, sendSeconds: Double = 0, receiveSeconds: Double = 0,
+        reduceSeconds: Double = 0
     ) {
         lock.lock()
         defer { lock.unlock() }
@@ -95,6 +101,10 @@ public final class ExchangeLedger: @unchecked Sendable {
         _bytesSent += bytesSent
         _bytesReceived += bytesReceived
         _seconds += seconds
+        _encodeSeconds += encodeSeconds
+        _sendSeconds += sendSeconds
+        _receiveSeconds += receiveSeconds
+        _reduceSeconds += reduceSeconds
     }
 
     public var metrics: ExchangeMetrics {
@@ -102,7 +112,9 @@ public final class ExchangeLedger: @unchecked Sendable {
         defer { lock.unlock() }
         return ExchangeMetrics(
             reduces: _reduces, termsSent: _termsSent, termsReceived: _termsReceived,
-            bytesSent: _bytesSent, bytesReceived: _bytesReceived, seconds: _seconds
+            bytesSent: _bytesSent, bytesReceived: _bytesReceived, seconds: _seconds,
+            encodeSeconds: _encodeSeconds, sendSeconds: _sendSeconds,
+            receiveSeconds: _receiveSeconds, reduceSeconds: _reduceSeconds
         )
     }
 }
@@ -118,10 +130,18 @@ public struct ExchangeMetrics: Sendable, Equatable {
     /// peer**. It is an observation, not a throughput claim: on a shared network it measures the farm as
     /// much as the engine.
     public var seconds = 0.0
+    /// Where those seconds went: encoding this node's frame, sending it to the peers, waiting for theirs, and
+    /// merging what arrived. `D92` added them because the total was not enough to act on — 4.25 s/step is a
+    /// number, and 4.25 s/step of *waiting* is a different problem from 4.25 s/step of *encoding*.
+    public var encodeSeconds = 0.0
+    public var sendSeconds = 0.0
+    public var receiveSeconds = 0.0
+    public var reduceSeconds = 0.0
 
     public init(
         reduces: Int = 0, termsSent: Int = 0, termsReceived: Int = 0, bytesSent: Int = 0,
-        bytesReceived: Int = 0, seconds: Double = 0.0
+        bytesReceived: Int = 0, seconds: Double = 0.0, encodeSeconds: Double = 0.0,
+        sendSeconds: Double = 0.0, receiveSeconds: Double = 0.0, reduceSeconds: Double = 0.0
     ) {
         self.reduces = reduces
         self.termsSent = termsSent
@@ -129,6 +149,10 @@ public struct ExchangeMetrics: Sendable, Equatable {
         self.bytesSent = bytesSent
         self.bytesReceived = bytesReceived
         self.seconds = seconds
+        self.encodeSeconds = encodeSeconds
+        self.sendSeconds = sendSeconds
+        self.receiveSeconds = receiveSeconds
+        self.reduceSeconds = reduceSeconds
     }
 }
 
@@ -172,15 +196,24 @@ public enum ShardExchange {
     ) throws -> [Float] {
         let startedAt = DispatchTime.now().uptimeNanoseconds
         var termsSent = 0, termsReceived = 0, bytesSent = 0, bytesReceived = 0
+        // Where the time went, so the next change is aimed rather than guessed (`D92`). A segment is measured
+        // around the work itself; the total stays the measurement of record and still includes retries.
+        var encodeSeconds = 0.0, sendSeconds = 0.0, receiveSeconds = 0.0, reduceSeconds = 0.0
+        func since(_ mark: UInt64) -> Double {
+            Double(DispatchTime.now().uptimeNanoseconds &- mark) / 1e9
+        }
         defer {
             ledger?.record(
                 termsSent: termsSent, termsReceived: termsReceived, bytesSent: bytesSent,
                 bytesReceived: bytesReceived,
-                seconds: Double(DispatchTime.now().uptimeNanoseconds &- startedAt) / 1e9
+                seconds: since(startedAt), encodeSeconds: encodeSeconds, sendSeconds: sendSeconds,
+                receiveSeconds: receiveSeconds, reduceSeconds: reduceSeconds
             )
         }
         guard policy.attempts >= 1 else { throw ShardExchangeError.noAttempts }
+        var mark = DispatchTime.now().uptimeNanoseconds
         let frame = try ContributionWire.encode(own, tokens: tokens, hiddenSize: hiddenSize)
+        encodeSeconds += since(mark)
 
         var received: [ExpertContribution] = []
         var attempt = 1
@@ -188,11 +221,14 @@ public enum ShardExchange {
             do {
                 // The policy is the caller's, and it has to reach the transport or it means nothing.
                 for peer in peers { peer.applyTimeout(milliseconds: policy.receiveTimeoutMilliseconds) }
+                mark = DispatchTime.now().uptimeNanoseconds
                 for peer in peers { try peer.send(frame) }
+                sendSeconds += since(mark)
                 // The same frame goes to every peer, so what left this node is that frame times the peers.
                 termsSent += own.count * peers.count
                 bytesSent += frame.count * peers.count
                 received = []
+                mark = DispatchTime.now().uptimeNanoseconds
                 for peer in peers {
                     let answer = try peer.receive()
                     bytesReceived += answer.count
@@ -209,6 +245,7 @@ public enum ShardExchange {
                     }
                     received += decoded.contributions
                 }
+                receiveSeconds += since(mark)
                 break
             } catch let error as ContributionTransportError {
                 // Only a clean timeout is retryable: `midFrame` means the stream is desynchronised.
@@ -220,8 +257,10 @@ public enum ShardExchange {
             }
         }
 
-        return try OrderedReduction.accumulate(
-            try merge(own + received, indices: indices), tokens: tokens, hiddenSize: hiddenSize
-        )
+        mark = DispatchTime.now().uptimeNanoseconds
+        let merged = try merge(own + received, indices: indices)
+        let accumulated = try OrderedReduction.accumulate(merged, tokens: tokens, hiddenSize: hiddenSize)
+        reduceSeconds += since(mark)
+        return accumulated
     }
 }

@@ -320,6 +320,41 @@ extension ShardExchangeTests {
         )
         XCTAssertGreaterThanOrEqual(metrics.seconds, 0)
         XCTAssertLessThan(metrics.seconds, 5.0, "a socket pair is not five seconds of work")
+
+        // The segments are asserted as a **relation** to the total, not as values: a socket pair on a busy
+        // machine has no fixed timings, and a test that pinned them would be a test of this machine.
+        let segments = metrics.encodeSeconds + metrics.sendSeconds + metrics.receiveSeconds
+            + metrics.reduceSeconds
+        XCTAssertGreaterThanOrEqual(segments, 0, "a segment cannot be negative")
+        XCTAssertLessThanOrEqual(
+            segments, metrics.seconds,
+            "the segments are parts of the total, which also carries the retry loop's own work"
+        )
+    }
+
+    func testTheLedgerAddsUpEverySegmentAcrossReduces() throws {
+        // Deterministic, unlike the socket test: this pins the accumulation itself, which is what a
+        // breakdown is only as good as.
+        let ledger = ExchangeLedger()
+        ledger.record(
+            termsSent: 1, termsReceived: 2, bytesSent: 3, bytesReceived: 4, seconds: 5,
+            encodeSeconds: 0.5, sendSeconds: 1.0, receiveSeconds: 2.0, reduceSeconds: 1.5
+        )
+        ledger.record(
+            termsSent: 1, termsReceived: 2, bytesSent: 3, bytesReceived: 4, seconds: 5,
+            encodeSeconds: 0.25, sendSeconds: 0.5, receiveSeconds: 1.0, reduceSeconds: 0.25
+        )
+        let metrics = ledger.metrics
+        XCTAssertEqual(metrics.reduces, 2)
+        XCTAssertEqual(metrics.encodeSeconds, 0.75, accuracy: 1e-9)
+        XCTAssertEqual(metrics.sendSeconds, 1.5, accuracy: 1e-9)
+        XCTAssertEqual(metrics.receiveSeconds, 3.0, accuracy: 1e-9)
+        XCTAssertEqual(metrics.reduceSeconds, 1.75, accuracy: 1e-9)
+        XCTAssertEqual(
+            metrics.encodeSeconds + metrics.sendSeconds + metrics.receiveSeconds + metrics.reduceSeconds,
+            7.0, accuracy: 1e-9,
+            "the two records' segments add up: 0.75 + 1.5 + 3.0 + 1.75"
+        )
     }
 
     func testALedgerThatIsNeverUsedReportsZeroRatherThanNothing() throws {
