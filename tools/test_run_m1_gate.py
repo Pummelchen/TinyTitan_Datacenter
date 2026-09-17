@@ -90,6 +90,11 @@ class GateInstrumentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         report = json.loads((work / "gate" / "report.json").read_text())
         self.assertEqual(report["spec_family"], "qwen3_5_moe")
+        # The flags are part of the evidence. Two rounds were spent discovering that this gate was passing
+        # neither of the two `docs/m1-gate.md` records as the survivable pair for a checkpoint run (`D69`,
+        # `D73`), and the fixture is small enough that a mapped read changes no number -- so no byte-identity
+        # assertion can see a flag disappear. The report records them, and this asserts them.
+        self.assertEqual(report["contract_flags"], ["--stream-experts", "--uncached"])
         self.assertTrue(report["identical"], "the engine must reproduce the contract on every prompt")
         self.assertEqual(len(report["results"]), 2)
         for entry in report["results"]:
@@ -139,6 +144,10 @@ class GateInstrumentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         report = json.loads((work / "gate-install" / "report.json").read_text())
         self.assertTrue(report["identical"], "the engine must reproduce the contract reading the install")
+        # An install is read through the install's own dequantiser, which reads uncached by construction, so
+        # `--uncached` is not part of this invocation -- and the install branch is chosen first, which is what
+        # makes passing it harmless if someone ever does.
+        self.assertEqual(report["contract_flags"], ["--stream-experts"])
 
     def testTheGateRefusesAFamilyItIsNotFor(self):
         """M1's gate is for M1's model. Running it on a `qwen3_5` checkpoint must stop rather

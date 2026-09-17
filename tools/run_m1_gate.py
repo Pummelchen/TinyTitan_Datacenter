@@ -170,8 +170,15 @@ def main(argv: list[str] | None = None) -> int:
     print("      " + spec.stdout.strip())
 
     print("[4/5] correctness: every prompt, engine against contract, byte for byte")
+    # The flags this gate passes to the contract, in one place so that the command and the report cannot
+    # disagree. The report records them because the invocation is part of the evidence: two rounds were spent
+    # discovering that a gate was not passing what its own document required (`D69`, `D73`), and a recorded
+    # flag is one a test can assert.
+    contract_flags = ["--stream-experts", *(["--uncached"] if kind == "checkpoint" else [])]
+
     report = {
         "gate": "M1",
+        "contract_flags": contract_flags,
         "model": {"id": args.model, "revision": args.revision, "path": str(args.snapshot)},
         "prompts": {"path": str(args.prompts), "sha256": prompt_digest, "count": len(prompt_set["prompts"])},
         "spec_family": json.loads(spec_path.read_text())["family"],
@@ -197,17 +204,11 @@ def main(argv: list[str] | None = None) -> int:
 
         contract = run([
             python, str(ROOT / "tools" / "ordered_qwen36_trace.py"), str(args.snapshot), str(contract_trace),
-            # `--stream-experts` is not an optimisation here, it is the only way the contract can read the
-            # expert stacks at all: the install source refuses to materialise one, because a single expert
-            # layer is gigabytes. Without this flag the contract half of this gate could not run against an
-            # install, and nothing had ever asked it to.
-            "--stream-experts",
-            # `--uncached` is the other half of the pair `docs/m1-gate.md` records: without it the checkpoint
-            # path goes through `safe_open`, which *maps* the file. The gate passed this flag for neither, so
-            # its checkpoint runs mapped 67 GB and its install runs refused the stacks -- and the doc's own
-            # incident, swap to 5.1 GB and disk to 8.0 GB in a minute, is what happens without both. The
-            # install branch ignores this flag, because the install branch is chosen first.
-            *(["--uncached"] if kind == "checkpoint" else []),
+            # `contract_flags`, defined above: `--stream-experts` is the only way the contract can read an
+            # install's expert stacks at all, and `--uncached` is the other half of the pair `docs/m1-gate.md`
+            # records -- without it the checkpoint path goes through `safe_open`, which *maps* the file. The
+            # gate passed neither once, and the flag list is recorded in the report so a test can assert it.
+            *contract_flags,
             "--spec", str(spec_path), "--tokens", tokens_arg, "--model", args.model, "--revision", args.revision,
         ])
         if contract.returncode != 0:

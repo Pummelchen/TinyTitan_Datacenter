@@ -1761,3 +1761,41 @@ against 1.5 is 6%, which is a coincidence rather than a guard. It is **2.0 GB** 
 here: the seconds above are what it takes for a gate to finish, and the correctness claim is byte-identity. The
 change is recorded as removing an obstacle to a verification, not as an optimisation, because that is how it was
 justified before it was made.
+
+## D76 — M0's gate had no test, and a flag that disappears cannot be seen by a fixture
+
+M1, M2 and M3's gate scripts each carry an instrument test — `test_run_m1_gate.py` says why in its first line,
+"so the gate is never untested code" — and **M0's did not**. That was worth more than a coverage percentage when
+`D74` changed the invocation M0's gate makes, adding `--uncached` to the contract it runs, with nothing watching
+it. A gate whose invocation can drift is exactly the failure this repository spent three rounds on (`D69`, `D73`,
+`D74`), so this round wrote the test that was missing.
+
+**It drives the same script on the 236 KB fixture, so both halves of M0's gate run.** The gate does more than the
+contract comparison: it also captures the **reference implementation** through `tools/trace_capture.py` and
+asserts the discrete decisions against it, which is the half that would catch a wiring error every per-tensor op
+test would miss. On the fixture it passes end to end — `contract comparison: IDENTICAL`, `oracle comparison:
+discrete MATCH, worst relative 1.92e-07` — and the test asserts the contract comparison, the oracle match, and
+that the **smallest margin** is greater than zero, because a margin of zero would be an argmax that happened to
+land right rather than a decision that was made.
+
+**The subtler half is that a fixture cannot see a missing flag.** The fixture is small enough that a mapped read
+changes no number, and `--uncached` is byte-identical to `--mmap` by construction — so *no* byte-identity
+assertion can notice the flag disappearing, which is how it went missing for a whole era in the first place. The
+invocation had to become evidence. Both gates now define the flags **once**, use that list for the command, and
+**record it in the report**, and the tests assert it:
+
+| gate | source | flags asserted |
+| --- | --- | --- |
+| M0 | checkpoint | `--uncached` |
+| M1 | checkpoint | `--stream-experts --uncached` |
+| M1 | install | `--stream-experts` |
+
+The install row is not an omission: an install is read through its own reader, which reads uncached by
+construction, and the install branch is chosen first — so the assertion records *why* the flag is absent rather
+than tolerating it. Defining the list once is the same move as `D74`'s: a flag named in two places is a flag that
+can disagree with itself.
+
+**Why this is worth a round rather than a footnote.** Three of the last eight rounds were spent finding
+invocations that did not pass what their own documents required, and every one was found by reading code against
+a document. After this round the class is assertable: a gate that stops passing a required flag fails a test
+naming the flag. That is the difference between a defect that is discoverable and one that is caught.

@@ -87,7 +87,17 @@ def main(argv: list[str] | None = None) -> int:
         print(emitted.stdout + emitted.stderr, file=sys.stderr)
         return 2
 
-    report: dict = {"model": args.model, "revision": args.revision, "prompts": []}
+    # The flags this gate passes to the contract. `--uncached` is the flag `D74` gave the 2B contract and made
+    # this gate pass: without it the run goes through `safe_open`, which *maps* the checkpoint. It is
+    # recorded in the report because the invocation is evidence, and a recorded flag is one a test can assert.
+    contract_flags = ["--uncached"]
+
+    report: dict = {
+        "model": args.model,
+        "revision": args.revision,
+        "contract_flags": contract_flags,
+        "prompts": [],
+    }
     failed = False
     for prompt in prompts:
         tokens = ",".join(str(t) for t in prompt["tokens"])
@@ -118,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
              # real-model contract run survivable is in `docs/m1-gate.md` -- read through pread and fetch
              # experts by index -- and the dense family has no experts, so for M0 the first half is the one
              # that applies.
-             "--uncached"]
+             *contract_flags]
         )
         if contract.returncode != 0:
             print(contract.stdout + contract.stderr, file=sys.stderr)
