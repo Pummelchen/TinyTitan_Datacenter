@@ -84,9 +84,15 @@ public struct Generation {
     /// a phase reported as 0.000 s would claim a measurement nobody took (`D88`).
     public let profile: ProfileReport?
 
+    /// What the decoded-layer cache did, or nil when no cache was used.
+    ///
+    /// Recorded per node because `DC-052`'s done-when is exactly this: the cache budget and what it held,
+    /// measured rather than assumed. Nil means **no cache**, not a cache that held nothing.
+    public let layerCache: LayerCacheMetrics?
+
     public init(
         prompt: [Int], generated: [Int], secondsPerStep: [Double], captured: [TraceWriter.Tensor],
-        margins: [Float] = [], profile: ProfileReport? = nil
+        margins: [Float] = [], profile: ProfileReport? = nil, layerCache: LayerCacheMetrics? = nil
     ) {
         self.margins = margins
         self.prompt = prompt
@@ -94,5 +100,6 @@ public struct Generation {
         self.secondsPerStep = secondsPerStep
         self.captured = captured
         self.profile = profile
+        self.layerCache = layerCache
     }
 }

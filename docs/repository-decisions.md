@@ -2230,3 +2230,46 @@ parameters of constants dequantised per step, per node, on the CPU, while the GP
 comes from is already resident. The fix is a **decoded-weight budget** — decode each layer once and hold it while
 memory allows, with the budget measured and recorded per node rather than guessed, which is exactly what
 `DC-052`'s done-when asks for. That, not more sharding, is where 30% of the step is.
+
+## D89 — The decoded-layer cache works, and on this node it loses: measured, so the default is off
+
+`D88` left one clear target: `load` is 30.5% of a cached step, all of it the same constants dequantised again on
+every token. The fix is a cache, and the first design question is what shape. **Not an LRU.** A decode sweeps
+every layer in order, once per token, so a least-recently-used policy has a **zero** hit rate by construction —
+the layer evicted is always the one about to be asked for. Every step revisits every layer, so holding *any*
+layer pays on every step that follows, and the layers worth holding are simply the ones that fit.
+
+`LayerWeightCache` does that: a budget in bytes, layers held as decoded fp32, bytes **counted from the arrays it
+holds** rather than derived from a formula (the same arithmetic spelled out per expert is how a 14.5 GB change
+once shipped past 98 green tests), a layer too large for the remaining budget returned but not kept, and metrics
+— budget, bytes held, layers held, hits, misses — written into `metrics.json` per node, which is `DC-052`'s
+done-when. `generateCached` creates one per generation and threads it through `decodeOne`; the sequence path and
+every existing caller get `nil`, so nothing else changed. Seven new tests, and the one that matters asserts a
+cached decode is **bit-identical** to an uncached one, tensor by tensor.
+
+**Then the measurement, and it says no — on this node.** Budgets of 0, 256 MB, 1 GB and 2 GB, alternated on one
+binary because conditions run in sequence drift together (`D62`):
+
+| budget | layers held | step, run 1 | step, run 2 | `load` |
+| --- | --- | --- | --- | --- |
+| 0 MB | 0 | 5.327 s | 5.348 s | 1.670 / 1.642 |
+| 256 MB | 2 | **5.322 s** | **5.328 s** | 1.606 / 1.593 |
+| 1 GB | 8 | 5.459 s | 5.595 s | 1.578 / 1.625 |
+
+The cache does exactly what it was built to do — 48 hits, which is 16 held layers times the three steps that
+follow the first, and `load` falling as the budget rises — and **the step gets slower the more it holds**. The
+saving is real and computable: about **0.035 s per layer per step**, which across all 40 layers would be **1.4 s
+of a 5.42 s step, 26%**. What it costs is memory, and this node does not have it: at 2 GB the *other* phases rose
+— `head` +0.20 s/step, `attn.core` +0.27, `mix.read` +0.17 — with swap already at 2.1-2.4 GB. **The idea is
+sound where memory is free; this is an 8 GB node with 4.5 GB usable.**
+
+**So the default is zero**, and it is a measurement rather than caution. `SHARD_LAYER_CACHE_MB` turns it on for a
+machine with headroom, and the metrics record what each node actually held, so the choice is visible either way.
+That is the same shape as `D31`'s expert bank — a knob whose default is what this hardware measured, not what
+would be nice — and the same lesson as `D62`'s GPU matmul: **a mechanism that saves the work it was aimed at can
+still lose to the resource it spends.**
+
+**What it means for the target.** If 1.5× is to come, it is not from here. The step's shardable and reducible
+parts are `mix.read` at 33.0% (the plan divides it), `head` at 19.2% (vocabulary-parallel, and identical on every
+node), `mix.gateup`/`mix.down` at 6.6%, and the exchange at 0.89 s of a cluster step. That is where the next
+rounds go.

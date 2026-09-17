@@ -89,7 +89,8 @@ extension Qwen3_5Forward {
     /// throughput gate actually measures was the one step with no breakdown — and the mixture is most of it.
     public func decodeOne(
         token: Int, cache: ModelCache, capturing: Bool,
-        profiler: Profiler? = Qwen3_5Forward.requestedProfiler
+        profiler: Profiler? = Qwen3_5Forward.requestedProfiler,
+        layerCache: LayerWeightCache? = nil
     ) throws -> (tensors: [TraceWriter.Tensor], discrete: [TraceWriter.Discrete]) {
         let hiddenSize = config.hiddenSize
         precondition(token >= 0 && token < config.vocabSize, "token \(token) outside the vocabulary")
@@ -104,7 +105,7 @@ extension Qwen3_5Forward {
         // whatever has been seen already; without one it is the token's index in the sequence.
         for index in 0..<config.numLayers {
             let tag = String(format: "layer.%02d", index)
-            let layer = try loadLayer(index)
+            let layer = try loadLayer(index, cache: layerCache)
             profiler?.mark("load")
             let tables: (cos: [Float], sin: [Float])
             switch cache.layers[index] {
@@ -209,9 +210,15 @@ extension Qwen3_5Forward {
     /// `profiling` defaults to what `SHARD_PROFILE=1` asked for, and is a parameter so a test can turn it on
     /// without the environment variable, which is read once at load time.
     public func generateCached(
-        prompt: [Int], maxNewTokens: Int, profiling: Bool = Qwen3_5Forward.profilingEnabled
+        prompt: [Int], maxNewTokens: Int, profiling: Bool = Qwen3_5Forward.profilingEnabled,
+        layerCacheBudgetBytes: Int = Qwen3_5Forward.layerCacheBudget
     ) throws -> Generation {
         let (cache, promptLogits) = try prepareCache(tokens: prompt)
+        // One cache for the whole generation: a decode revisits every layer on every token, so holding a layer
+        // pays on every step that follows (`D88`).
+        let layerWeights = LayerWeightCache(
+            budgetBytes: layerCacheBudgetBytes, layerCount: config.numLayers
+        )
         var generated: [Int] = []
         var seconds: [Double] = []
         var margins: [Float] = []
@@ -228,14 +235,17 @@ extension Qwen3_5Forward {
             // added afterwards.
             let profiler = profiling ? Profiler() : nil
             let started = Date()
-            result = try decodeOne(token: next, cache: cache, capturing: false, profiler: profiler)
+            result = try decodeOne(
+                token: next, cache: cache, capturing: false, profiler: profiler, layerCache: layerWeights
+            )
             seconds.append(Date().timeIntervalSince(started))
             if let report = profiler?.report(layers: config.numLayers) { reports.append(report) }
             logits = try logitsOf(result.tensors)
         }
         return Generation(
             prompt: prompt, generated: generated, secondsPerStep: seconds, captured: result.tensors,
-            margins: margins, profile: ProfileReport.combined(reports)
+            margins: margins, profile: ProfileReport.combined(reports),
+            layerCache: layerCacheBudgetBytes > 0 ? layerWeights.metrics : nil
         )
     }
 

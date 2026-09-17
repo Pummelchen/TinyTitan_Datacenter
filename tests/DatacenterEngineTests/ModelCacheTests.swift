@@ -50,6 +50,54 @@ final class ModelCacheTests: XCTestCase {
         )
     }
 
+    /// The cache exists to save time, and it is only allowed to do that: a cached decode must be the same
+    /// decode, tensor for tensor, or it is not a cache but a different model (`D88`).
+    func testACachedDecodeIsBitIdenticalToAnUncachedOne() throws {
+        let forward = try Qwen3_5Forward(snapshot: try checkpoint())
+        let prompt = try tokens()
+        let uncached = try forward.generateCached(
+            prompt: prompt, maxNewTokens: 3, profiling: false, layerCacheBudgetBytes: 0
+        )
+        let cached = try forward.generateCached(
+            prompt: prompt, maxNewTokens: 3, profiling: false, layerCacheBudgetBytes: 64 * 1_048_576
+        )
+
+        XCTAssertEqual(cached.generated, uncached.generated)
+        XCTAssertEqual(cached.captured.map(\.name), uncached.captured.map(\.name))
+        for (mine, theirs) in zip(cached.captured, uncached.captured) {
+            XCTAssertEqual(mine.values, theirs.values, "\(mine.name) differs with the layer cache on")
+        }
+    }
+
+    /// And it must actually hold something, or it is a comment. A decode revisits every layer on every token,
+    /// so the steps after the first are hits.
+    func testTheLayerCacheHoldsLayersAndHitsOnTheNextStep() throws {
+        let forward = try Qwen3_5Forward(snapshot: try checkpoint())
+        let generation = try forward.generateCached(
+            prompt: try tokens(), maxNewTokens: 3, profiling: false,
+            layerCacheBudgetBytes: 64 * 1_048_576
+        )
+
+        let metrics = try XCTUnwrap(generation.layerCache, "a budget was given")
+        XCTAssertGreaterThan(metrics.hits, 0, "the second and third steps must hit the layers the first held")
+        XCTAssertGreaterThan(metrics.layersHeld, 0)
+        XCTAssertGreaterThan(metrics.bytesHeld, 0)
+        XCTAssertLessThanOrEqual(metrics.bytesHeld, metrics.budgetBytes)
+        // The fixture has two layers, so the cache is asked about two and should hold both.
+        XCTAssertEqual(metrics.layerCount, 2)
+        XCTAssertEqual(metrics.layersHeld, 2)
+    }
+
+    /// No budget, no cache — and the metrics are absent rather than zero, which is the distinction the whole
+    /// area keeps: zero bytes held is a measurement, no cache is not.
+    func testWithoutABudgetThereAreNoCacheMetrics() throws {
+        let forward = try Qwen3_5Forward(snapshot: try checkpoint())
+        let generation = try forward.generateCached(
+            prompt: try tokens(), maxNewTokens: 1, profiling: false, layerCacheBudgetBytes: 0
+        )
+        XCTAssertNil(generation.layerCache)
+    }
+
     /// Nil is not zero: with the instrument off the generation carries no profile rather than zeroes.
     func testWithoutProfilingTheGenerationCarriesNoProfile() throws {
         let forward = try Qwen3_5Forward(snapshot: try checkpoint())

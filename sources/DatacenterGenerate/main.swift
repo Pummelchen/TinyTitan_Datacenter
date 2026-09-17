@@ -234,6 +234,16 @@ do {
     // `SHARD_PROFILE=1` on the node is what asks for it; with the instrument off this adds no fields at all
     // rather than zeroes.
     metrics.merge(ProfileMetrics.fields(generation.profile)) { _, new in new }
+    // `DC-052`'s done-when: the budget and what it actually held, per node. Written only when a cache was in
+    // use, so an absent block means no cache rather than a cache that held nothing.
+    if let layerCache = generation.layerCache {
+        metrics["layer_cache_budget_bytes"] = layerCache.budgetBytes
+        metrics["layer_cache_bytes_held"] = layerCache.bytesHeld
+        metrics["layer_cache_layers_held"] = layerCache.layersHeld
+        metrics["layer_cache_layers"] = layerCache.layerCount
+        metrics["layer_cache_hits"] = layerCache.hits
+        metrics["layer_cache_misses"] = layerCache.misses
+    }
     if let data = try? JSONSerialization.data(withJSONObject: metrics, options: [.prettyPrinted, .sortedKeys]) {
         try? data.write(to: output.appendingPathComponent("metrics.json"))
     }

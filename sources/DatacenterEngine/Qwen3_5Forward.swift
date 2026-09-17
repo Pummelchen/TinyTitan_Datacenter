@@ -142,6 +142,40 @@ public struct Qwen3_5Forward: ForwardPass {
         environment: ProcessInfo.processInfo.environment
     )
 
+    /// How many bytes of **decoded layer weights** one generation may hold, from `SHARD_LAYER_CACHE_MB`.
+    ///
+    /// `D88` measured the decode's `load` phase at **30.5% of a step**, all of it the same constants being
+    /// dequantised again on every token — 160 times per generation — while the payload it comes from is already
+    /// resident. A layer held here is a hit on **every** step by construction, unlike the expert slot bank whose
+    /// hit rate `D31` measured at zero at every size, so this is where a node's spare bytes belong.
+    ///
+    /// **The default is zero, and that is a measurement rather than caution** (`D89`). On this 8 GB node, with
+    /// budgets of 256 MB, 1 GB and 2 GB alternated against no cache on one binary, the cache did exactly what it
+    /// was built to do — holding 2, 8 and 16 layers of 40, `load` falling by about 0.035 s per layer per step,
+    /// which across all 40 layers would be 1.4 s — and **the step still got slower as it held more**, because the
+    /// resident fp32 arrays cost more elsewhere than they saved: at 2 GB, `head` was +0.20 s/step, `attn.core`
+    /// +0.27 and `mix.read` +0.17, on a machine already swapping. At 256 MB it was neutral; at 1 GB it was
+    /// 5.33 → 5.46 s/step.
+    ///
+    /// So the knob is for a node with headroom and the default is for this one. A 24 GB or 64 GB machine should
+    /// set `SHARD_LAYER_CACHE_MB` and re-measure; the metrics below record what each node actually held, which is
+    /// `DC-052`'s done-when either way.
+    static func layerCacheBudgetBytes(environment: [String: String]) -> Int {
+        let defaultMegabytes = 0
+        guard let raw = environment["SHARD_LAYER_CACHE_MB"], let megabytes = Int(raw) else {
+            return defaultMegabytes * 1_048_576
+        }
+        // Refused rather than clamped, for the reason `bankBudgetBytes` gives: a budget nobody could hold is a
+        // node that swaps, and a silent clamp hides the typo that caused it.
+        guard megabytes >= 0, megabytes <= 1 << 20 else { return defaultMegabytes * 1_048_576 }
+        return megabytes * 1_048_576
+    }
+
+    /// The budget asked for on this node.
+    public static let layerCacheBudget = layerCacheBudgetBytes(
+        environment: ProcessInfo.processInfo.environment
+    )
+
     /// The budget, from `SHARD_EXPERT_BANK_MB` when it is sane.
     static func bankBudgetBytes(environment: [String: String]) -> Int {
         let defaultMegabytes = 512
@@ -219,8 +253,17 @@ public struct Qwen3_5Forward: ForwardPass {
         )
     }
 
-    /// The weights a decoder layer needs, loaded and then released.
-    func loadLayer(_ index: Int) throws -> (weights: [TensorRole: [Float]], gdn: GatedDeltaNetWeights?, feedForward: FeedForward) {
+    /// The weights a decoder layer needs, through `cache` when there is one.
+    ///
+    /// Without a cache this is what it always was: decode, use, release. With one, a layer that fits is decoded
+    /// once per generation instead of once per token — which is the whole of `D88`'s 30.5%.
+    func loadLayer(_ index: Int, cache: LayerWeightCache? = nil) throws -> DecodedLayer {
+        if let cache { return try cache.layer(index) { try decodeLayer(index) } }
+        return try decodeLayer(index)
+    }
+
+    /// Decode one layer from the source, uncached.
+    func decodeLayer(_ index: Int) throws -> DecodedLayer {
         let block = String(format: "layer.%02d", index)
         guard let byRole = namesByBlock[block] else { throw Error.missingTensor(block: block, role: .attnNorm) }
         func load(_ role: TensorRole) throws -> [Float] {
@@ -273,7 +316,7 @@ public struct Qwen3_5Forward: ForwardPass {
             for role in [TensorRole.attnQ, .attnK, .attnV, .attnO, .attnQNorm, .attnKNorm] {
                 weights[role] = try load(role)
             }
-            return (weights: weights, gdn: nil, feedForward: feedForward)
+            return DecodedLayer(weights: weights, gdn: nil, feedForward: feedForward)
         }
         var gdnWeights: [TensorRole: [Float]] = [:]
         for role in [TensorRole.linearInQKV, .linearInZ, .linearInA, .linearInB, .linearConv, .linearALog, .linearDTBias, .linearNorm, .linearOut] {
@@ -287,7 +330,7 @@ public struct Qwen3_5Forward: ForwardPass {
             dtBias: gdnWeights[.linearDTBias]!, norm: gdnWeights[.linearNorm]!,
             outProj: gdnWeights[.linearOut]!
         )
-        return (weights: weights, gdn: gdn, feedForward: feedForward)
+        return DecodedLayer(weights: weights, gdn: gdn, feedForward: feedForward)
     }
 
     /// The Gated DeltaNet's geometry, assembled from the IR's configuration.
