@@ -1701,3 +1701,63 @@ tests, OK**.
 **small** reference models (0.6B) rather than the pinned large ones, and its reader is its own rather than the
 shared rule, so bringing it in would be a different change with a different risk. Saying so is the point:
 the alternative is an omission that looks like an oversight.
+
+## D75 — DC-114 fixed: the install dequantiser is vectorised, and M1's gate now passes on the install too
+
+`DC-114` was recorded as a timing item and deferred twice, on the reading that the operator had postponed
+timing work. What made it worth doing is not the number: **M1's restated claim** (`D56`) is that the engine's
+trace is byte-identical to a contract reading the *same install*, and M1's own gate could not finish that
+comparison — a five-token prompt had not completed in twenty-five minutes (`D70`). A gate that cannot run is a
+claim that cannot be checked, so this is a correctness enabler with a performance shape.
+
+**The cost was one loop, and it was measured before it was touched.** One real expert is 2,048 install rows of
+512 values, and `install_reader._dequantize_row` visits **every value in Python** — nibble, sign, zero, denormal
+flush, multiply — while `_materialise` rebuilt a `list[float]` a row at a time. Timed on one expert from the real
+install: **0.253 s**. An eight-token forward fetches roughly 2,560 experts, so the expert reads alone were about
+eleven minutes, which is the twenty-five-minute prompt.
+
+**The fix splits the question along the line the modules already draw.** `install_reader.py` is
+standard-library only on purpose — it gates the repository, so it has to run on any `python3` — and numpy
+cannot live there. So the **offsets** stay in one place: `Install.int4_block_bytes(tensor, start, count)`
+returns the `(codes, scales, zeros)` for a block, and `_int4_block` was refactored to call it, so there is now
+one computation of the layout rather than two. The **arithmetic** moves to `install_source._dequantize_int4_block`,
+which dequantises a whole block with numpy, and `_materialise` uses it for int4 in chunks of at least 1,024
+rows. The streaming was right; the per-value loop was not.
+
+**Bit-identical is argued and then measured.** `(code - zero)` is a small integer and the scale is a float32, so
+their product needs at most 48 bits of significand: the float64 product the scalar path computes is **exact**,
+and rounding it to float32 rounds once — which is what the float32 multiply does as well. The three layout
+details are the layout's and not the arithmetic's: two four-bit codes share a byte with the **low nibble first**,
+the codes are **signed** in four bits, and scale and zero are per **group** across a `padded` row. Denormal
+scales are flushed, which `D11` requires of both readers.
+
+Measured rather than trusted, on the real install: a full expert (`2048 x 512`), a padded `64 x 2048` matrix and
+a `32 x 2048` matrix all come back **bit-identical** under `np.array_equal(....view(np.uint32))`, and the expert
+drops from **0.253 s to 0.013 s**. A test pins the agreement permanently over **both fixtures' checked-in
+installs** — 25 int4 tensors including the MoE fixture's expert stacks, the case the fast path exists for —
+because two implementations that agree today is exactly the situation in which the second one is forgotten
+(`D34`).
+
+**And the gate that could not run now passes, on all five frozen prompts, against the install:**
+
+| prompt | tokens | engine | peak RSS | |
+| --- | --- | --- | --- | --- |
+| `capital` | 5 | 17.40 s | 0.98 GB | IDENTICAL |
+| `arithmetic` | 33 | 54.51 s | 1.30 GB | IDENTICAL |
+| `code` | 40 | 67.63 s | 1.34 GB | IDENTICAL |
+| `repeat` | 60 | 86.90 s | 1.41 GB | IDENTICAL |
+| `long` | 67 | 98.45 s | 1.31 GB | IDENTICAL |
+
+`GATE PASSED`, every comparison `IDENTICAL — 83 tensors, 0 elements, 40 discrete decisions`, with digests
+`b0d382dbabf36df0…` on **both** sides — the install digest `tools/milestones.json` records. About an hour for
+the whole gate, against a single prompt that would not finish. Both forms of M1's gate now pass on this node:
+the checkpoint pair (`D73`) and the install pair, which is the restatement.
+
+**One declaration moved, for the reason `D73` recorded.** The install path was declared at 1.5 GB from a
+contract-only measurement of 1.21 GB; the whole gate peaks at **1.41 GB** on the `repeat` prompt, and 1.41
+against 1.5 is 6%, which is a coincidence rather than a guard. It is **2.0 GB** now, measurement plus margin.
+
+**A note on what this round was not.** The operator deferred *benchmark timings*, and no speed claim is made
+here: the seconds above are what it takes for a gate to finish, and the correctness claim is byte-identity. The
+change is recorded as removing an obstacle to a verification, not as an optimisation, because that is how it was
+justified before it was made.

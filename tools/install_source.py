@@ -28,7 +28,45 @@ from typing import Iterator
 
 import numpy as np
 
-from install_reader import Install, Tensor
+from install_reader import LEAST_NORMAL_FP32, Install, Tensor
+
+
+def _dequantize_int4_block(
+    codes: bytes, scales: bytes, zeros: bytes, padded: int, group: int
+) -> np.ndarray:
+    """A block of rows dequantised at once, bit-identical to `install_reader._dequantize_row`.
+
+    That scalar function is the definition — it says what the layout means, one element at a time — and this is
+    the same arithmetic across a whole block, because the per-element version is what makes a real-model
+    contract take hours: one expert is 2,048 rows of 512 values and the scalar path visits every one in Python.
+
+    It is bit-identical rather than approximately equal, and the reason is exact: `(code - zero)` is a small
+    integer, the scale is a float32, and their product needs at most 48 bits of significand, so the float64
+    product the scalar path computes is *exact* and rounding it to float32 rounds once — which is what the
+    float32 multiply here does as well. `tools/test_install_source.py` asserts the agreement on the fixture and
+    on tensors from the real install rather than trusting the argument.
+
+    Three details are the layout's rather than the arithmetic's: two four-bit codes share a byte with the
+    **low nibble first**, the codes are **signed** in four bits, and the scale and zero are per **group** while
+    the row is `padded` wide. Denormal scales are flushed to zero, which `D11` requires of both readers.
+    """
+    code_row = padded // 2
+    raw = np.frombuffer(codes, dtype=np.uint8).reshape(-1, code_row)
+    nibbles = np.empty((raw.shape[0], padded), dtype=np.uint8)
+    nibbles[:, 0::2] = raw & 0x0F
+    nibbles[:, 1::2] = raw >> 4
+    signed = nibbles.astype(np.int16)
+    signed[signed >= 8] -= 16
+
+    groups = padded // group
+    group_scales = np.asarray(np.frombuffer(scales, dtype="<f4").reshape(-1, groups), dtype=np.float32)
+    group_zeros = np.frombuffer(zeros, dtype=np.int8).reshape(-1, groups).astype(np.int16)
+    # `D11`: a denormal scale is zero in both readers. An exact zero stays zero and NaN stays NaN, which is
+    # what the scalar rule does too -- it flushes only what is nonzero and below the least normal magnitude.
+    flushed = np.where(np.abs(group_scales) < np.float32(LEAST_NORMAL_FP32), np.float32(0.0), group_scales)
+    by_group_scale = np.repeat(flushed, group, axis=1)
+    by_group_zero = np.repeat(group_zeros, group, axis=1)
+    return ((signed - by_group_zero).astype(np.float32) * by_group_scale).astype(np.float32)
 
 
 class InstallSourceError(Exception):
@@ -137,8 +175,25 @@ class InstallSource:
         # row, so there `padded` is the row.
         columns = padded if len(shape) <= 1 else self._width(tensor)
         factor = self._rows_per_index(tensor)
+        first, last = start * factor, end * factor
+        if tensor.is_int4:
+            # Dequantise a block at a time rather than a row at a time. The scalar path visits every value in
+            # Python, which costs about 0.25 s for one real expert and is why a contract run against an install
+            # took hours where the same run against the checkpoint took a minute; this is 0.013 s for the same
+            # expert and the same bytes. The chunk is what keeps peak memory bounded -- the streaming was right,
+            # the per-value loop was not -- and `_dequantize_int4_block` states why the two agree bit for bit.
+            step = max(row_block, 1024)
+            chunks: list[np.ndarray] = []
+            for block_start in range(first, last, step):
+                count = min(step, last - block_start)
+                codes, scales, zeros = self.install.int4_block_bytes(tensor, block_start, count)
+                block = _dequantize_int4_block(codes, scales, zeros, padded, tensor.group)
+                chunks.append(np.ascontiguousarray(block[:, :columns]).reshape(-1))
+            if not chunks:
+                return np.empty(0, dtype=np.float32)
+            return np.concatenate(chunks)
         values: list[float] = []
-        for row in self.install.row_range(tensor, start * factor, end * factor, row_block=row_block):
+        for row in self.install.row_range(tensor, first, last, row_block=row_block):
             values.extend(row[:columns])
         return np.asarray(values, dtype=np.float32)
 

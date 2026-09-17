@@ -39,7 +39,7 @@ in full on 2026-09-17**: all five frozen prompts, engine against contract, both 
 `b8c976c5e7ba8816…` **on both sides** — the same digest the 2026-09-16 stored pair printed. That is the
 strongest form this invariant has been checked in: the engine reproduces its historical bytes on the input
 those bytes came from, after the GPU unpack became the default and every contract matmul went through a
-chooser (`D73`). M2
+chooser (`D73`). **And both forms now pass through M1's own gate**: the checkpoint pair (above) and the install pair — the restatement — on all five prompts, with digests `b0d382dbabf36df0…` on both sides (`D75`). M2
 produced that same digest from **half the experts on each of two machines**
 (`b0d382dbabf36df0…` for the shared prompt, `docs/m2-decisions.md`), and the four-node mesh reproduced the
 single-node trace exactly. The GPU unpack is asserted **bit-identical** to the scalar one across a grid of
@@ -86,7 +86,7 @@ all-reduce that mixes per-node partials, which `D17`'s measured counterexample (
 numeric distance stayed near `2e-06`; M1 checked **40 discrete decisions** on the real model, and as of
 2026-09-17 that comparison is **current and passing** with matched weights — `trace_diff` between the engine
 and a contract reading the same install reports every one of the 40 matching (`D56`), and on 2026-09-17 that was extended from one prompt to all
-**five** frozen ones with the same result (`D73`); M2 and M3
+**five** frozen ones with the same result, in both the checkpoint form (`D73`) and the install form (`D75`); M2 and M3
 checked the same decisions per node — and those comparisons are current, because every node reads the
 **same install** (`b0d382db…` on all of them). What int4 *does* move is measured rather than assumed: against
 a bf16 checkpoint contract the router's choices differ in **40 of 1,600 slots**, and at the output the

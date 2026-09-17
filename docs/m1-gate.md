@@ -208,6 +208,23 @@ measured at 1.21 GB (`D69`). The first draft of the fix set the checkpoint figur
 0.397 GB and the gate's own peak disproved it the same day (`D73`); an under-declared guard admits a job the
 machine cannot take, which is worse than a conservative one.
 
+**And the same gate passes against the INSTALL, which is M1's restated claim.** Round 52 made the gate able
+to read an install at all and round 59 made it able to finish one: the install dequantiser was visiting every
+value in Python, 0.253 s for one real expert and about eleven minutes of expert reads for a forward. Vectorised,
+and proven **bit-identical** to the scalar definition on the real install and over both fixtures, the whole gate
+now completes:
+
+| prompt | tokens | engine | peak RSS | |
+| --- | --- | --- | --- | --- |
+| `capital` | 5 | 17.40 s | 0.98 GB | IDENTICAL |
+| `arithmetic` | 33 | 54.51 s | 1.30 GB | IDENTICAL |
+| `code` | 40 | 67.63 s | 1.34 GB | IDENTICAL |
+| `repeat` | 60 | 86.90 s | 1.41 GB | IDENTICAL |
+| `long` | 67 | 98.45 s | 1.31 GB | IDENTICAL |
+
+`GATE PASSED`, digests `b0d382dbabf36df0…` on both sides, about an hour for the set. The install path declares
+**2.0 GB**, because the measured peak is 1.41 GB and 1.41 against the previous 1.5 was a 6% margin (`D75`).
+
 ## Status: passing, re-established 2026-09-16 after `D15` and `D16`
 
 **M1's gate passes.** The three parts, with evidence measured today rather than quoted from the

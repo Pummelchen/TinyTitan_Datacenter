@@ -135,10 +135,12 @@ def main(argv: list[str] | None = None) -> int:
     if manifest_path.exists():
         family = json.loads(manifest_path.read_text()).get("family", "")
         kind = "install"
-        # Measured, not guessed: the contract held 1.21 GB resident on the real install while streaming its
-        # expert stacks, and the engine's own trace is smaller. The declaration carries a margin above the
-        # observation rather than being the observation.
-        needs_gb = 1.5
+        # Measured, not guessed: the whole gate on the real install -- engine and contract, all five frozen
+        # prompts -- peaks at **1.41 GB**, on the longest prompt, with the contract alone at 1.21 GB. The
+        # declaration is the measurement plus margin rather than the measurement, and the margin was widened
+        # after that run: 1.41 against 1.5 is 6%, which is not a guard, it is a coincidence. `D73` recorded the
+        # same lesson from the other side -- an under-declared guard admits a job the machine cannot take.
+        needs_gb = 2.0
     else:
         family = json.loads((args.snapshot / "config.json").read_text()).get("model_type", "")
         kind = "checkpoint"

@@ -245,9 +245,20 @@ class Install:
             else:
                 yield from self._dense_block(tensor, padded, start, count)
 
-    def _int4_block(
-        self, tensor: Tensor, rows_total: int, padded: int, start: int, count: int
-    ) -> Iterator[list[float]]:
+    def int4_block_bytes(self, tensor: Tensor, start: int, count: int) -> tuple[bytes, bytes, bytes]:
+        """The `(codes, scales, zeros)` for `count` rows from `start`, in three reads.
+
+        The offsets are the layout's, and they are computed **here** rather than by the caller: a second copy
+        of them is a second thing to get wrong, which is `D72`'s lesson applied before it bites. The vectorised
+        dequantiser in `install_source.py` consumes these bytes with numpy, because this module is
+        standard-library only on purpose -- it gates the repository, so it has to run on any `python3` -- and
+        the arithmetic it does per element is what makes a real-model contract slow.
+        """
+        if not tensor.is_int4:
+            raise InstallError(f"{tensor.name} is {tensor.quant}, not int4-affine")
+        rows_total, padded = tensor.geometry()
+        if not 0 <= start <= start + count <= rows_total:
+            raise InstallError(f"rows {start}..{start + count} outside 0..{rows_total} for {tensor.name}")
         groups = padded // tensor.group
         code_row = padded // 2
         codes = self.read(tensor, start * code_row, count * code_row)
@@ -255,6 +266,14 @@ class Install:
         zeros_at = rows_total * code_row + rows_total * groups * 4 + start * groups
         scales = self.read(tensor, scales_at, count * groups * 4)
         zeros = self.read(tensor, zeros_at, count * groups)
+        return codes, scales, zeros
+
+    def _int4_block(
+        self, tensor: Tensor, rows_total: int, padded: int, start: int, count: int
+    ) -> Iterator[list[float]]:
+        groups = padded // tensor.group
+        code_row = padded // 2
+        codes, scales, zeros = self.int4_block_bytes(tensor, start, count)
         for row in range(count):
             base = row * code_row
             row_scales = struct.unpack_from(f"<{groups}f", scales, row * groups * 4)
