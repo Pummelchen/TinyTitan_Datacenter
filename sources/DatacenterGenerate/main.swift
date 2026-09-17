@@ -228,9 +228,12 @@ do {
         metrics["plan_digest"] = sharded.planDigest
     }
     metrics["install_bytes_read_total"] = forward.sourceBytesRead
-    // No `profile_seconds` here yet: `Generation` does not carry a profile, and the cached decode loop that
-    // builds it is the one path the profiler's marks do not reach. The trace CLI reports the breakdown for a
-    // full-sequence forward; extending the marks to the cached path is what this gate needs next (`D86`).
+    // The per-phase breakdown. The trace CLI has always written it for a full-sequence forward and this CLI
+    // could not, because `Generation` carried no profile and the cached decode loop passed no profiler into
+    // the mixture — so the step the throughput gate measures was the one step with no breakdown (`D88`).
+    // `SHARD_PROFILE=1` on the node is what asks for it; with the instrument off this adds no fields at all
+    // rather than zeroes.
+    metrics.merge(ProfileMetrics.fields(generation.profile)) { _, new in new }
     if let data = try? JSONSerialization.data(withJSONObject: metrics, options: [.prettyPrinted, .sortedKeys]) {
         try? data.write(to: output.appendingPathComponent("metrics.json"))
     }

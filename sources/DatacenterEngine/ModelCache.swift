@@ -73,15 +73,23 @@ extension Qwen3_5Forward {
         // and produces plausible text from a state that has seen one token too many.
         var logits: [Float] = []
         for token in tokens {
-            let result = try decodeOne(token: token, cache: cache, capturing: false)
+            // `profiler: nil` on purpose: the prompt's forward is not one of the measured steps, and
+            // `Generation.secondsPerStep` does not include it either, so the profile must not either.
+            let result = try decodeOne(token: token, cache: cache, capturing: false, profiler: nil)
             logits = try logitsOf(result.tensors)
         }
         return (cache, logits)
     }
 
     /// One token through the whole model against `cache`, which it updates in place.
+    ///
+    /// `profiler` is the same instrument the sequence path uses, with the **same phase names**, so a cached
+    /// step and a full-sequence forward can be read side by side. It was missing here until `D88`: the marks
+    /// inside `MixtureOfExperts` existed, but this path never passed a profiler down to them, so the step the
+    /// throughput gate actually measures was the one step with no breakdown — and the mixture is most of it.
     public func decodeOne(
-        token: Int, cache: ModelCache, capturing: Bool
+        token: Int, cache: ModelCache, capturing: Bool,
+        profiler: Profiler? = Qwen3_5Forward.requestedProfiler
     ) throws -> (tensors: [TraceWriter.Tensor], discrete: [TraceWriter.Discrete]) {
         let hiddenSize = config.hiddenSize
         precondition(token >= 0 && token < config.vocabSize, "token \(token) outside the vocabulary")
@@ -90,12 +98,14 @@ extension Qwen3_5Forward {
 
         var hidden = try source.rows(named: embeddingName, range: token..<(token + 1))
         hidden = Array(hidden[0..<hiddenSize])
+        profiler?.mark("embed")
 
         // The position this token occupies, which is what RoPE needs. With a cache the position is
         // whatever has been seen already; without one it is the token's index in the sequence.
         for index in 0..<config.numLayers {
             let tag = String(format: "layer.%02d", index)
             let layer = try loadLayer(index)
+            profiler?.mark("load")
             let tables: (cos: [Float], sin: [Float])
             switch cache.layers[index] {
             case .attention(_, _, let length):
@@ -108,6 +118,7 @@ extension Qwen3_5Forward {
                 hidden, weight: layer.weights[.attnNorm]!, rows: 1, width: hiddenSize,
                 eps: Float(config.rmsNormEps)
             )
+            profiler?.mark("attn.norm")
             var mixed: [Float]
             switch cache.layers[index] {
             case .gdn(let state):
@@ -121,13 +132,16 @@ extension Qwen3_5Forward {
                 )
                 cache.layers[index] = .attention(keys: keys, values: values, length: length + 1)
             }
+            profiler?.mark("attn.core")
             hidden = add(hidden, mixed)
+            profiler?.mark("attn.add")
 
             let residual = hidden
             normed = rmsNorm(
                 hidden, weight: layer.weights[.mlpNorm]!, rows: 1, width: hiddenSize,
                 eps: Float(config.rmsNormEps)
             )
+            profiler?.mark("ff.norm")
             switch layer.feedForward {
             case .dense(gate: let gate, up: let up, down: let down):
                 let projectedGate = Ops.orderedMatmul(
@@ -150,7 +164,7 @@ extension Qwen3_5Forward {
                 let shape = try mixtureShape()
                 // The same entry point the sequence path uses, so a sharded decode all-reduces here too.
                 let (routed, indices) = try mixtureOutput(
-                    hidden: normed, tokens: 1, weights: weights, shape: shape
+                    hidden: normed, tokens: 1, weights: weights, shape: shape, profiler: profiler
                 )
                 hidden = add(residual, routed)
                 if capturing {
@@ -161,15 +175,18 @@ extension Qwen3_5Forward {
                     )
                 }
             }
+            profiler?.mark("ff")
             if capturing {
                 captured.append(
                     TraceWriter.Tensor(name: "\(tag).hidden_out", shape: [1, hiddenSize], values: hidden)
                 )
             }
+            profiler?.mark("trace.copy")
         }
 
         let finalWeight = try source.tensor(named: finalNormName)
         hidden = rmsNorm(hidden, weight: finalWeight, rows: 1, width: hiddenSize, eps: Float(config.rmsNormEps))
+        profiler?.mark("final_norm")
 
         // Only the last row's logits are needed to choose the next token, so the head is read and
         // multiplied one vocabulary block at a time for one row rather than for the sequence.
@@ -182,16 +199,23 @@ extension Qwen3_5Forward {
             for column in 0..<(upper - row) { logits[row + column] = product[column] }
             row = upper
         }
+        profiler?.mark("head")
         captured.append(TraceWriter.Tensor(name: "logits", shape: [1, config.vocabSize], values: logits))
         return (captured, discrete)
     }
 
     /// Greedy generation with a cache: the prompt once, then one position per token.
-    public func generateCached(prompt: [Int], maxNewTokens: Int) throws -> Generation {
+    ///
+    /// `profiling` defaults to what `SHARD_PROFILE=1` asked for, and is a parameter so a test can turn it on
+    /// without the environment variable, which is read once at load time.
+    public func generateCached(
+        prompt: [Int], maxNewTokens: Int, profiling: Bool = Qwen3_5Forward.profilingEnabled
+    ) throws -> Generation {
         let (cache, promptLogits) = try prepareCache(tokens: prompt)
         var generated: [Int] = []
         var seconds: [Double] = []
         var margins: [Float] = []
+        var reports: [ProfileReport] = []
         var logits = promptLogits
         var result: (tensors: [TraceWriter.Tensor], discrete: [TraceWriter.Discrete]) = ([], [])
 
@@ -199,14 +223,19 @@ extension Qwen3_5Forward {
             let next = Greedy.argmax(logits, offset: 0, width: vocabularySize)
             generated.append(next)
             margins.append(Greedy.margin(logits, offset: 0, width: vocabularySize))
+            // A fresh profiler per step, so a phase's seconds are that step's rather than a running total
+            // with the gap between steps folded into whichever phase happened to come first; the reports are
+            // added afterwards.
+            let profiler = profiling ? Profiler() : nil
             let started = Date()
-            result = try decodeOne(token: next, cache: cache, capturing: false)
+            result = try decodeOne(token: next, cache: cache, capturing: false, profiler: profiler)
             seconds.append(Date().timeIntervalSince(started))
+            if let report = profiler?.report(layers: config.numLayers) { reports.append(report) }
             logits = try logitsOf(result.tensors)
         }
         return Generation(
             prompt: prompt, generated: generated, secondsPerStep: seconds, captured: result.tensors,
-            margins: margins
+            margins: margins, profile: ProfileReport.combined(reports)
         )
     }
 

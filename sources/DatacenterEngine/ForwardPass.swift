@@ -50,6 +50,23 @@ public struct ProfileReport: Sendable {
     public let layers: Int
 }
 
+extension ProfileReport {
+    /// The phases of several forwards added together, for a loop that runs one per token.
+    ///
+    /// A cached decode profiles one forward per generated token, so a single step's report says nothing about
+    /// the generation; adding them gives seconds per phase over the whole thing, which is what a share is
+    /// taken of. The layer count is the same in every report by construction, so it is taken rather than
+    /// summed. An empty list is `nil` — nothing was profiled — rather than a report of zeroes.
+    public static func combined(_ reports: [ProfileReport]) -> ProfileReport? {
+        guard let first = reports.first else { return nil }
+        var seconds: [String: Double] = [:]
+        for report in reports {
+            for (phase, value) in report.seconds { seconds[phase, default: 0] += value }
+        }
+        return ProfileReport(seconds: seconds, layers: first.layers)
+    }
+}
+
 /// Turns a profile into the metrics fields both CLIs write.
 ///
 /// It lives here rather than being spelled out in each tool so the two cannot drift, and it takes the

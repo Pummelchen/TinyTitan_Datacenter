@@ -185,6 +185,13 @@ public struct Qwen3_5Forward: ForwardPass {
     /// and a profile cannot change under a running forward. `SHARD_PROFILE=1` turns it on.
     public static let profilingEnabled = ProcessInfo.processInfo.environment["SHARD_PROFILE"] == "1"
 
+    /// A profiler when `SHARD_PROFILE=1` asked for one, and nothing otherwise.
+    ///
+    /// Used as a default argument so every entry point — the sequence forward, the cached decode, the
+    /// generation loop — answers "was profiling asked for?" in one place, and so a test can hand one in
+    /// directly rather than needing the environment variable, which is read once at load time.
+    public static var requestedProfiler: Profiler? { profilingEnabled ? Profiler() : nil }
+
     /// Whether the trace records what is *inside* a decoder layer as well as at its boundaries.
     ///
     /// Off by default, and it has to be: the trace's digest covers the tensor list, so a trace with extra

@@ -36,6 +36,22 @@ final class ProfileTests: XCTestCase {
         XCTAssertNil(ForwardResult(tensors: []).profile)
     }
 
+    func testCombiningAddsPhasesAndTakesTheLayerCount() {
+        let combined = ProfileReport.combined([
+            ProfileReport(seconds: ["mix.read": 1.0, "head": 0.5], layers: 2),
+            ProfileReport(seconds: ["mix.read": 0.25, "attn.core": 2.0], layers: 2),
+        ])
+        XCTAssertEqual(combined?.seconds["mix.read"], 1.25)
+        XCTAssertEqual(combined?.seconds["head"], 0.5)
+        XCTAssertEqual(combined?.seconds["attn.core"], 2.0)
+        XCTAssertEqual(combined?.layers, 2)
+    }
+
+    func testCombiningNothingIsNilRatherThanZeroes() {
+        // A generation of zero steps profiled nothing; it did not measure every phase at 0.000 s.
+        XCTAssertNil(ProfileReport.combined([]))
+    }
+
     func testAReportWithNoMarksIsStillAReport() {
         // A forward that marks nothing is not the same as one that was not profiled: the first was measured
         // and found nothing, the second was not measured. Both are representable, and they differ.

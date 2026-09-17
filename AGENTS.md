@@ -16,7 +16,7 @@ A distributed inference engine for large MoE language models on a cluster of Mac
 minis and Mac Studios, over LAN/SFP/QSFP and Thunderbolt. The Swift engine under
 `sources/` **builds and passes its tests on Swift 6.4 / Xcode 27**, the toolchain
 `swift-tools-version:6.4` requires: `swift build` clean, `swift test --no-parallel`
-at **204 tests, 0 skipped, 0 failures** — the Metal kernel tests run on the node's GPU
+at **208 tests, 0 skipped, 0 failures** — the Metal kernel tests run on the node's GPU
 since `D34`. **M0, M1 and M2 are done and their gates have passed** — M0 on `Qwen/Qwen3.5-2B`
 (three frozen prompts, **40,683,520 bytes identical** to the contract, every discrete
 decision matching: `docs/m0-gate.md`), and **M1's gate passes in both of its forms** — the **checkpoint**
@@ -63,7 +63,15 @@ forward, `mix.read` is **37.6%**, `attn.core` 23.6%, `head` 13.5% (the LM head's
 **perfect, instantaneous, cost-free sharding of the expert reads is worth `6.521 × 3/4 = 4.891 s`,
 17.363 → 12.472 s, or 1.39×`**, before any exchange. The speed target lives in the **replicated** reads
 (dense 13.5% plus head 13.5%), the attention core at 23.6%, and the read path itself — not in the expert plan.
-The cached decode path's own phases still need the profiler wired through `Generation` (`D86`). **M4–M5 have not
+**The cached step now has its own breakdown too** (`D88`): profiled on the same install and the same command the
+M3 baseline runs, **21.795 s over 4 steps = 5.449 s/step** — `mix.read` **33.0%**, `load` **30.5%**, `head` 19.2%,
+`attn.core` 9.6% — and the three big phases are not the same kind of cost. The dense payload is read **once** for
+the whole run (1.0437 GB held, 4888 cache hits), so `load` is **not I/O**: it is the same constants dequantised
+and released on every step, 160 times per generation, while the GPU sits idle. `head` is cached weights and a
+matmul. Only `mix.read` is device-bound — about 0.33 GB/step in 1.80 s, **184 MB/s** — and it is the only one a
+plan divides, so perfect, free sharding is worth **1.09×** on the measured step. **So the attack is `DC-052` by
+name:** a *decoded-weight budget*, because the largest reducible cost in the step is ~1 G parameters of constants
+being decoded again on every token. **M4–M5 have not
 started**.
 There are **no releases and no tags**. The design, the plan and the status live in the
 wiki; the measurements live in `docs/`.
@@ -193,7 +201,7 @@ python3 tools/run_all_gates.py
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 204 --swift-skipped 0 --python-tests 402
+python3 tools/check_status_claims.py --swift-tests 208 --swift-skipped 0 --python-tests 402
 
 # The provenance position: no copied code, and no NOTICE to carry
 python3 tools/check_provenance.py
@@ -361,7 +369,7 @@ any failure.
   evidenced.** The first revision said there was no source code; the second said the
   engine runs; the third said it is "untested and does not run". The first two were
   wrong, and so is the third as written — on the toolchain the manifest requires, the
-  build is clean and **204 Swift tests pass**, while on the `macos-26` CI image (Xcode
+  build is clean and **208 Swift tests pass**, while on the `macos-26` CI image (Xcode
   26.x, below the 6.4 floor) the manifest does not even parse. **Any status claim must
   name the toolchain**, because that is the whole difference between "does not build"
   and "builds and passes". Point at a command and its output, never at an adjective.

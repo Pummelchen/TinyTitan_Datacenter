@@ -2178,3 +2178,55 @@ idea moves in the wrong direction for it: more bytes, no reads saved.
 **cached decode**, one token per step — so the shares are indicative and not the measured step. The cached path
 has no marks of its own (`D86`: `decodeOne` passes no profiler into the mixture, and `Generation` cannot carry a
 report), which is the next wiring step before the cluster's own per-phase numbers exist.
+
+## D88 — The cached step's own breakdown: 83% of it is materialising weights, and only a third is really device I/O
+
+`D86` found the wire missing: the cached decode passed no profiler into the mixture and `Generation` could not
+carry a report. Both ends are connected now — `decodeOne` takes a profiler and marks the same phase names the
+sequence path does, `generateCached` runs a **fresh profiler per step** (so a phase's seconds are that step's
+rather than a running total with the gap between steps folded into whatever came first) and adds the reports with
+`ProfileReport.combined`, `Generation` carries the result, and `datacenter-generate` writes `profile_seconds`.
+`Profiler.requestedProfiler` answers "was profiling asked for?" in one place, and `profiling:` is a parameter so
+the tests turn it on without the environment variable, which is read once at load time.
+
+Then the measurement the whole exercise was for, on the real install, exactly the command M3's baseline runs:
+
+```
+SHARD_PROFILE=1 .build/out/Products/Release/datacenter-generate \
+    .build/m1-install .build/profile-decode 760,6511,314,9338,369 4 --cached
+```
+
+**21.795 s over 4 steps = 5.449 s/step**, against a cluster baseline of 5.662 s/step from the M3 run, and the
+phases sum to the wall exactly — the profiler's marks sit after their work, so nothing is unattributed:
+
+| phase | seconds | share | per step |
+| --- | --- | --- | --- |
+| `mix.read` | 7.202 | **33.0%** | 1800 ms |
+| `load` | 6.647 | **30.5%** | 1662 ms |
+| `head` | 4.187 | **19.2%** | 1047 ms |
+| `attn.core` | 2.099 | 9.6% | 525 ms |
+| `mix.gateup` | 0.995 | 4.6% | 249 ms |
+| `mix.down` | 0.442 | 2.0% | 111 ms |
+| `mix.shared` | 0.173 | 0.8% | 43 ms |
+| the other ten phases | 0.050 | 0.2% | |
+
+**The three big phases are not the same kind of cost, and the metrics say which is which.** The dense payload was
+read **once** for the whole run (`dense_payload_bytes_read` equals `dense_payload_bytes_held`, 1.0437 GB, with
+4888 cache hits), so `load`'s 6.6 s is **not I/O**: it is `InstallFile.tensor` dequantising the same constants on
+every step, for every layer, and releasing them — the docstring on `loadLayer` says so in as many words ("loaded
+and then released"). The dequantiser is already SIMD-vectorised with a scalar definition beside it, so this is not
+a loop that wants micro-optimising; it is **work that does not need doing at all**, recomputed 160 times per
+generation. `head` is cached weights and a matmul. **`mix.read` is the only phase that is genuinely device-bound**
+— `install_bytes_read_total` is 2.37 GB for the node over the run, 0.59 GB/step, of which the expert slices are
+about 0.33 GB/step in 1.80 s, **184 MB/s** — and it is the only one of the three that a plan divides.
+
+**So the arithmetic of the target holds, and gets slightly worse.** A four-node plan divides `mix.read` alone:
+perfect, instantaneous, cost-free sharding is `7.202 × 3/4 = 5.402 s`, 21.795 → 19.995 s, **1.09×** on the
+measured step. The forward's 1.39× (`D87`) and this 1.33%-of-nothing difference are the same conclusion from two
+paths: **the expert plan is not the lever**, and 62% of the step is work that is identical on every node.
+
+**What the attack is, then, and it is `DC-052` by name.** The largest single reducible cost is `load`: ~1 G
+parameters of constants dequantised per step, per node, on the CPU, while the GPU sits idle and the payload it
+comes from is already resident. The fix is a **decoded-weight budget** — decode each layer once and hold it while
+memory allows, with the budget measured and recorded per node rather than guessed, which is exactly what
+`DC-052`'s done-when asks for. That, not more sharding, is where 30% of the step is.

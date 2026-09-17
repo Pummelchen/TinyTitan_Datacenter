@@ -77,14 +77,22 @@ public struct Generation {
     /// element, not just by its token ids.
     public let captured: [TraceWriter.Tensor]
 
+    /// Phase timings over the decode steps, present only when profiling was asked for.
+    ///
+    /// Nil means **not measured**, which is not the same as zero — the distinction `ForwardResult.profile`
+    /// draws, kept here because this is the struct the throughput gate's per-node metrics are built from, and
+    /// a phase reported as 0.000 s would claim a measurement nobody took (`D88`).
+    public let profile: ProfileReport?
+
     public init(
         prompt: [Int], generated: [Int], secondsPerStep: [Double], captured: [TraceWriter.Tensor],
-        margins: [Float] = []
+        margins: [Float] = [], profile: ProfileReport? = nil
     ) {
         self.margins = margins
         self.prompt = prompt
         self.generated = generated
         self.secondsPerStep = secondsPerStep
         self.captured = captured
+        self.profile = profile
     }
 }

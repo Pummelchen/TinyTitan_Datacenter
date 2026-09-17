@@ -30,6 +30,33 @@ final class ModelCacheTests: XCTestCase {
         return try JSONDecoder().decode(Golden.self, from: Data(contentsOf: url)).tokens
     }
 
+    /// The cached decode marks the same phases the sequence path does, and it is the step the throughput
+    /// gate measures — the one step that had no breakdown until `D88`.
+    func testTheCachedDecodeReportsItsPhasesWhenAskedFor() throws {
+        let forward = try Qwen3_5Forward(snapshot: try checkpoint())
+        let generation = try forward.generateCached(prompt: try tokens(), maxNewTokens: 2, profiling: true)
+
+        let profile = try XCTUnwrap(generation.profile, "profiling was asked for")
+        XCTAssertGreaterThan(profile.layers, 0)
+        XCTAssertGreaterThan(profile.seconds.values.reduce(0, +), 0)
+        for phase in ["embed", "load", "attn.norm", "attn.core", "attn.add", "ff.norm", "head"] {
+            XCTAssertNotNil(profile.seconds[phase], "the cached decode marks \(phase)")
+        }
+        // The fixture is a mixture (`qwen3_5_moe`, 8 experts, top-2), and the mixture is most of a step, so
+        // its own phases have to be here — they are the reason this wiring was needed.
+        XCTAssertTrue(
+            profile.seconds.keys.contains { $0.hasPrefix("mix.") },
+            "the mixture's phases are missing: \(profile.seconds.keys.sorted())"
+        )
+    }
+
+    /// Nil is not zero: with the instrument off the generation carries no profile rather than zeroes.
+    func testWithoutProfilingTheGenerationCarriesNoProfile() throws {
+        let forward = try Qwen3_5Forward(snapshot: try checkpoint())
+        let generation = try forward.generateCached(prompt: try tokens(), maxNewTokens: 1, profiling: false)
+        XCTAssertNil(generation.profile)
+    }
+
     func testCachedGenerationProducesTheSameTokensAsUncached() throws {
         let forward = try Qwen3_5Forward(snapshot: try checkpoint())
         let prompt = try tokens()
