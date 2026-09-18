@@ -80,3 +80,57 @@ worse than a named gap — and this note exists so the gap is not mistaken for c
 **Not ruled out:** `ShardPeerChannel.receive`'s frame slicing and `dataToFloats`, both of which slice and neither
 of which the crash names. **The next attempt should call `contributions(...)` against a stubbed peer before adding
 the socket**, so the crash bisects to one side of the wire.
+
+## The two call sites, located, so the next attempt starts from a line number
+
+Everything on both sides of the exchange is built and tested. What is not written is where the engine calls it.
+This is what is known about that seam, taken from reading the code and confirmed against the line numbers as of
+`3238872`.
+
+### The requesting side
+
+`RealForwardRunner+Decode.swift`, `encodeDecodeRoutedMoE`:
+
+* **the routed expert set is planned at ~1387** (`model.planRoutedExperts`), and the decoded plan's `misses` are what
+  the local streamer will read;
+* **`readyBuffers` at ~1384** is already non-blocking and the ring lands about one layer;
+* **the phase-2 reduce is encoded at ~1773** via `encodeRoutedPersistentPhase2Reduce`, which now takes
+  `remotePartials: MTLBuffer?` and selects `phase2ReduceK8RemotePSO` when it is non-nil;
+* **the seam that decides which experts this node reads is `ModelExpertIO.setOwnedExpertFilter`**, applied at the top
+  of `makeExpertCachePlan` and therefore on the real forward path. It is unset by default, which is why every
+  measurement in this repository remains valid.
+
+So the call site is: after the plan is known (so the expert list is final) and before the phase-2 encode, read
+`moeActs` back — `topK * FmoE` fp16, 8 KB at the real shapes — call
+`ShardExchangeParticipant.remotePartials(layer:experts:slots:activation:dims:)`, upload the `[d][8]` result, and
+pass it. **This node's own slots in that buffer must be zero** or they double-count (`D168`).
+
+### The serving side
+
+`ShardExchangeServer` exists and is tested, with the expert computation **injected**:
+
+```swift
+public typealias Compute = (_ layer: Int, _ experts: [Int], _ activation: [Float]) throws -> [Float]
+```
+
+The real `Compute` has to run the named experts over the supplied activation — the MoE's phase 1 for a subset of
+slots — **sharing the node's expert cache with the generation loop** rather than owning a second copy of it. It must
+reply in the requested order, and the server refuses a reply of the wrong width rather than padding.
+
+### The lifecycle
+
+`answer(_:)` loops until its peer **closes**, not for a fixed request count — a decode loop sends forty requests a
+token and closes when the token is done. A test that awaits the server before closing **deadlocks**, and the first
+version of `ShardExchangeServerTests` did, for the full timeout.
+
+### What to measure, and against what
+
+The four-node run must record the node loads and a median over repeats, and — per `D230` — **the generation length**,
+because the step is not stationary: the layer body grows 8.5% and the attention kernel 47% from position 16 to 160.
+The projection to compare against is **14.33 tok/s without attention sharding and 16.35 with**, on `D228`'s
+calibrated model, with the caveat that it was calibrated against a single node and four columns of it are model
+output rather than measurement.
+
+**One engine caveat worth carrying:** `totalExposedIoNanos` never increments in this configuration — its clock
+returns `nil` unless an observed completion count equals a *predicted* one (`D237`, `D238`) — so the server's
+published `exposedIo` reads zero here for a reason unrelated to how much IO is exposed. Do not build on it.
