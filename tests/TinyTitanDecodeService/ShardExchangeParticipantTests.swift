@@ -9,15 +9,17 @@ private struct FakeTransport: ShardTransport {
   let node: Int
   let dims: Int
 
-  func exchange(_ request: ShardExchange.Request) throws -> ShardExchange.Reply {
-    // The fake knows which peer is being asked by matching the requested slots against the table.
-    for (peer, answer) in answers where Set(answer.slots) == Set(request.slots) {
-      return ShardExchange.Reply(layer: request.layer, slots: answer.slots,
-                                 dimensions: dims, values: answer.values)
+  func exchange(_ request: ShardExchange.Request, to peer: Int) throws -> ShardExchange.Reply {
+    // The fake is now TOLD the peer rather than inferring it from the slots, which is the whole point of the
+    // protocol carrying it: with four peers, two of them can own disjoint slots and a transport that guessed
+    // could not tell them apart.
+    guard let answer = answers[peer] else {
+      return ShardExchange.Reply(layer: request.layer, slots: request.slots,
+                                 dimensions: dims,
+                                 values: [Float](repeating: 0, count: request.slots.count * dims))
     }
-    return ShardExchange.Reply(layer: request.layer, slots: request.slots,
-                               dimensions: dims,
-                               values: [Float](repeating: 0, count: request.slots.count * dims))
+    return ShardExchange.Reply(layer: request.layer, slots: answer.slots,
+                               dimensions: dims, values: answer.values)
   }
 }
 
@@ -37,9 +39,9 @@ struct ShardExchangeParticipantTests {
                                         slots: [0, 1, 2, 3], activation: [0.5])
     // Three peers, one request each - not one per expert.
     #expect(requests.count == 3)
-    #expect(requests.allSatisfy { $0.layer == 3 })
-    #expect(requests.map { $0.experts } == [[1], [2], [3]])
-    #expect(requests.map { $0.slots } == [[1], [2], [3]])
+    #expect(requests.allSatisfy { $0.request.layer == 3 })
+    #expect(requests.map { $0.request.experts } == [[1], [2], [3]])
+    #expect(requests.map { $0.request.slots } == [[1], [2], [3]])
   }
 
   @Test func aNodeOwningEveryRoutedExpertAsksNobody() throws {
@@ -58,7 +60,7 @@ struct ShardExchangeParticipantTests {
     let participant = ShardExchangeParticipant(plan: replicated, node: 0, transport: nilTransport)
     let requests = participant.requests(layer: 0, experts: [0, 1, 2, 3],
                                         slots: [0, 1, 2, 3], activation: [])
-    #expect(requests.map { $0.experts } == [[2]])
+    #expect(requests.map { $0.request.experts } == [[2]])
   }
 
   @Test func contributionsLandOnTheirOwnSlotsAndNotInArrivalOrder() throws {
@@ -107,7 +109,7 @@ struct ShardExchangeParticipantTests {
 
   @Test func aReplyForTheWrongLayerIsRefused() throws {
     struct WrongLayer: ShardTransport {
-      func exchange(_ request: ShardExchange.Request) throws -> ShardExchange.Reply {
+      func exchange(_ request: ShardExchange.Request, to peer: Int) throws -> ShardExchange.Reply {
         ShardExchange.Reply(layer: request.layer + 1, slots: request.slots,
                             dimensions: 1, values: [1])
       }

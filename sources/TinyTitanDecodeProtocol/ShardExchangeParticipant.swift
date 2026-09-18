@@ -7,7 +7,14 @@ import Foundation
 /// be tested on one machine, which is the part that can be wrong in a way a four-node run would only show as a
 /// wrong token.
 public protocol ShardTransport: Sendable {
-    func exchange(_ request: ShardExchange.Request) throws -> ShardExchange.Reply
+    /// Send one request to **one named peer** and return its reply.
+    ///
+    /// The peer is an argument and not something the transport infers, because a node routes to several peers
+    /// at once and the same request shape goes to each. An earlier version of this protocol omitted it, which
+    /// worked only in the integration test - that test has a single peer, so `requests(...)` returning them in
+    /// peer order was indistinguishable from the transport knowing the peer. With four nodes it is not: a
+    /// transport that cannot be told which peer to talk to can only ever reach one.
+    func exchange(_ request: ShardExchange.Request, to peer: Int) throws -> ShardExchange.Reply
 }
 
 /// One node's part in a layer's expert exchange.
@@ -49,7 +56,7 @@ public struct ShardExchangeParticipant {
     public func requests(layer: Int,
                          experts: [Int],
                          slots: [Int],
-                         activation: [Float]) -> [ShardExchange.Request] {
+                         activation: [Float]) -> [(peer: Int, request: ShardExchange.Request)] {
         precondition(experts.count == slots.count, "experts and slots are carried together by construction")
         var byPeer: [Int: (experts: [Int], slots: [Int])] = [:]
         for (index, expert) in experts.enumerated() {
@@ -65,8 +72,9 @@ public struct ShardExchangeParticipant {
         // Sorted by peer so two runs produce the same request order, which keeps a failure reproducible.
         return byPeer.keys.sorted().map { peer in
             let group = byPeer[peer]!
-            return ShardExchange.Request(layer: layer, slots: group.slots,
-                                         experts: group.experts, activation: activation)
+            return (peer: peer,
+                    request: ShardExchange.Request(layer: layer, slots: group.slots,
+                                                   experts: group.experts, activation: activation))
         }
     }
 
@@ -79,7 +87,10 @@ public struct ShardExchangeParticipant {
                         experts: [Int],
                         slots: [Int],
                         activation: [Float]) throws -> [ShardExchange.Reply] {
-        try requests(layer: layer, experts: experts, slots: slots, activation: activation).map(transport.exchange)
+        // Asked in peer order, and each request carries the peer it goes to, so a transport with several
+        // connections can route it and a failure names the node that failed.
+        try requests(layer: layer, experts: experts, slots: slots, activation: activation)
+            .map { try transport.exchange($0.request, to: $0.peer) }
     }
 
     /// The peer contributions, ready to be added to this node's own partials.

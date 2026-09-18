@@ -123,7 +123,7 @@ struct ShardExchangeIntegrationTests {
     /// without the participant knowing which.
     private struct ChannelTransport: ShardTransport {
         let channel: ShardPeerChannel
-        func exchange(_ request: ShardExchange.Request) throws -> ShardExchange.Reply {
+        func exchange(_ request: ShardExchange.Request, to peer: Int) throws -> ShardExchange.Reply {
             try channel.send(try ShardExchange.encode(request))
             return try ShardExchange.decodeReply(from: try channel.receive())
         }
