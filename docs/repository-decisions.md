@@ -8786,3 +8786,38 @@ that the call site is no longer a question: four rounds went into identifying th
 each round's answer was corrected by the next - `moeActs` to `h1Buf` to `routedX`, and a slot array rejected before
 it could become a wrong number on four nodes. **That is slower than writing it, and it is the reason the eventual
 number will mean something.**
+
+## D251 — The edit is fully specified, and the last unknown was scope rather than meaning
+
+`D250` named every input. What remained was whether the two buffers are **reachable** at the phase-2 site - a
+different question from what they mean, and the one that has produced three wrong answers in four rounds. It is
+answered by the function boundaries:
+
+    func encodeDecodeRoutedMoE(            (:1346)
+        let idxPtr = outIndices.contents().bindMemory(to: UInt32.self, ...)   <- in scope
+        func encodeRoutedPhase1Full(       <- nested, captures routedX
+        func encodeRoutedPhase1Subset(     <- nested, captures routedX
+
+**Both are in scope.** `outIndices` is read inside `encodeDecodeRoutedMoE`, and `routedX` is captured by the two
+nested phase-1 helpers defined in it - which is why `x: routedX` at `:1528` and `:1552` compiles there at all. So
+the call site needs no plumbing of either buffer, only the call.
+
+**One thing to get right in the edit, and it is not a detail.** The reply is `D * 8` floats - **64 KiB** at the
+production shape - and it must go into a **persistent** buffer, not one allocated per layer. An allocation per layer
+is 40 a token, and `D114` is the record of what that costs: the batch's 40-buffer request sharing a
+`MetalBufferCache` with the dense path's 5-buffer request made every alternation reallocate the whole set and
+produced **2.47 s/step against 0.92**, with the damage appearing in `mix.gather`, a phase the change never touched.
+**A per-layer allocation here would corrupt the very measurement this is being built for**, and it would do it in a
+phase the change does not name.
+
+**So the edit is: a lazily-created 64 KiB buffer on the runner, zeroed once and re-zeroed per use on its own slots;
+the provider called with `(layer, outIndices, 0..<topK, routedX-widened, D)`; the reply copied in; and the buffer
+passed as `remotePartials:` behind an `if let`, so every unsharded run passes `nil` and the kernel takes its original
+path - which is what `MoEFusedFFNTests.productionRoutedPipelineAndHitSplitMatchReference` asserts and what every
+measurement in this document depends on.**
+
+**Nothing changed in the tree this round.** The closure seam is inert and the suite is green. Five rounds have gone
+into specifying one call, and the specification is now complete: three buffers identified by following the dataflow
+and corrected twice, one plausible candidate rejected on its own naming, scope confirmed against the function
+boundaries rather than assumed, and the allocation hazard named from a precedent that cost this repository 2.7x once
+already.
