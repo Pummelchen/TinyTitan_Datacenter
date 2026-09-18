@@ -10136,3 +10136,34 @@ was an inference from an older figure; it is now a measurement.
 `io_us`, `exposed_io_us`, `cb1_us`, `cb2_us`, `gpu_attn_us`, `gpu_tail_us`, `gpu_routed_us` - and **no expert ids**.
 The routing trace `D286` proposes, 640 B a token, needs `outIndices` written at the point it is already in scope.
 **That is the next thing to build, and it is the smallest change in the plan.**
+
+## D289 — The routing trace is built and produces data, and the first ten lines already look uniform
+
+`D288` recorded that `TINYTITAN_LAYER_TRACE` carries timings and no expert ids, so `D286`'s first test had no
+instrument. It does now: gated by `TINYTITAN_ROUTING_TRACE=<path>`, it writes the eight ids a layer selected, one
+line per layer per token. **`outIndices` was already being read on the host four lines below the insertion point**,
+so this is a read and an append - no new plumbing, no new buffer, no kernel change.
+
+**Verified on the real model, one node, 16 tokens:**
+
+    600 lines  = 15 tokens x 40 layers
+    0 254 208 191 181 120 81 139 222
+    1 153 167 149 126 89 9 68 79
+    2 223 14 194 184 188 211 61 170
+    3 163 243 115 224 10 36 56 255
+    0 out-of-range ids
+
+**640 B a token exactly as predicted**, ids in range, and the run itself unaffected at 7.002 tok/s.
+
+**And the first four lines are already evidence about the question, in the direction that argues against the
+idea.** Line 0's eight ids are spread across the whole 0-255 range - 254, 208, 191, 181, 120, 81, 139, 222 - with
+nothing clustered. Line 1's sit lower and tighter, 9 to 167, and line 3's again cover the range. **Four lines of
+one prompt is not the measurement**, and the analysis needs a corpus and the Gini coefficient per layer rather
+than an impression. **But it is the first look at the data, and it does not look like a distribution with hot
+experts in it.**
+
+**Which is what `D286` said would settle the question, and it recorded that the prior evidence pointed both ways:**
+the reference's near-linear cache curve argues for weak skew, while a measured 1.78x slot-count lever argues for
+real structure. **The trace is the instrument that separates them, and it now exists.** The next step is the
+corpus - twenty prompts x 128 tokens, minutes of a single node's normal work - and then the per-layer Gini and
+entropy that turn this impression into a number.
