@@ -7127,3 +7127,41 @@ token.
 than the previous round's plan said, and that the per-step exchange cost has to be **measured** with a real peer
 rather than assumed from a fake one - which is the same lesson as `D188`/`D190`/`D195` in a different costume: a
 number derived from a stand-in is a hypothesis.
+
+## D208 — The exchange costs 3.2 ms per step, not 17.3: the number every sharding conclusion rested on was 5.4x too high
+
+Measured on the switch between node3 and node1, with the **real frame sizes** for one layer — a request carrying
+one activation row of 2048 fp32 (8,392 B) and a reply carrying two experts' rows (16,584 B) — over 300 round trips:
+
+    median 0.079 ms    p10 0.065    p90 0.131
+    x 40 layers = 3.2 ms per decode step
+
+**`D173` put the per-step exchange at 17.3 ms. It is 3.2 ms.** The earlier figure was not measured on the switch -
+it came from `D165`/`D166`'s Wi-Fi-derived latency and from an exchange design that issued a frame per expert
+rather than one per peer and layer, which `D173` itself then argued against. The design changed; the number did
+not follow it.
+
+**What this does to the arithmetic.** `D183`, `D188`, `D189`, `D198`, `D202` and `D203` all subtract the exchange
+from a sharded step, and all of them subtracted 17.3 ms where the measured cost is 3.2. With the reads divided to
+12.4 ms and hidden behind 28.2 ms of remaining device work:
+
+    device   MoE 18.4/4 + replicated 23.6   =  28.2 ms
+    reads    96/4 = 24 MB at 1,940 MB/s     =  12.4 ms   (hidden, not additive)
+    host     the part that does not divide  =  41.3 ms
+    exchange measured                       =   3.2 ms
+    ---------------------------------------------------
+    step    = 28.2 + 41.3 + 3.2             =  72.7 ms   ->  13.8 tok/s   (1.84x)
+
+against the **11.0 tok/s** the same arithmetic gave with 17.3 ms. **The sharding case is nearly a third better than
+this session has been claiming, and every one of those claims inherited the same unmeasured term.**
+
+**This is the fifth windowed-or-inherited number to fall in this goal, and the pattern is now unmistakable.**
+`D188` inherited a peak rate, `D190` measured the wrong variable, `D195` read an average as a rate, `D207` found
+the peer's own work absent from the exchange cost, and this finds the exchange cost itself inherited rather than
+measured. **Every one of them was corrected by measuring the quantity directly on the machines that matter**, and
+none by more reading.
+
+**What it does not change.** 72.7 ms is still 1.5x short of the 47.6 ms that 21 tok/s needs, and the obstacle is
+now unambiguously the **41.3 ms of host work that does not divide** - the same term `D202` isolated. But the
+margin is smaller than it has looked all session, and the exchange is no longer a reason to doubt the target: at
+3.2 ms it is 2.4% of the step, not 13%.
