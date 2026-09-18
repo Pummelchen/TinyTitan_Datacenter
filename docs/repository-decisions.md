@@ -9187,3 +9187,41 @@ number becomes measurable at all.
   2. **`remoteExpertValues` must fetch an arbitrary expert** - a streaming read through the same streamer the MoE
      path uses, not a placement in the local bank.
   3. Only then is the one-hot cost, the down-only kernel, and a four-node median worth measuring.
+
+## D263 — The server survives a refused request now, and the cache is the only thing left
+
+`D262` named two defects. Both are now addressed and the second is the sole blocker.
+
+**Fixed: a server dies of an unanswerable request no longer.** `serve` wrapped `answer` in a catch that recorded the
+refusal. **And the first version of that fix introduced a second defect** - it closed the accepted handles from the
+catch, but `answer(_:)` closes them in its own `defer`, so the second close raised an `NSException` out of
+`FileHandle`, which **terminates the process rather than returning an error**. That killed node2 and node3 *and*
+crashed `TinyTitanDecodeServiceTests`. **It is the same double-close this session hit at round 9**, in different code
+doing a superficially reasonable thing, which is why the earlier lesson did not transfer. With the caller's close
+removed, the suite is green and the accept loop survives.
+
+**And the surviving behaviour is visible in the run:**
+
+    node1  connected, completed at 4.039 tok/s
+    node3  expert cache cannot place requested experts: 8 experts do not fit in 40 cache slots
+    node2  Error Domain=NSPOSIXErrorDomain Code=61 "Connection refused"
+
+**node3 no longer dies of the refusal** - it reports it and keeps serving, which is the fix working. **node2 is
+refused because node3 is the peer it needs**, and node3 cannot answer because of the cache. So the whole distributed
+path now reduces to one thing:
+
+**the expert cache cannot place an expert the node does not own.** It is `--expert-cache-slots 40` sized against
+**this node's own routed set** - a cache of the experts the router picks *here* - and a peer asks for an expert this
+node never routes to, so it is not resident and LFU cannot evict enough to fit it. `8 experts do not fit` is the
+whole story of the exchange's cost and correctness both: the serving path is asking a data structure sized for one
+job to do another.
+
+**What it wants instead is a streaming read.** Reading an arbitrary expert for a peer is not a cache hit; it is the
+same `pread` path the MoE uses when it misses, and it should go through the streamer that already exists rather than
+through `planRoutedExperts`, which is built to describe *this node's* routing. **That is one change, in one method,
+and everything after it is measurement.**
+
+**And the numbers so far, all `observation_only`:** node1 has now completed three runs with the exchange nominally
+live - 7.095, then 4.039 - against its own single-node 7.61-7.77. **Both are below single-node and neither is a
+measurement of the exchange, because in the runs that produced them the peers were answering almost nothing.** The
+first honest distributed number is the one after the cache fix.
