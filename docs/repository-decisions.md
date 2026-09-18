@@ -4978,3 +4978,38 @@ application is therefore a prerequisite for any multi-node run from here, and it
 **Worked around, not fixed**, for the test above: roles were inverted so the service ran on the node that
 cannot initiate and the client ran on the node that can. That is enough for a two-machine probe and is **not**
 enough for a mesh.
+
+## D157 — The full request/response protocol crosses the LAN, not just a one-way frame
+
+`D156` proved a frame arrived and was acted on. This proves the **reply path** — which is the one that matters,
+because it is where an expert shard's result would travel back.
+
+```
+# service on this node, bound to its LAN IP
+TinyTitanDecodeService --host 192.168.18.26 --port 45918
+
+# run on macbook-ab
+$ python3 lan_decode_probe.py 192.168.18.26 45918 \
+      --command '{"unload":{"_0":"00000000-0000-0000-0000-000000000001"}}'
+connected to 192.168.18.26:45918
+sent 56 byte(s): {"unload":{"_0":"00000000-0000-0000-0000-000000000001"}}
+reply 1: {"tokenCount":0,"sequence":0,"tokensPerSecond":0,"decodeSeconds":0,
+          "textDelta":"","generationID":"00000000-0000-0000-0000-000000000001","kind":"unloaded"}
+OK: sent one frame over the LAN, 1 reply/replies
+```
+
+**What this establishes, precisely.** A real `DecodeServiceCommand.unload(UUID)` was encoded on macbook-ab,
+framed by `DecodeFrameCodec`, sent over TCP to this node's LAN address; the service **decoded it, acted on it,
+and encoded a `DecodeServiceEvent` back**, which crossed the LAN and decoded on the other side into a full event
+carrying `kind: "unloaded"` and **the same `generationID` the command was given**. So the request/response
+correlation survives the network, both directions, using the protocol's own types rather than a test type.
+
+That is the strongest distributed result in this project so far, and it is the thing the whole `DecodeService`
+boundary exists for: `D135` argued the reference already had the right seam, `D147` and `D150` wired the
+transport into both ends, and this is the first end-to-end demonstration across two physical machines.
+
+**Still bounded by `D156`'s constraint.** The direction is the one that works — macbook-ab initiating to this
+node — because macOS Local Network privacy currently prevents this node from initiating to any `192.168.x.x`
+address. A mesh needs every node to initiate to every other, so **the operator granting Local Network
+permission to this session's application remains the prerequisite** for a multi-node run. This result does not
+remove that requirement; it removes every *other* question about whether the protocol can cross a network.
