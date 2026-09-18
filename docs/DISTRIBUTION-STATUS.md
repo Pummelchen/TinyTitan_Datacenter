@@ -279,3 +279,37 @@ against 0.92, with the damage in a phase the change never named.
 `Compute` wired to `ShardExchangeServer`, and the loads, the repeat count with a median, and the generation length
 recorded together. The prediction to test is **~8-9 tok/s** (about 1.12x), and it would falsify the 21 target rather
 than meet it - which is what the goal asked for.
+
+### The serving `Compute`: the last piece, and what it must produce
+
+The requesting half is landed (`52e24d9`, `9b072ce`): the call site, the provider, the CLI wiring, all inert unless a
+plan is given. **What is not built is the peer's `Compute`**, and its contract is fixed by what the requester does
+with the reply:
+
+    public typealias Compute = (_ layer: Int, _ experts: [Int], _ activation: [Float]) throws -> [Float]
+
+and `ShardExchangeParticipant.remotePartials` takes the server's `experts.count` rows of `dims` and lays them out
+`[d * 8 + slot]`. So `Compute` must return, **in the order asked**, one row of `dims` per expert: the **routed
+expert's output** - gate/up, activation, down - for the activation it was given.
+
+**`dims` is the hidden size**, not the expert intermediate. The requester sends `routedX`, a `[D]` row, and the
+kernel consumes `[D][8]`, so the expert's down projection is part of what the peer computes. A `Compute` that
+returned the post-gate_up activation would be `moeActs`-shaped and one step short - the same confusion that took
+three records to resolve on the requesting side (`D247`, `D250`), and it would produce a wrong number rather than an
+error.
+
+**Three things the wiring has to respect.**
+
+1. **The `Compute` is `throws` and the server refuses a wrong-width reply rather than padding it**, so a failure
+   surfaces as a refused request rather than as a short row landing on the wrong slot.
+2. **It must share the node's expert cache**, not open a second one. `ModelExpertIO` owns the streamers and the
+   residency table; a server that built its own would double the resident footprint on an 8 GB machine, which is
+   `D179`'s failure mode.
+3. **It runs on the serving node's GPU**, so it is a second consumer of the device the generation loop is already
+   using. The exchange's cost on the *requesting* side was measured at 3.2 ms/step on raw frames (`D208`) and that
+   number includes none of this - **the serving node's own work is on the requesting node's critical path**, which
+   `D207` flagged and nothing has yet measured.
+
+**Then the run.** Four nodes, `--shard-plan`/`--shard-node`/`--shard-peers`, a server per node, and the loads, the
+repeat count with a median, and the generation length recorded together. The prediction is **~8-9 tok/s (about
+1.12x)** and it would falsify the 21 target rather than meet it - which is what the goal asked for.
