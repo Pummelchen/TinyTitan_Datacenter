@@ -1780,6 +1780,35 @@ extension RealForwardRunner {
                                        ioStatus: ioStatus?.0,
                                        ioStatusOffset: ioStatus?.1 ?? 0)
         }
+        // The kernel's k8 layout: eight slots, so the reply is [D * 8] floats (D168).
+        //
+        // Peer contributions, when this node is part of a shard plan. Inert otherwise: the provider is nil on every
+        // run without a plan, `remotePartialsBuffer` stays nil, and the kernel takes its original path - which the
+        // fused MoE test asserts against the split reference and every measurement in this repository depends on.
+        //
+        // The activation sent is `routedX`: the pre-MoE hidden state the router was given and phase 1 evaluates the
+        // local experts on. NOT `moeActs` (post-gate_up) and NOT `h1Buf` (post-shared-expert) - either would give a
+        // peer a different input from the one the node's own experts saw, which is a wrong number rather than an
+        // error, because the arithmetic stays exact about the wrong thing (`D247`, `D250`).
+        var remotePartials: MTLBuffer? = nil
+        if let provider = remotePartialsProvider {
+            let dims = Int(D)
+            let k = Int(topK)
+            let actSrc = routedX.contents().bindMemory(to: Float16.self, capacity: dims)
+            var activation = [Float](repeating: 0, count: dims)
+            for index in 0..<dims { activation[index] = Float(actSrc[index]) }
+            let idPtr = outIndices.contents().bindMemory(to: UInt32.self, capacity: k)
+            let experts = (0..<k).map { Int(idPtr[$0]) }
+            if let partials = provider(L, experts, Array(0..<k), activation, dims),
+               partials.count == dims * 8 {
+                if let buffer = remotePartialsBuffer {
+                    partials.withUnsafeBytes { src in
+                        buffer.contents().copyMemory(from: src.baseAddress!, byteCount: src.count)
+                    }
+                    remotePartials = buffer
+                }
+            }
+        }
         try moe.encodeRoutedPersistentPhase2Reduce(commandBuffer: routedCB,
                                                routedArgBuffer: argBuf,
                                                routedBlobs: routedBufs,
@@ -1792,7 +1821,8 @@ extension RealForwardRunner {
                                                f: FmoE,
                                                topK: topK,
                                                ioStatus: ioStatus?.0,
-                                               ioStatusOffset: ioStatus?.1 ?? 0)
+                                               ioStatusOffset: ioStatus?.1 ?? 0,
+                                               remotePartials: remotePartials)
         try gTail(routedCB)
         routedCB.commit()
         if missCount > 0, let completed = completedStorageNanos, completed > 0 {
