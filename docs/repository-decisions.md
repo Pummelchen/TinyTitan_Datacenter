@@ -8576,3 +8576,43 @@ having: the goal asked for a measurement, and a measured 1.1x is a result where 
 **The three things that must be recorded with it**, because this session lost records twice by omitting them: the
 **node loads**, the **repeat count and median**, and — per `D230` — the **generation length**, since the step is not
 stationary and a four-node number at a different length is not comparable with the single-node curve.
+
+## D245 — Before the call site: what crosses the wire has to be decided, and the frame does not say
+
+The closure property is added and builds (`RealForwardRunner.remotePartialsProvider`, `nil` by default, consistent
+with the two seams already on this path). Wiring the call exposed a question that has to be answered first, and it is
+**not** answered by the code as it stands.
+
+**What the engine has.** `moeActs` is `[topK * FmoE]` fp16 - `RealForwardRunner.swift:270` - and it is passed as
+`acts:` into **phase 1**, which is the gate/up + activation stage. So a row of `moeActs` is a **post-gate_up
+activation for one slot**, width `FmoE`, not the token's hidden state.
+
+**What the frame carries.** `ShardExchange.Request` has a single `activation: [Float]` and derives
+`dimensions = activation.count`; the server computes `experts.count * dimensions` values from it and replies with
+one row of that width per slot. So the protocol as built assumes **one activation row shared by every slot**, and
+that the row's width is both what the peer reads and what it writes back.
+
+**Those two are not the same shape**, and the difference is not cosmetic - it decides what the peer is asked to do:
+
+  - **Send the hidden state** (`dims = hidden = 2048`): the peer runs the whole expert - gate, up, activation, down -
+    and replies with `hidden` per slot. The reply width matches the `[d][8]` remote buffer the kernel consumes
+    (`d` is the hidden dimension, so `2048 * 8` floats). **The request is one row of 2048, shared by all slots,
+    which is what the frame already is** - because in a decode step one token's hidden state feeds every routed
+    expert.
+  - **Send `moeActs`** (`dims = FmoE = 512`): the peer runs only the down projection and replies with `hidden`. That
+    is less work for the peer, but the reply width (`hidden`) then **differs from the request width** (`FmoE`), and
+    `Reply.dimensions` is a separate field so that is expressible - while the request would have to carry
+    `topK` rows of 512, which the frame's single shared `activation` **cannot express**.
+
+**So the first option is the one the protocol already supports and the second is the one that would need the frame
+extended.** That is a decision to make deliberately rather than to discover halfway through an edit, and it is
+recorded here because this session has lost four records twice to exactly this shape of assumption.
+
+**And the readback question resolves with it.** `D244` and the fork's status both said "read `moeActs` back". If the
+hidden state is what crosses the wire, then **`moeActs` is not read back at all** - the input to the layer's MoE is,
+which is a different buffer - and the 8 KB fp16-to-fp32 sync that was flagged as excluded from `D208`'s 3.2 ms is
+either a different buffer or unnecessary. **Neither the buffer nor the cost is settled, and both were stated as
+settled in the previous note.**
+
+**The property added here is inert and verified**: `nil` on every run that is not given a plan, the build is clean,
+and no behaviour changes. The call site stays unwritten until the wire's contents are decided.
