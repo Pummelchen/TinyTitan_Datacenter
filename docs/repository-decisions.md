@@ -9413,3 +9413,37 @@ order, and that `f` is the expert's intermediate width rather than something der
 one expert and compares the reply against that expert computed locally would settle both, and **it is the only
 comparison in this whole exchange that nothing has performed** - every other seam has a test, and this one has two
 nodes and a NaN.
+
+## D269 — The weights were fp16 all along: fixed, and node2 reaches 7.346 with no NaN
+
+`D268` narrowed the NaN to the arithmetic and named the eight-slot one-hot and the slot mapping. It was the
+one-hot - **and not in shape, in type.**
+
+    kernel void moe_phase2_down_reduce_k8(... device const half* routing_w [[buffer(3)]] ...)
+    partial[sg_idx] = float(routing_w[sg_idx]) * value;
+
+**The kernel reads `routing_w` as `half` and `remoteWeight` was a `Float` buffer.** Read as pairs of halfs, `1.0f`
+(0x3F800000) is **0.0 followed by 1.875** - so the weights the peer actually used were `[0.0, 1.875, 0, 0, ...]`, and
+the peer returned **the wrong expert's down output scaled by 1.875** instead of slot 0's. The one-hot was right in
+shape and wrong in type, and the router's own `outWeights` are `half`, which is what this had to match.
+
+**With that fixed:**
+
+    node1  NaN (still)
+    node2  [stop=maxTokens ... 48 tokens ... tok/s=7.346]   no NaN
+    node3  (no completion)
+
+**node2 at 7.346 is inside its single-node band** and the second run whose number sits there rather than below it, and
+this time with the weights right. **node1 still produces a NaN**, so something else is wrong on that path - a second
+defect, or the same class one level down.
+
+**And the class is worth naming, because it cost three rounds and passed every gate.** A buffer whose element type is
+asserted by the Metal declaration and by **nothing on the Swift side** is invisible to the compiler, to `swift test`,
+to `lint.sh`, to the link checker and to TSan. It compiles, it runs, and the arithmetic is silently about a different
+expert. **The engine has no test that a buffer handed to a kernel has the element type that kernel declares** - and
+this is now the second defect of exactly that shape, after the eight-slot width in `D260`.
+
+**What to do next, in order.** First, **the comparison `D265` named and nothing has performed** - one expert, the
+peer's reply against the same expert computed locally - because it would have caught this in one run instead of
+three and it is the only check that reads the values. Second, node1's remaining NaN, which that comparison will
+localise.
