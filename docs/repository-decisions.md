@@ -8650,3 +8650,38 @@ unchecked items above are what the next attempt should open with rather than dis
 
 **The closure seam added in the previous round is inert and verified**: `nil` on every run without a plan, build
 clean, whole suite green.
+
+## D247 — `h1Buf` is the shared expert's output, not the routed experts' input: D246 is wrong too
+
+`D246` concluded from `residual: h1Buf` that `h1Buf` is "the layer's MoE input" and that the call site therefore
+needs no new buffer plumbing. Checking the one item that settles it - its declaration - refutes both:
+
+    RealForwardRunner.swift:237    let h1Buf: MTLBuffer         // [D] FP16 (dense MLP output)
+
+**`h1Buf` is the *shared* expert's output.** It is the residual that phase 2 folds the routed result **into**, not
+the activation the routed experts were **given**.
+
+**Why that matters for correctness and not just for plumbing.** A peer must compute its experts on the **same input
+the local experts saw**, or its contribution is a different function evaluated at a different point and the sum is
+wrong. `h1Buf` has the shared expert already added, so sending it would give every peer's expert a different input
+from the node's own - and `D154`/`D168` make that a wrong number rather than a visible error, because the arithmetic
+is still exact, only exact about the wrong thing. **This is the same class of trap as the double-count in the remote
+buffer that `D168` exists to prevent, and it would have been introduced by following the previous round's note.**
+
+**The lesson is the one this session keeps paying for, in a new place.** `residual:` is a *positional* fact - the
+buffer is an argument to the kernel - and it was read as a *semantic* one. Three rounds have now gone:
+`D245` decided the wire carries the hidden state (right), `D246` identified the buffer by its argument position
+(wrong), and this corrects it by reading the declaration and its comment. **A parameter's name describes what the
+kernel does with it, not what it holds.**
+
+**What is now known and what is not.**
+
+  * **Known:** the wire carries the hidden state, not `moeActs` (`D245`); `h1Buf` is **fp16** and the shared expert's
+    output; the routed experts' input is therefore a **different** buffer, passed as `hidden:` or `x:` into the
+    phase-1 encodes at `RealForwardRunner+Decode.swift:1528`, `:1552` and `:1787`.
+  * **Not known:** which of those buffers is the routed input at the phase-2 site, and its type. The candidates are
+    `hidden` and `routedX`; the next attempt should name the one phase 1's `acts:` was computed from and check it
+    against `h1Buf` rather than assume, because the two differ by exactly the shared expert.
+
+**The closure seam remains inert and verified.** `nil` on every run without a plan, build clean, whole suite green.
+No code changed in this round; the correction is in what the next edit must use.
