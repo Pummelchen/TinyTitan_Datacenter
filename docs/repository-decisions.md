@@ -9838,3 +9838,36 @@ needed the information could not tell them apart.
 
 **So this round built the instrument `D278` and `D279` asked for and did not get the measurement**, which is
 recorded as it stands rather than narrated as progress.
+
+## D281 — The serve-only node is not listening after eight seconds, and the confound is the load
+
+`D280` left two hypotheses for the refused peers: silence hiding a successful bind, or a stale holder of port 9150.
+The first is now ruled out and the second is measured:
+
+    node1, node2, node3   port 9150 free, no TinyTitanCLI running
+    node3 started serve-only, waited 8 s -> "NOT LISTENING"
+    node1, node2 started -> both refused, neither completed
+
+**So the port is free and the serve-only node does not bind within eight seconds.** It is alive - `D280` measured
+`EXIT=124`, the timeout killing a process that never returned - but it is not listening at that point.
+
+**And the obvious explanation has to be stated as a confound rather than a finding.** In the normal run path the
+model is loaded, the runner built, and only then is the serve block reached, so **the bind happens after the install
+is opened** - and this install is 19 GB, mmap'd off a disk these three machines share with other work. **Eight seconds
+may simply be inside the load.** The experiment waited eight because that seemed generous beside an exchange measured
+at 0.079 ms; it is not generous beside a cold install.
+
+**What would settle it is the timestamp, not another run.** The serve block already prints a "serving peer expert
+requests on port N" line - but only on the path that starts a `Task`, which is the defect `D280` recorded: the
+serve-only branch returns **before** it. **So the flag is silent at the one moment its state matters**, and the
+measurement this round needed was one line of output that the flag suppresses.
+
+**That makes the silence the thing to fix first, and it is one line**: move the "serving on port N" write above the
+serve-only branch so every path reports that it is up, and log before the bind and after it if the distinction
+matters. **A node that cannot say it is listening cannot be used to measure anything**, and this is the second time
+in this session that an absence of output was the whole of the diagnostic difficulty - `D259` was the first, and
+both are the same lesson: silence is indistinguishable from success and from failure.
+
+**And the honest position on the round**: the flag is built and verified to serve, the port is verified free, and
+**the measurement `D278` asked for is still not taken** - because the serving node could not be observed to be up
+before its peers gave up. That is recorded as it stands.
