@@ -10008,3 +10008,43 @@ a claim that has stopped being questioned.
 **The immediate consequence is concrete:** node4 is a usable fourth node on `192.168.18.26`, and `--shard-node 3`
 with `/tmp/plan4.json` (64 experts each) over the LAN addresses is the four-node measurement the objective asked
 for. **It should be taken, and the earlier three-node figure labelled for what it is.**
+
+## D286 — The design is reopened: the engine is an SSD streamer, and the target is not the 35 B
+
+The operator re-scoped the work, and it invalidates the premise the last sixty rounds were built on: **this
+engine is an SSD streamer, the 35 B is a test vehicle, and the target is a 120-180 B model that will not fit in
+the cluster's aggregate memory at any quantisation we would serve.** So a design that works because the 35 B
+*nearly fits* is not a design. **`D272`'s "the route is tensor-parallel dense sharding" and every projection
+resting on residency are re-opened by this, and `docs/distribution-design.md` is the restatement.**
+
+**The law, and it is the whole document:**
+
+    tok/s = min( compute_per_stage,
+                 local_SSD_rate / (active_bytes_per_token x (1 - hit_rate)),
+                 wire_rate / activation_bytes_per_token )
+
+**Three designs, compared against it,** and the document carries the arithmetic for each:
+
+| | compute/node | stream/node | wire latency/token | 35 B projection |
+| --- | --- | --- | --- | --- |
+| **A. Layer pipeline, per-stage streaming** | 21 ms | 24 ms | **1.7 ms** | **21-40 tok/s** |
+| B. Expert-parallel (what exists) | 21 ms + 66 ms replicated | 24 ms | **109 ms** | ~5.5 |
+| C. Tensor-parallel four ways | 32.5 ms | 24 ms | **45 ms** | 15-22 |
+
+**Design A is the recommendation**: it is the only one that divides **both** the compute and the SSD bandwidth by
+the node count, and its wire traffic is three hidden states per token - 12 KB against a measured 118 MB/s. **It is
+also the design the existing `ShardPlan` does not describe**, because it partitions by layer rather than by expert.
+
+**And the operator's own proposal is adopted as a first-class instrument.** The router already produces the eight
+expert ids per layer per token, so a routing trace costs 640 B a token - 82 KB per prompt. From it: per-layer
+frequency, per-layer co-occurrence, cross-layer correlation and prompt-class conditioning; from those, a two-tier
+placement (replicate the hot core, shard the cold tail by co-activation). It attacks a **measured** cost - 37
+requests a token at 2.95 ms - and the document is explicit that it is a **1.5-2x on the serving path, not a route
+to 21 on its own.**
+
+**The prior evidence points both ways and the document says so.** The reference's cache curve is close to linear,
+which argues for weak skew; a slot-count sweep measured a 1.78x lever, which argues for real structure. **One
+twenty-prompt run separates them**, and it is the first measurement in the plan.
+
+**No code is written against this.** The document is a proposal; every figure in it is measured or marked a
+projection, and section 12 records the objective as unmet.
