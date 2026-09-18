@@ -4862,3 +4862,30 @@ before designing the shard plan was worth a round.
 
 **Still not started**, and the next real question is the reduction contract: the reference's MoE is its own
 two-kernel structure, so this repository's `D17` reduction has to be mapped onto it rather than assumed.
+
+## D154 — The reference's reduction is a fixed k=8 slot-ordered GPU kernel, which is what sharding needs
+
+The reduction question `D153` left open has an answer in the kernel names and one comment.
+
+**The reduce is a Metal kernel compiled for k = 8.** `MoE.swift` selects between `moe_phase2_reduce_k8` and
+`moe_phase2_down_reduce_kn`, and `encodeRoutedPersistentPhase2Reduce` (line 539) encodes it. The comment at
+lines 49-60 is the important one: the kernel is compiled for eight slots, so **a mixture with fewer than eight
+chosen experts has the slots past eight zeroed and "the reduce summed zeros for them"**.
+
+**That is exactly the property a shard plan needs.** The sum is over a **fixed set of slots in a fixed order**,
+with unused slots contributing exact zeros. So a node that owns some of a layer's chosen experts can compute
+its own contributions into their correct slots, leave zeros elsewhere, and the mixture sums identically whether
+those bytes came from one disk or four machines. Bit-exactness does not depend on *which* node computed an
+expert — only on the slots being summed in the same order with the same precision, which is precisely the
+contract this repository already wrote down as `D17`.
+
+**What is not yet answered, and is the next real question:** the reduce is a **GPU** kernel, so the distributed
+design has to choose where the sum happens — each node reducing its own subset and shipping partial sums, or
+contributions travelling to one node for a single reduce. Those are not equivalent in general: adding partial
+sums is not the same floating-point operation as adding the terms in slot order. Since the kernel sums eight
+slots plus zeros, the safe shape is that **every node produces a full k=8 contribution array in the same slot
+order**, zeros included, and the arrays are summed in that order — which keeps the arithmetic identical to
+single-node rather than merely close to it. That is an inference from the kernel's compiled width and its
+zero-padding comment, not a measurement, and it is labelled as one.
+
+**Transfer:** 12.5 GB of 67 (~17%) at ~35 MB/s.
