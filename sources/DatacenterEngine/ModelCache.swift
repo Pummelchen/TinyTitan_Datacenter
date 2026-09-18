@@ -76,6 +76,36 @@ extension Qwen3_5Forward {
         guard blocks > 0 else { return logits }
         let failure = HeadBlockFailure()
         nonisolated(unsafe) let upstream = source
+
+        // **A packed int4 head** (`D127`): one mapping and **one** dispatch for the whole window, instead of a
+        // bf16 copy and 31 blocks. The reference stores its head at 4 or 8 bits and multiplies it from the
+        // packed bytes; this engine could not, because its head path is guarded on the stored dtype being
+        // bf16. The guard below is what keeps this safe and additive:
+        //
+        // * `packedTensor` returns a **whole** tensor, so this is taken only when the window *is* the whole
+        //   tensor. A sharded node owns a slice of the vocabulary and must fall through to the paths below —
+        //   `matmulResident` multiplies every row the mapped tensor has, and handing it a window would answer
+        //   with rows the node does not own.
+        // * Against the current bf16 install `packedTensor` returns nil for the head, so nothing changes until
+        //   the install is rebuilt with an int4 head and the policy says so. That is deliberate: the code can
+        //   be verified for non-regression before any rebuild.
+        if MetalInt4Matmul.enabled, MetalInt4Matmul.isAvailable,
+            rows.lowerBound == 0, !rows.isEmpty,
+            let packed = try upstream.packedTensor(named: name),
+            packed.payloadRows == rows.count
+        {
+            let key = packed.key ?? name
+            if !MetalInt4Matmul.isResident(key: key) {
+                try MetalInt4Matmul.upload(
+                    key: key, payload: packed.payload, entry: packed.entry, rowCount: packed.payloadRows
+                )
+            }
+            let product = try MetalInt4Matmul.matmulResident(x: x, key: key, rows: 1)
+            if product.count == rows.count {
+                for index in 0..<rows.count { logits[index] = product[index] }
+                return logits
+            }
+        }
         // **The stored form is fetched exactly once, before the fan-out** (`D109`). Asking for it per block
         // looked harmless — `storedRows` slices a cached payload — but the cache is only populated by the
         // *first* read, so 31 concurrent blocks each missed and each read the whole 1.017 GB head: 31 GB of

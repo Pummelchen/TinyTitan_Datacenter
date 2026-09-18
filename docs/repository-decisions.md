@@ -4067,3 +4067,30 @@ expert** by re-laying-out the expert stacks expert-major, which is the only chan
 directly and is what the reference measures at 3.2 GB/s on four concurrent reads against this node's
 1.65-1.82; then the fused two-kernel MoE. Phase two is the existing four-node distribution, which is a
 different problem and already solved here.
+
+## D130 — The int4 head path is in the code and deliberately inert
+
+`D127` decided the head and embedding become **one shared int4 tensor**, and noted the ordering constraint:
+the policy change cannot go in alone, because `ModelCache`'s head path is guarded on the stored dtype being
+bf16 and an int4 head would fall through to the dequantise path — 2 GB of `Float` a step. So the code goes
+first, and it is written to be **additive and provably inactive**:
+
+- `headLogits` now tries a **packed int4 head** before any bf16 work: one `MetalInt4Matmul.upload` mapping of
+  the whole window and **one** `matmulResident` dispatch for all its rows, where the bf16 path copies 1.017 GB
+  and issues 31. The pieces are the ones already measured — `packetTensor`'s content-addressed one-time mapping
+  (`D116`) and the resident matmul.
+- **It fires only when the window *is* the whole tensor** (`rows.lowerBound == 0` and
+  `packed.payloadRows == rows.count`). A sharded node owns a slice of the vocabulary, and `matmulResident`
+  multiplies every row the mapped tensor has — handing it a window would answer with rows that node does not
+  own. That is the `D115` bug class, guarded here rather than discovered later by `ShardedGenerateTests`.
+- **Against the current bf16 install it cannot fire at all**: `packetTensor` refuses a non-int4 tensor and
+  returns nil, so the branch is skipped and the bf16 path runs unchanged. Verified: 266 tests pass, the trace
+  digest is `ed5e0328c087e4db…` as before, and the `head` phase measures 50 ms against the 48-50 ms it measured
+  before the change. The code is therefore in the tree, reviewed and non-regressing, **before** the install it
+  needs exists — which is the only order in which this change could be made safely.
+
+**What is still missing is the rest of the chain, not this branch:** `quant.head.lm` and `quant.token.embedding`
+must become `int4-affine` as one shared tensor, the install must be rebuilt (chunked, with the backup at
+`macbook-ab` in place), and the greedy token agreement against this bf16-head run must then be measured —
+because the reference has no fidelity figure for an int4 head to inherit (`D127`), so that measurement is the
+only evidence the step is safe.
