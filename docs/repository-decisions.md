@@ -7968,3 +7968,38 @@ time. The arithmetic does not close, and the term that stops it closing is the o
 were used to calibrate it; the four columns are the model's output, not measurements, and `D217`-`D225` are a record
 of how confidently such columns can be wrong. **They are recorded as a projection with its arithmetic shown, to be
 falsified by the four-node run - not as a result.**
+
+## D229 — 20.77 ms of every token is host work that is in no layer and in no kernel
+
+`D228` found 30.6 ms per token outside the forty layer bodies. The kernel profile says how much of that is GPU:
+
+    head_logits   9.62 ms/token
+    sample        0.20
+    embed         0.01
+    ----------------------
+    GPU outside   9.83 ms
+
+**So 20.77 ms per token is neither inside a layer nor GPU work at all.** At a 137.0 ms step that is **15.2% of
+every token**, and because it is per **token** and not per layer, **all four nodes pay it in full** - it is the one
+term in this budget that no amount of sharding touches.
+
+**What it is not.** It is not the cache (it does not move with `--expert-cache-slots`, `D218`), not the prefetch
+(the body is invariant to every prefetch setting, `D227`), not the read (that is `io_us`, inside the layer), and not
+sampling or embedding (0.2 and 0.01 ms). It sits between the last layer and the next token's first layer, on the
+host.
+
+**Why this is now the most valuable open item.** `D228`'s projection puts the four-node case at **19.42 tok/s with
+attention sharding and read overlap both built, against the 21 needed**, and the shortfall is 28.2 ms of
+non-dividing per-token cost. **This 20.77 ms is 74% of that non-dividing term**, it is unexplored, and unlike every
+other lever in this document it **helps the single-node number by exactly as much as the four-node one** - which is
+the property `D94` and `D114` both had and which no sharding change has.
+
+**The instrument that brackets it is already in hand.** `TINYTITAN_LAYER_TRACE` prints the body of each layer, so
+this term is `step - sum(bodies) - exchange`; and `TINYTITAN_KERNEL_STATS` says how much of the remainder is GPU.
+Subtracting one from the other is what produced the 20.77, and it needs no new code. **What is missing is a trace
+of the token loop itself** - the span from the last layer's body ending to the first layer's body starting - which
+the engine does not currently print and which is the direct measurement this figure should be replaced with.
+
+**Marked as derived, not measured.** It is a subtraction of two measured quantities and therefore inherits their
+errors; 20.77 should be read as "about twenty milliseconds of unexplained per-token host time", which is enough to
+justify attacking it and not enough to predict a result from.
