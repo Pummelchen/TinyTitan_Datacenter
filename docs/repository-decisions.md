@@ -10453,3 +10453,44 @@ prefill shape, and runs. **Not established: that the ANE helps at all.** No numb
 `docs/distribution-design.md` section 8b, may be read as an ANE benefit - **there is no measured ANE benefit, and
 this is the measurement that says so.** The remaining two questions from `D293` - what the handover costs and what
 INT8 does to the trace digest - are untouched and still open.
+
+## D297 — The conv form is worse, not better: Core ML's ANE path is 50x slower than CPU, and the cause looks like per-call overhead
+
+`D296` found that a naive matmul through Core ML does not engage the ANE - `ALL` 1.27 ms against `CPU_ONLY`
+1.20 ms. `D296` also said the ANE wants convolution form, so the same product was reformulated as a 1x1 conv and
+run across three compute units:
+
+| shape | unit | median | GFLOP/s |
+| --- | --- | --- | --- |
+| `[1,2048,1,128] x [2560,2048,1,1]` (1.34 GFLOP) | **ALL** | **96.12 ms** | **14.0** |
+| | CPU_ONLY | 1.89 ms | 710.1 |
+| | CPU_AND_GPU | 4.13 ms | 325.1 |
+| `[1,2048,1,512] x [2560,2048,1,1]` (5.37 GFLOP) | **ALL** | **97.52 ms** | **55.0** |
+| | CPU_ONLY | 3.68 ms | 1,459.7 |
+| | CPU_AND_GPU | 7.80 ms | 688.7 |
+
+**Three things, and two of them are clear.**
+
+**1. The convolution form did not help.** `ALL` is **50x slower** than `CPU_ONLY` - 96 ms against 1.89 - and it is
+the only configuration in either probe that is pathologically slow. **Whatever `ComputeUnit.ALL` selects here, it
+is not a fast path.**
+
+**2. Core ML's fastest unit on this machine is the CPU**, at **1,459.7 GFLOP/s** for the 512-token shape. The GPU
+path is half that and the ANE-eligible path is a fiftieth. **That is worth knowing on its own** - it is a
+measurement of this stack, not of the hardware's limits.
+
+**3. And the number that says how to read the rest: 96.12 ms at 1.34 GFLOP and 97.52 ms at 5.37 GFLOP.** The time
+is **constant while the work quadruples**, so the cost is **per-prediction overhead, not arithmetic.** That is the
+signature of a dispatch or setup cost paid once per `predict`, and it means **this probe cannot answer the ANE
+question at all**: a bare single-op model pays that overhead on every call, while a real ANE workload is a whole
+converted network where it is paid once and amortised over the entire forward pass.
+
+**So the honest position is narrower than "the ANE does not work".** Two probes have found **no** ANE benefit -
+one showing no engagement, one showing a path 50x slower - and **neither tested the form the ANE is actually used
+in.** The measurement that would settle it is the same 1x1 conv **repeated inside a single model**, so the
+per-call overhead appears once: if the total stays near 96 ms the cost is dispatch and a whole-network conversion
+is still worth trying, and if it scales with the repetitions then `ALL` is genuinely slow for this workload and
+the ANE route is closed for prefill.
+
+**Nothing in `docs/distribution-design.md` section 8b changes, because section 8b already carries `D296`'s
+negative.** It now has two, and the design remains an intent with no measured support.
