@@ -9806,3 +9806,35 @@ correctness.
 
 **Recorded rather than built** because the flag spans argument parsing, the run path and the exit condition, and a
 half-applied version would leave a node that neither generates nor serves - the worst of both.
+
+## D280 — `--shard-serve-only` works and the experiment did not run: the peers were refused
+
+`D279` said the contention experiment needed one flag and named it. The flag is built and it behaves as intended:
+
+    node3$ timeout 20 TinyTitanCLI ... --shard-serve 9150 --shard-serve-only ; EXIT=124
+
+**124 is the timeout killing it**, which is what a server blocked in `accept` looks like - the process lives as long
+as the server does, which is exactly the property `D279` said was missing. **The flag is correct.**
+
+**And the experiment produced no numbers**, for a reason worth recording rather than guessing at:
+
+    node3 (serve-only)   0 lines of output
+    node1                [shard] connected ... then Connection refused
+    node2                [shard] connected ... then Connection refused
+
+**node3 prints nothing at all**, and that is the flag's own doing: it returns from the run function before the
+`[shard] serving peer expert requests on port N` message, which is written after the `Task` block. **So a serve-only
+node is silent when it starts** - which is a defect in the flag, not a mystery, and it made the run unreadable.
+
+**Whether it was also not listening is not yet established.** The direct run shows it alive for twenty seconds, so
+it bound at least once; the refused connections in the experiment could be that silence hiding a successful bind, or
+a stale holder of port 9150 from an earlier run - this session has started that server a dozen times on those three
+machines. **The next step is one command**: start the serve-only node, `lsof -nP -iTCP:9150` on it, and only then
+start the peers.
+
+**And the flag should log regardless of the path it takes.** A serving node that says nothing when it comes up is the
+same class as `D259`'s silent death: silence is indistinguishable from both success and failure, and the run that
+needed the information could not tell them apart.
+
+**So this round built the instrument `D278` and `D279` asked for and did not get the measurement**, which is
+recorded as it stands rather than narrated as progress.
