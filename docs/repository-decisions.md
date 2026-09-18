@@ -7588,3 +7588,47 @@ configuration, and the intercept is an extrapolation to a volume no cache can re
 the largest, so the curve is not perfectly linear. It is a model of a *measured* relationship and not a substitute
 for a four-node run - but it is the first thing in this goal that predicts what a four-node run should produce, and
 the prediction can be falsified by one.
+
+## D220 — The same model in the variable that actually divides: demand misses, each costing 0.521 ms of which 43% is already overlapped
+
+`D219` fitted the step against **bytes**, and bytes are the wrong unit for a four-node question - a node that owns a
+quarter of the experts reads a quarter of the bytes, but what changes per layer is the **number of demand misses**.
+The IO trace reports both, and they are **exactly proportional**: 245.8/145.67, 166.8/98.85, 130.5/77.33 and
+91.0/53.94 all give **1.688 MiB per miss**, which is one expert (1,769,472 B) to four figures. So the sweep cannot
+separate them - but refitting against the miss count is the form a distribution question needs. Node3, the
+reference install, 48 tokens:
+
+| slots | tok/s | step | MiB/token | misses/token |
+| --- | --- | --- | --- | --- |
+| 8 | 5.55 | 180.2 ms | 245.8 | 145.67 |
+| 16 | 6.22 | 160.8 ms | 166.8 | 98.85 |
+| 24 | 6.62 | 151.0 ms | 130.5 | 77.33 |
+| 40 | 7.67 | 130.4 ms | 91.0 | 53.94 |
+
+    step = 106.7 ms + 0.521 ms per demand miss
+
+**The marginal miss costs 0.521 ms, and `D196` measured a depth-1 read of these experts at 0.91 ms.** So **43% of
+each demand miss is already overlapped** with the device - the prefetch ring is doing real work, and `D200`'s
+observation that "the ring lands about one" is visible here as a number rather than as an impression. It also
+explains why the ring's *depth* is the wrong knob (`D195`: depth 8 was 28% worse): the overlap is already there,
+and deepening it only adds requests in flight against a read that `D196` showed is bandwidth-limited.
+
+**The four-node target in this form:**
+
+    intercept does NOT divide    116.9 ms  ->   8.55 tok/s
+    divides 2x                    63.6 ms  ->  15.73 tok/s
+    divides 4x                    36.9 ms  ->  27.11 tok/s
+
+**and 21 tok/s needs the 106.7 ms intercept to fall to 37.4 ms, a factor of 2.85.** The miss term is already
+handled: a node owning a quarter of the experts misses a quarter as often, which is `53.94/4 = 13.5` misses per
+token and 7.0 ms of the 47.6 available - so **the miss path costs almost nothing in the distributed case**, and
+essentially the whole question is what the 106.7 ms intercept is made of and how much of it divides.
+
+**What the intercept is, from measurements already in hand.** `D202` put kernel execution at **42.0 ms** of the
+step, and `D214` found the decode thread **83.2% in `waitUntilCompleted`** - so the intercept contains the device
+plus the stall around it, and the stall is what the miss model has just accounted for. The part of the intercept
+that is *replicated* work - the dense projections and the attention every node performs in full - is the part that
+cannot divide, and `D202` sizes the MoE-versus-replicated split at **18.4 against 23.6 ms** of the device term.
+**If that ratio holds for the whole intercept, roughly 56% of it divides**, which lands between the 2x and 4x rows:
+about **17 tok/s** - short of 21, and **the first prediction of the four-node result this session can state as a
+number with its arithmetic shown.**
