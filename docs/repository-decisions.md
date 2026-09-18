@@ -5393,3 +5393,42 @@ implementable.
 **Still arithmetic, not measurement.** Same caveats as `D165` and the same direction: perfect 4-way compute
 scaling is assumed, no overlap is modelled, and the link figure is this Wi-Fi pair. The contribution here is that
 the target is **reachable in principle on this link**, with a named cost and a named next artifact.
+
+## D167 — The plan carries a replicated set, and the field costs nothing when unused
+
+`D166` established replication as the only lever that reaches the throughput target without breaking
+bit-exactness; the plan format now expresses it and the code is verified (`b8852cb`, fork).
+
+```swift
+replicated: [Int]   // experts held by EVERY node in addition to their owner
+```
+
+**Three properties, each chosen against a specific way this could go wrong.**
+
+1. **It is omitted from the JSON when empty.** The digest is what nodes compare at bring-up, so adding a field
+   to a published format must not make every existing plan look like a disagreement. A plan with no replication
+   encodes **byte-for-byte** as it did before the field existed and keeps its digest; a document written by the
+   previous version still decodes, because the key is read with a default. Both halves are asserted, not assumed.
+2. **The set is canonicalised** — sorted and deduplicated — so the digest is a function of the *set* rather than
+   of the order it was listed in. This is a value that will be edited by hand, and two nodes listing the same
+   experts in different orders must not report a disagreement that is not one.
+3. **It is not a per-node choice.** Every node replicates the same set, which is why it lives in the agreed plan
+   rather than in each node's configuration; a per-node replication decision is precisely the disagreement
+   `canonicalDigest` exists to catch.
+
+**One predicate serves the engine:** `isLocal(expert:to:)` — owned, *or* replicated everywhere. `ownedSlots` and
+`remoteSlots` both route through it, so a replicated expert is computed locally and **never queued for a peer**,
+and the ownership tests written before the field existed are unchanged by its addition. That is the check that
+the abstraction was in the right place: adding replication changed the definition of "local" and nothing else.
+
+**Four new tests**, on the failure modes rather than the happy path: a replicated expert is local to *every* node
+and drops out of `remoteSlots`; an unreplicated plan's digest is unmoved and a legacy document still decodes; the
+set is order-insensitive; a replicated id outside the model is refused.
+
+**Verified:** 14 tests across 3 shard-plan suites; the full fork suite **0 failure markers**.
+
+**What is now in place for the distribution**, none of it needing a model: the seam is located at a field
+(`D164`), ownership filters the routed set with slot positions preserved (`b3e6977`), replication is expressible
+(`b8852cb`), and the exchange's shape and budget are settled by measurement and arithmetic (`D154`, `D158`,
+`D165`, `D166`). What remains is the transport that carries a contribution and the engine change that routes
+non-owned experts — both blocked on having something to run.
