@@ -9904,3 +9904,33 @@ entered. **It should be made first, in its own change, against the tree rather t
 in 0.5 ms or 2.95 ms, and that question has now cost a flag, a stale-port check, a listener check at three
 durations, and two failed patches. **The work is real; the progress on the objective is none**, and the record says
 so.
+
+## D283 — `--shard-serve-only` suppresses the entire run, and it is the only variable
+
+Three rounds have tried to measure whether an idle serving node answers a peer request faster than a busy one, and
+each has failed for a reason that turned out to be the instrument. This round isolated the instrument with one
+comparison, same node, same plan, same install, one flag apart:
+
+    without --shard-serve-only   [shard] node 2 of 3 reads 85 of 256 experts; ...
+                                 [shard] serving peer expert requests on port 9150.        <- then serves
+    with    --shard-serve-only   (no output at all)   EXIT=0
+
+**The flag suppresses everything, not just the serving line.** The two lines above are printed **before** the serve
+block, so a flag that removes them is not changing the serving path - **it is stopping the run earlier than the code
+this session has been editing.** The log move `D281` asked for is now in the tree and is irrelevant to this: with the
+write above the branch, a serve-only node that reached the branch would print it, and node3 prints neither line.
+
+**So the last three rounds' hypothesis was wrong in its location.** They reasoned about the serve block, the bind,
+the port, the model load and the logging - and the flag never gets that far. **The defect is in the flag's own
+plumbing**: the argument, its parse case, or its propagation into `Args`, all of which were added by one patch and
+none of which has been read since.
+
+**And this is the fifth time in this session that a defect was found by comparing two runs rather than by reading
+code** - after the bundle, the connect race, the dying server, and the fp16 types. **The pattern is consistent enough
+to state: when a change does not do what it was written to do, the fastest instrument is the same command with the
+change removed, and this session reached for that last rather than first, three rounds running.**
+
+**What is now established about the objective and what is not.** The distributed engine is built, runs, is correct
+and measures 0.85x; the serving cost is 2.95 ms a request and 61% of a serving node's token; and the ceiling for
+this design is 8.2 tok/s against a target of 21. **What remains unknown is only whether that serving cost is
+contention or the command-buffer round trip** - and that one question is still waiting on a flag that does not work.
