@@ -194,6 +194,36 @@ public final class ExpertSlotCache: ExpertWeightProvider {
     /// between forwards, when no worker is running.
     private let metricsLock = NSLock()
 
+    /// What this layer's loop asked for, for `DC-121`, and the shape it asked with.
+    ///
+    /// Written only by the single-threaded loop and read only as a snapshot taken on that same thread inside
+    /// `prefetchPredicted`, so it needs no lock of its own — which is worth stating because the last two rounds
+    /// have both been about a shared slot that was read from somewhere else.
+    private var lastRequested: [Int] = []
+    private var lastShape: MixtureShape?
+
+    /// One serial queue for prefetching, shared by every layer of every forward: the point is one background
+    /// thread, not one per layer.
+    private static let prefetchQueue = DispatchQueue(label: "datacenter.expert.prefetch")
+
+    /// `SHARD_EXPERT_PREDICT=1` turns `DC-121` on — **off by default, because it was measured and it loses.**
+    ///
+    /// The reasoning was sound and the measurement disagreed: a layer's routing is correlated between tokens, the
+    /// reads were on the critical path, so issuing them early should have hidden them behind the attention. It did
+    /// not. Alternated on one binary: **1.859 / 1.816 s/step with it on against 1.854 / 1.721 with it off**, and
+    /// `mix.read` *larger* with it on (0.830 / 0.813 against 0.790 / 0.760). The digest was identical throughout.
+    ///
+    /// The reading is that `D101`'s fan-out had already stopped this being a latency problem: the device is now
+    /// **saturated**, so a second stream of reads does not fill a gap, it takes bandwidth from the first. That is
+    /// `DC-121`'s real finding, and it moves the next lever from *hiding* the read to **reading fewer bytes** —
+    /// which is a bank that holds slices in their packed int4 form rather than dequantised.
+    static let predictionEnabled = ProcessInfo.processInfo.environment["SHARD_EXPERT_PREDICT"] == "1"
+
+    private func note(_ expert: Int, shape: MixtureShape) {
+        if lastShape == nil { lastShape = shape }
+        if !lastRequested.contains(expert) { lastRequested.append(expert) }
+    }
+
     private func addElementsRead(_ count: Int) {
         metricsLock.lock(); metrics.elementsRead += count; metricsLock.unlock()
     }
@@ -205,6 +235,7 @@ public final class ExpertSlotCache: ExpertWeightProvider {
     }
 
     public func gateUp(expert: Int, shape: MixtureShape) throws -> [Float] {
+        note(expert, shape: shape)
         guard let bank else {
             metrics.requests += 1
             metrics.misses += 1
@@ -220,6 +251,7 @@ public final class ExpertSlotCache: ExpertWeightProvider {
     }
 
     public func down(expert: Int, shape: MixtureShape) throws -> [Float] {
+        note(expert, shape: shape)
         guard let bank else {
             metrics.requests += 1
             metrics.misses += 1
@@ -233,6 +265,34 @@ public final class ExpertSlotCache: ExpertWeightProvider {
         count(outcome)
         return outcome.values
     }
+
+    /// Remember what the loop asked for, so the *next* token can be anticipated (`DC-121`).
+    ///
+    /// `DC-118` hides the reads behind **other reads** by fanning the misses out. This hides them behind *compute*:
+    /// a layer's routing is strongly correlated between consecutive tokens, so the experts this layer wanted last
+    /// time are issued **now**, on a background thread, before the attention work below them, and the loop that
+    /// follows finds them resident. A wrong guess costs only the read the loop would have made anyway.
+    ///
+    /// A **serial** background thread rather than a fan-out is deliberate: the reads are I/O-bound and the eight
+    /// cores are busy with the layer's own arithmetic, so a second dispatch wave here would compete for the very
+    /// resource it is trying to stay off the critical path of.
+    /// `force` exists so the mechanism can be tested while the default stays off: a switch read once from the
+    /// environment cannot be turned on for one test, and a mechanism that is never exercised is a mechanism that
+    /// rots.
+    public func prefetchPredicted(force: Bool = false) {
+        guard force || Self.predictionEnabled, let bank, bank.budgetBytes > 0, DecodeThreads.count > 1 else {
+            return
+        }
+        let predicted = lastRequested
+        guard predicted.count > 1, let shape = lastShape else { return }
+        nonisolated(unsafe) let target = self
+        Self.prefetchQueue.async {
+            for expert in predicted { _ = try? target.warm(expert: expert, shape: shape) }
+        }
+    }
+
+    /// Wait for the background prefetch, so a test can assert what it warmed instead of sleeping on it.
+    func waitForPrefetch() { Self.prefetchQueue.sync {} }
 
     /// Fetch this layer's chosen experts ahead of the loop that asks for them (`DC-118`).
     ///

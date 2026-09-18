@@ -96,6 +96,47 @@ final class ExpertPreloadTests: XCTestCase {
         XCTAssertEqual(empty.metrics.requests, 0)
     }
 
+    func testThePredictionWarmsWhatTheLoopWillAskFor() throws {
+        let small = shape()
+        let (upstream, counter) = fixture(small)
+        let bank = ExpertBank(budgetBytes: 1 << 20)
+        let cache = ExpertSlotCache(upstream: upstream, bank: bank, layer: 0)
+
+        // A token's loop: the adapter records what it was asked for as a side effect of serving it.
+        _ = try cache.gateUp(expert: 1, shape: small)
+        _ = try cache.down(expert: 1, shape: small)
+        XCTAssertEqual(counter.count("gateUp(1)"), 1)
+
+        // The next token issues that as a hint. `force` because the mechanism is off by default (`D105`: it was
+        // measured and it loses), and `waitForPrefetch` because the point of it is to be off this thread.
+        cache.prefetchPredicted(force: true)
+        cache.waitForPrefetch()
+        XCTAssertEqual(counter.count("gateUp(1)"), 1, "the hint must not re-read what is already resident")
+
+        // A fresh adapter over the same bank is what the next token's layer load builds; it must find the
+        // prediction waiting rather than reading it again.
+        let next = ExpertSlotCache(upstream: upstream, bank: bank, layer: 0)
+        let values = try next.gateUp(expert: 1, shape: small)
+        XCTAssertEqual(counter.count("gateUp(1)"), 1, "the prediction is what saved the read")
+        XCTAssertEqual(next.metrics.hits, 1)
+        XCTAssertFalse(values.isEmpty)
+    }
+
+    func testThePredictionIsOffByDefault() throws {
+        let small = shape()
+        let (upstream, counter) = fixture(small)
+        let cache = ExpertSlotCache(upstream: upstream, bank: ExpertBank(budgetBytes: 1 << 20), layer: 0)
+        _ = try cache.gateUp(expert: 0, shape: small)
+        let before = counter.all.count
+        cache.prefetchPredicted()
+        cache.waitForPrefetch()
+        if ExpertSlotCache.predictionEnabled {
+            XCTAssertGreaterThan(counter.all.count, before, "the knob is on, so the hint must read")
+        } else {
+            XCTAssertEqual(counter.all.count, before, "off by default, and that default is measured (`D105`)")
+        }
+    }
+
     func testAPreloadSkipsExpertsTheProviderDoesNotServe() throws {
         try XCTSkipIf(DecodeThreads.count < 2, "a preload is a fan-out; one thread has nothing to fan")
         let small = shape()

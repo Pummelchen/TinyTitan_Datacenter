@@ -2969,3 +2969,42 @@ residue mod 4), `out < 4` where the vector loop never runs, `k = 1`, `rows ∈ {
 buffers, because **a reused buffer changing the answer is how the first attempt was caught**. A faster
 formulation is only trustworthy while something independent says it agrees — and the argument above is a reason,
 not that something.
+
+## D105 — The predictive prefetch loses, because the reads are no longer latency-bound
+
+`DC-121` was the reference's `ExpertPrefetchRing` idea, and it was the item this repository's own notes had called
+the measured priority. It is implemented, measured, and **off by default** — and the measurement is worth more
+than the change.
+
+**Why it should have worked.** A layer's routing is strongly correlated between consecutive tokens. `D101` had
+taken the expert reads off the *latency* problem by fanning the misses across threads, which left the read itself
+— about 1.08 GB per step, irreducible, because it is the weights — sitting synchronously on the critical path just
+before the loop that needs it. Issuing the *previous token's* choices early, on a background thread, before the
+layer's attention runs, should have hidden them behind compute. A wrong guess would cost only the read the loop
+would have made anyway.
+
+**What it did instead.** Measured on one binary, alternated, 8-step cached decode, load average 3.14:
+
+| | step | `mix.read` | digest |
+| --- | --- | --- | --- |
+| prediction on | 1.859 / 1.816 s | 0.830 / 0.813 s | `89d654ff54b0fd03` |
+| prediction off | 1.854 / 1.721 s | 0.790 / 0.760 s | `89d654ff54b0fd03` |
+
+No gain, and `mix.read` is consistently **larger** with the prediction on. The digest is identical in every arm,
+so nothing about correctness is in question — only the arithmetic of where the seconds go.
+
+**The reading, which is the actual result.** `D101`'s fan-out did not just make the reads faster, it **removed the
+latency problem** — so the device is now **saturated**: at roughly 1.08 GB in about half a second it is moving
+something like 2 GB/s (a derived figure, not a measured one, from the phase and the byte count), and a second
+stream of reads does not fill an idle gap, it takes bandwidth from the first. **A prefetch can only help a
+latency-bound resource; a saturated one is made worse by asking it to do more at once.**
+
+**What follows.** The lever moves from *hiding* the read to **reading fewer bytes**. The bank holds slices as
+`[Float]`, so 512 MB buys about 61 slices while a token asks for roughly 773; the same bytes in their **packed
+int4 form** buy four times as many, and at 1.5 GB that is approximately the whole per-token working set. That is
+`DC-120`, and it needs the dequantise to happen at *consumption* rather than at load — the fused kernel this
+round's plan started from, now with a measurement saying why it is the only remaining CPU-side lever.
+
+The switch is `SHARD_EXPERT_PREDICT=1`, the default is off (`D89` and `D98` set the same precedent: a measured
+loss is not a default), and `prefetchPredicted(force:)` plus `waitForPrefetch()` exist so the mechanism stays
+tested rather than rotting behind a switch nobody can turn on in a test.

@@ -170,6 +170,13 @@ extension Qwen3_5Forward {
             let tag = String(format: "layer.%02d", index)
             let layer = try loadLayer(index, cache: layerCache)
             profiler?.mark("load")
+            // `DC-121`: the reads this layer is about to want are the ones it wanted on the **last token**, and
+            // the routing is strongly correlated between consecutive tokens — so they are issued here, on a
+            // background thread, and overlap the attention and the router below. A wrong guess costs exactly the
+            // read the loop would have made anyway; a right one takes the read off the critical path, which is
+            // where `D101` left it. It has to be issued *before* the attention: placed after it, the background
+            // work has nothing left to hide behind.
+            if case .mixture(_, let provider) = layer.feedForward { provider.prefetchPredicted() }
             let tables: (cos: [Float], sin: [Float])
             switch cache.layers[index] {
             case .attention(_, _, let length):
