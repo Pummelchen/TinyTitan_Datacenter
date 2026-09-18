@@ -9447,3 +9447,38 @@ this is now the second defect of exactly that shape, after the eight-slot width 
 peer's reply against the same expert computed locally - because it would have caught this in one run instead of
 three and it is the only check that reads the values. Second, node1's remaining NaN, which that comparison will
 localise.
+
+## D270 — The exchange is arithmetically correct: two nodes complete with no NaN, and the serving cost is visible
+
+`D269` established the class - a buffer whose element type is asserted by the Metal declaration and by nothing on the
+Swift side - and fixed `routing_w`. The same kernel declares `device const half* residual` and `device half* y`, and
+both were `Float`. **With all three fixed:**
+
+    node1  tok/s=1.360   no NaN
+    node2  tok/s=6.598   no NaN
+    node3  (no completion)
+
+**For the first time in this session, a node completed a distributed generation through live peer contributions with
+correct arithmetic.** Every previous run produced either a NaN, a cache refusal, a dead server or a refusal to
+connect. **The exchange works.**
+
+**And the cost is now visible in the one place it was predicted to be.** node1 - which is node 0, the peer the other
+two ask - finished at **1.360 tok/s**, while node2, asking node1 and node3, finished at **6.598**. **The node whose
+GPU is busy answering is the node whose own generation collapses**, and the ratio is 4.9x. That is `D257`'s caveat
+arriving as a measurement: `remoteExpertValues` does eight phase-1 encodes, eight phase-2 encodes and a blocking wait
+per request, because `topK == maxStreamedExperts` is a precondition and the same expert must be placed in all eight
+slots. **The serving node pays roughly 8x what the expert is worth**, and it pays it on its own critical path.
+
+**So the records' answer and the measurement now agree, and they agree for the reason the records gave.**
+
+  * `D239` measured that the expert read is worth zero, so dividing it buys nothing;
+  * `D221` measured the routed MoE at **19.4 ms of a 137.0 ms step**, which is all that can divide;
+  * `D235` put the reachable speedup at **~1.12x** for that reason, and **~1.21x** if attention and the shared expert
+    are sharded too;
+  * and this run shows the *cost* side: a serving node's own throughput falls by a factor of five while its peers
+    gain nothing, because what it is serving costs eight times the kernel time it saves.
+
+**The number the objective asks for - a clean tok/s across all four nodes - is now one run away rather than one fix
+away**, and the prediction to measure it against is unchanged: **~1.12x**, which on this node's 7.4-7.6 tok/s means
+**about 8.3-8.5 tok/s**. **The down-only kernel is what would change that**, and it is now a performance question
+rather than a correctness one.
