@@ -5894,3 +5894,35 @@ above 7 tok/s on one 8 GB Mac mini M2** — which was the first half of the obje
 second. It does **not** establish 4x across four nodes: the distribution's ≥3x gate is a cluster measurement
 that `D97`'s re-scoping had forbidden until exactly this number existed, so **the block on network work is now
 lifted by the number** rather than by a decision.
+
+## D179 — Replication was sized 40x too small, and the check that found it is a unit test
+
+`DC-133` was to "choose the replicated set (~64 experts, 116 MB/node)". Writing the selector forced the
+arithmetic into a function, and the function says the figure is wrong.
+
+**An expert ID is replicated in every layer.** Expert 64 of layer 0 is a different weight from expert 64 of
+layer 1, so the resident cost of R experts is
+
+    R x layers x expertBytes       not       R x expertBytes
+
+`116 MB` is `64 x 1,769,472 = 113 MB` — **one layer**. The whole-model cost is **40x that: 4,529,848,320
+bytes, 4.53 GB.**
+
+**So whole-model replication is not the lever the earlier plan assumed.** `D178` measured this node's optimal
+expert cache at 2.83 GB, and the dense weights are ~1.9 GB, inside 8 GB of RAM. Replication and the measured
+cache together already exceed 7 GB **before the KV cache or the prompt cache are counted**. There is no budget
+in which 64 replicated experts fit — and `D178`'s own curve says the cache is not the thing to cut, because
+`D178`'s cliff at 4.53 GB of cache is precisely this machine running out of memory.
+
+**What survives from `D166`/`D168` and what does not.** The *mechanism* survives and is proven: an expert every
+node holds never crosses the wire, and because an unread expert contributes a zero to a fixed k = 8 fp32
+slot-ordered sum, and adding zero is exact, the arithmetic is untouched whether an expert is held once or four
+times (`D154`, and `ShardReduce`'s tests assert bit patterns rather than tolerances). What does not survive is
+the *size*: the earlier "R = 64 -> 21.5 tok/s" was computed against a resident cost that was 40x too low, so the
+throughput it predicted was never reachable by that mechanism on this hardware.
+
+**The next step is therefore a set that fits, not a set chosen by the wire model.** And the useful part is that
+this cost one unit test rather than a four-node run: `residentBytes(count: 64, layers: 40)` is asserted to equal
+`4_529_848_320`, so the 40x error cannot be reintroduced quietly, and the same test asserts that replication plus
+`D178`'s measured cache exceeds 7 GB. A number that had been carried in prose for many rounds became falsifiable
+the moment it became a function.
