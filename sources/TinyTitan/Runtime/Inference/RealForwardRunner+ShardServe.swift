@@ -45,24 +45,32 @@ extension RealForwardRunner {
 
         // FmoE is a decode-path local, not a property, but `remoteActs` was allocated from it in `init` - so its
         // length gives it back and the two cannot drift.
-        let f = UInt32(remoteActs.length / MemoryLayout<Float16>.stride)
+        let f = UInt32(remoteActs.length / MemoryLayout<Float16>.stride / 8)
 
         var out = [Float](repeating: 0, count: experts.count * dims)
         for (index, _) in experts.enumerated() {
+            // EIGHT SLOTS, ALWAYS. `validate(routedBlobs:topK:)` preconditions `topK == maxStreamedExperts`, so a
+            // request cannot ask for one expert - the kernels address a fixed eight-slot bank with no sub-batch.
+            // The same expert is placed in every slot and `remoteWeight` is [1,0,0,0,0,0,0,0], so the phase-2
+            // reduce sums eight terms of which seven are multiplied by zero. That yields one expert's down output
+            // without a new kernel. D260 has the crash report that established the constraint.
+            let slots = 8
             let blob = views[index].buffer
+            let blobs = [MTLBuffer](repeating: blob, count: slots)
+            let blobOffsets = [Int](repeating: Int(views[index].offset), count: slots)
             guard let argBuf = moe.makeRoutedArgumentBuffer(
-                routedBlobs: [blob], topK: 1, routedBufferOffsets: [Int(views[index].offset)])
+                routedBlobs: blobs, topK: UInt32(slots), routedBufferOffsets: blobOffsets)
             else { throw ShardServeError.argumentBufferUnavailable }
             guard let cb = ctx.queue.makeCommandBuffer() else {
                 throw ShardServeError.commandBufferUnavailable
             }
             try moe.encodeRoutedPersistentPhase1U16Load(
-                commandBuffer: cb, routedArgBuffer: argBuf, routedBlobs: [blob], routedOffsets: offsets,
-                x: remoteActivation, acts: remoteActs, d: UInt32(dims), f: f, topK: 1)
+                commandBuffer: cb, routedArgBuffer: argBuf, routedBlobs: blobs, routedOffsets: offsets,
+                x: remoteActivation, acts: remoteActs, d: UInt32(dims), f: f, topK: UInt32(slots))
             try moe.encodeRoutedPersistentPhase2Reduce(
-                commandBuffer: cb, routedArgBuffer: argBuf, routedBlobs: [blob], routedOffsets: offsets,
+                commandBuffer: cb, routedArgBuffer: argBuf, routedBlobs: blobs, routedOffsets: offsets,
                 acts: remoteActs, routingWeights: remoteWeight, residual: remoteResidual,
-                y: remoteY, d: UInt32(dims), f: f, topK: 1)
+                y: remoteY, d: UInt32(dims), f: f, topK: UInt32(slots))
             cb.commit()
             cb.waitUntilCompleted()
             let src = remoteY.contents().bindMemory(to: Float.self, capacity: dims)

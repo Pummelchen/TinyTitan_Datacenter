@@ -798,13 +798,19 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         // FmoE is cfg.moeIntermediateSize and the device is context.device, neither reachable from a method.
         // Persistent rather than per request: 40 requests a token would be D114's failure.
         self.remoteActivation = try buf(D, label: "shard.activation")
-        self.remoteActs = try buf(cfg.moeIntermediateSize, label: "shard.acts")
+        // EIGHT SLOTS. The kernels validate `topK == maxStreamedExperts` and write all eight, so a
+        // single-slot buffer here would be overrun by the first request. One slot was the original
+        // allocation and the overrun was caught before it ran, not by it.
+        self.remoteActs = try buf(8 * cfg.moeIntermediateSize, label: "shard.acts")
         self.remoteY = context.device.makeBuffer(length: D * MemoryLayout<Float>.stride, options: .storageModeShared)!
         self.remoteResidual = context.device.makeBuffer(length: D * MemoryLayout<Float>.stride, options: .storageModeShared)!
-        self.remoteWeight = context.device.makeBuffer(length: MemoryLayout<Float>.stride, options: .storageModeShared)!
+        // Eight, not one: the kernels validate `topK == maxStreamedExperts`, so a request always has eight slots
+        // and only the first is weighted. The other seven compute the same expert and contribute zero.
+        self.remoteWeight = context.device.makeBuffer(length: 8 * MemoryLayout<Float>.stride, options: .storageModeShared)!
         // The weight is 1.0 and the residual is zero because the REQUESTER owns the router's decision and applies
         // the weight (D168). A peer that applied it too would be counted twice, silently.
-        self.remoteWeight.contents().bindMemory(to: Float.self, capacity: 1)[0] = 1.0
+        let weights = self.remoteWeight.contents().bindMemory(to: Float.self, capacity: 8)
+        for slot in 0..<8 { weights[slot] = slot == 0 ? 1.0 : 0.0 }
         memset(self.remoteResidual.contents(), 0, D * MemoryLayout<Float>.stride)
         self.moeHitActiveSlots = try buf(cfg.topKExperts, MemoryLayout<UInt32>.size, label: "decode.moeHitActiveSlots")
         self.moeMissActiveSlots = try buf(cfg.topKExperts, MemoryLayout<UInt32>.size, label: "decode.moeMissActiveSlots")
