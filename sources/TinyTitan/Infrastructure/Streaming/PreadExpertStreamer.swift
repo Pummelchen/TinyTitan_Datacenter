@@ -1,3 +1,7 @@
+// MODIFIED by TinyTitan_Datacenter (https://github.com/Pummelchen/TinyTitan_Datacenter):
+// added `ownedExpertFilter` and `ownedExperts(routed:owns:)`, which narrow the routed expert set to the ones this node owns before the cache plan is made.
+// Derived from TinyTitan, which is licensed under the Apache License, Version 2.0;
+// see NOTICE and LICENSE in this repository for the original notice and terms.
 import Darwin
 import Foundation
 import Metal

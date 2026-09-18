@@ -1,3 +1,7 @@
+// MODIFIED by TinyTitan_Datacenter (https://github.com/Pummelchen/TinyTitan_Datacenter):
+// added `moe_phase2_down_reduce_k8_remote`, a separate kernel that adds the peers' zero-padded fp32 partials into `partial[sg]` before the ordered sum.
+// Derived from TinyTitan, which is licensed under the Apache License, Version 2.0;
+// see NOTICE and LICENSE in this repository for the original notice and terms.
 #include <metal_stdlib>
 using namespace metal;
 

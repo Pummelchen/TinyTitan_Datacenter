@@ -1,3 +1,7 @@
+// MODIFIED by TinyTitan_Datacenter (https://github.com/Pummelchen/TinyTitan_Datacenter):
+// accept `--host`/`--port` in addition to `--socket`, falling back to stdio.
+// Derived from TinyTitan, which is licensed under the Apache License, Version 2.0;
+// see NOTICE and LICENSE in this repository for the original notice and terms.
 import Darwin
 import Foundation
 import TinyTitan

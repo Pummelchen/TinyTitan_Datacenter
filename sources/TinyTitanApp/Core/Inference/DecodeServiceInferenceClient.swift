@@ -1,3 +1,7 @@
+// MODIFIED by TinyTitan_Datacenter (https://github.com/Pummelchen/TinyTitan_Datacenter):
+// added a `Transport` value so the decode service can be reached over TCP as well as a Unix socket.
+// Derived from TinyTitan, which is licensed under the Apache License, Version 2.0;
+// see NOTICE and LICENSE in this repository for the original notice and terms.
 import Darwin
 import Foundation
 import Synchronization

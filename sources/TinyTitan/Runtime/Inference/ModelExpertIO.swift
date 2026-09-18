@@ -1,3 +1,7 @@
+// MODIFIED by TinyTitan_Datacenter (https://github.com/Pummelchen/TinyTitan_Datacenter):
+// added `setOwnedExpertFilter(_:)`, which applies the ownership filter to every layer's streamer.
+// Derived from TinyTitan, which is licensed under the Apache License, Version 2.0;
+// see NOTICE and LICENSE in this repository for the original notice and terms.
 import Foundation
 import Metal
 
