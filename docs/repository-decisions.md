@@ -7386,3 +7386,36 @@ in that order of size**:
 are already computed together by `adviseRanges`, and `F_RDADVISE`/`F_NOCACHE` take a range, so the loop is issuing
 N syscalls where 1 to 4 would do. It is **4.9% of the decode thread**, it is entirely host-side, it touches no
 arithmetic, and it is the kind of change `D94` and `D114` both were: remove work that is not the work.
+
+## D215 — The fcntl advisory costs 4.9% of the decode thread and nothing of the step, because it runs under the GPU
+
+`D214` found the per-expert `F_NOCACHE` advisory at **4.9% of the decode thread** and proposed batching it. It
+turns out the engine **already coalesces** the ranges (`coalescedAdjacentAdviceRanges`), and the flag to remove the
+advisory entirely already exists - so the question needed no code, only a measurement. Node3, the reference
+install, 40 slots, 48 tokens, four policies alternating, three pairs:
+
+| pair | load | off | default | bounded | adaptive |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 1.03 | 7.414 | 7.120 | 7.345 | **7.660** |
+| 2 | 1.62 | 7.467 | **7.696** | 7.409 | 7.663 |
+| 3 | 1.55 | 7.572 | 7.645 | 7.605 | 7.390 |
+| median | | 7.467 | 7.645 | 7.409 | 7.663 |
+
+**They are indistinguishable.** The whole range is 7.409 to 7.663 - 3.4% - and the ordering changes sign between
+pairs, so there is no effect to find. **Turning the advisory off costs nothing and gains nothing.**
+
+**That is consistent with `D214` and it closes the item rather than contradicting it.** The `fcntl` really is 4.9%
+of the decode thread's *samples*, and the decode thread is **83% blocked in `waitUntilCompleted`**. Work that runs
+on the host while the GPU is busy is **already overlapped**; removing it does not shorten a step whose critical
+path is the device. `D214` measured where the host's samples are, and this measures whether they matter - **the two
+are different questions and only the second is about tok/s.**
+
+**So the host is not the obstacle, and the last five rounds have been pointed at the wrong term.** `D209` framed a
+2.5x host-CPU reduction as the route to 47.6 ms; `D212` briefly suggested a wait; `D214` attributed the host
+correctly at ~17% with `fcntl` as its largest piece; and this shows that piece is **free to remove and worth
+nothing**. What is left in the host is small and hidden.
+
+**What the arithmetic said all along, and what `D202` computed first:** with the decode thread 83% GPU-bound, the
+critical path is the **device**, and the lever is overlapping the device with the reads - `D202`'s 11.0 tok/s for
+disk+device and **20.2 for all three**, and 23.8 with reads at depth 8. The measurement in `D214` is the first
+direct evidence for the term `D202` derived, and it agrees with it.
