@@ -5710,3 +5710,43 @@ statement counted only the round trips and not the payload they carry.
 
 **No overlap is modelled in either row**, which is the lever both shapes leave on the table: 39.3 ms of per-layer
 exchange against a 35.3 ms compute floor is exactly the ratio that pipelining is meant to exploit.
+
+## D174 — A load check across the farm, before any benchmark, and what it rules out
+
+The operator's instruction: **before a benchmark, check the nodes' CPU, GPU, LAN and disk load.** Taken across
+all four, and it is not a formality — one node is saturated and another's LAN is saturated by this session's own
+copy.
+
+| node | CPU load (8 cores) | memory free | swap used | disk free | LAN in+out |
+| --- | --- | --- | --- | --- | --- |
+| **node1** | **8.71 / 7.59 / 8.60** | 65% | 1,605 MB | 28 Gi | 22 KB/s |
+| node2 | 1.32 / 1.69 / 2.15 | 65% | 1,370 MB | **12 Gi** | 292 KB/s |
+| **node3** | **2.47 / 2.46 / 2.38** | 68% | 553 MB | **41 Gi** | 288 KB/s |
+| node4 (this) | 4.21 / 3.61 / 3.14 | **78%** | 833 MB | 25 Gi | **97 MB/s** |
+
+**node1 is saturated** — load 8.71 on eight cores, with 1.6 GB of swap in use. It is not a measurement target
+today, and it also explains why the earlier `rsync` from node1 to node2 ran at 118 MB/s while node1 to node3
+through the same switch was fine: the transfer did not need CPU, but a *benchmark* on that node would be
+measuring the other work.
+
+**node3 is the best target on every axis** — quietest (2.47), most disk (41 Gi), least swap (553 MB) — and it is
+**the machine the 7.075 tok/s reference was measured on**, so a number from it is comparable figure-for-figure in
+a way node4's is not.
+
+**And node4's LAN is saturated by this session.** The install copy is running at **17.9 MB/s measured over 30 s**
+(536 MB in 30 s), and `netstat` shows **97 MB/s across node4's interfaces** — against the 118 MB/s the switch
+measured for a clean bulk transfer. So **any LAN or exchange measurement taken on node4 while this copy runs is
+measuring the copy**, exactly as `D90`'s cluster runs measured the farm.
+
+**Two rules follow, and they are now part of taking a measurement here:**
+
+1. **Check before, not after.** `run_m3_gate.py`'s `--quiet-load` rule exists for this reason (`D38`); this is the
+   same discipline applied to every node rather than only to a gate.
+2. **The measurement and the transfer cannot overlap.** `D155` and `D158` were both taken against a machine that
+   was not representative, and the fix is not a better model of the noise — it is not running the two things at
+   once.
+
+**A correction to my own arithmetic in the same round**: I printed the copy's rate as "1786 MB/s" from a formula
+that was simply wrong. 536 MB in 30 s is **17.9 MB/s**. The raw numbers were right and the rate derived from them
+was not, which is the failure this session has hit repeatedly — an instrument whose output is believable and
+wrong.
