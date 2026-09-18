@@ -10385,3 +10385,40 @@ single layer**, and there is no cross-layer prefetch to exploit. It also indepen
 cost, and less than that once the partition is balanced. **It is not a route to 21 tok/s** - the target needs 2.8x
 and this offers ~1.25x on one term of it. **Design A remains the recommendation**, and it is unaffected: it
 partitions by layer, so it needs no expert placement at all.
+
+## D295 — Balanced, the affinity partition is worth 11%: the earlier 24% was the imbalance, and the idea is now closed
+
+`D294` found an affinity partition at **2.19** groups touched against a marginal one at **2.89**, and qualified it:
+the affinity groups came out badly unbalanced - `[168, 68, 12, 8]` - so part of the concentration was simply most
+experts living in one group, which four equal nodes cannot use. **The fair test is the same k-means with a hard
+capacity of 64.** It is run, and the qualification was right:
+
+| layer | marginal (balanced) | **affinity (balanced)** | random |
+| --- | --- | --- | --- |
+| 0 | 3.14 | **2.25** | 3.62 |
+| 16 | 2.85 | **2.72** | 3.63 |
+| 39 | 2.80 | **2.44** | 3.59 |
+| **mean** | **2.89** | **2.58** | **3.62** |
+
+Every group is exactly 64 experts, as four equal nodes require.
+
+**So the real figure is +10.9% over a balanced marginal split and +28.8% over random - not the 24% the unbalanced
+run showed.** The gap between 2.19 and 2.58 is precisely the imbalance artifact, and it is the difference between a
+result a deployment could use and one it could not.
+
+**And 2.58 of four groups still means a token touches about two and a half peers every layer.** Across forty layers
+that is the serving cost `D278` measured at 2.95 ms a request and 61% of a serving node's token. **A ten percent
+cut in groups is a ~1.1x on that term, against a target that needs 2.8x.** The idea is now properly closed: the
+co-occurrence structure is real (`D292`, mean lift 1.941, max 305x), **and it is not exploitable enough to build
+on.**
+
+**What the thread produced, and it was worth running.** Three results, each of which corrected the one before it:
+the marginals are near-uniform (`D290`), which does **not** mean the joint is (`D292`); the joint has structure,
+which does **not** mean a balanced partition can use much of it (`D294`, `D295`); and layers have **no**
+cross-layer correlation at all (`D294`, 1.01x adjacent) so the unit of placement is a single layer and there is no
+cross-layer prefetch. **The operator's hypothesis was worth testing, the trace cost a few hours, and the answer is
+a measured no with the mechanism stated.**
+
+**Design A is unaffected, and for the third time by the same reason**: it partitions by layer, so a layer's whole
+expert set is on one node by construction. **It needs no expert placement, no affinity graph and no co-occurrence
+structure - which is now a measured advantage rather than an argument.**
