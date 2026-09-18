@@ -192,7 +192,9 @@ public enum ShardExchange {
         values.reserveCapacity(count)
         // `withUnsafeBytes` over the whole buffer, then a bounded load per element, so a short payload is a
         // thrown error rather than an over-read.
-        try data.withUnsafeBytes { raw in
+        // No `try`: the closure below throws nothing - it bounds-checks and returns, and the count
+        // mismatch is detected by the caller. The marker was flagged by the fork's 0-warnings CI gate.
+        data.withUnsafeBytes { raw in
             for index in 0..<count {
                 let bits = raw.loadUnaligned(fromByteOffset: index * 4, as: UInt32.self)
                 values.append(Float(bitPattern: UInt32(littleEndian: bits)))
