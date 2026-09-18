@@ -7089,3 +7089,41 @@ have found it.** Twenty-two rounds closed every lever by measurement or by inspe
 exactly to the measured step, and the last route was closed by the operator's knowledge rather than by another
 experiment. `D186` renegotiated a target once when the measurement forced it; this is the same situation with a
 larger measurement behind it.
+
+## D207 — The exchange is two-sided and only one side exists: nothing serves a request
+
+Found by asking, before writing the call site, who runs the expert on the peer. `grep` answers it: the only
+occurrence of `ShardExchange.Request` outside the protocol module is `ShardPeerSet.exchange` **sending** one.
+There is no handler anywhere - not in `TinyTitanDecodeService`, not in the runner - that receives a request, runs
+the named experts for the named slots, and replies.
+
+**Every test of the exchange so far has used a fake peer.** `ShardExchangeIntegrationTests`'s peer is
+`Self.run(node:requests:)`, a loop written inside the test that computes `compute(layer:expert:dimensions:)` and
+replies; `ShardPeerSetTests` answers from a table. Both are correct tests of the protocol, the framing, the slot
+contract and the routing, and **neither is a peer**. So the client half is built and the server half is not, and
+the goal as written - "the call site in `encodeDecodeRoutedMoE`" - describes **one of the two**.
+
+**What the peer side has to do.** For a request `(layer, slots, experts, activation)` it must run its own copy of
+those experts over the supplied activation and reply with each slot's `value`, in the requested order. That is the
+MoE's phase 1 for a subset of slots, and it is the same kernels the client already runs for its own slots - but it
+is a **second call site**, on the serving path, and it needs the runner's expert cache to be shared with the
+service loop rather than owned by a generation.
+
+**Why this matters for the target and not only for the build.** The exchange's cost is the whole reason `D183`
+bounded sharding at ~1.0-1.1x and `D173` measured per-step exchange at 17.3 ms. **Both of those assumed the peer
+answers**, and the peer's own work - running its experts and encoding the reply - was never in either number. A
+peer that takes 5 ms to answer costs that 5 ms on the critical path of the requesting node's layer, forty times a
+token.
+
+**So the corrected shape of the remaining work is two call sites and a service loop**, not one:
+
+1. **Serving**: `TinyTitanDecodeService` (or the runner) accepts a connection, decodes a request, runs the named
+   experts over the supplied activation, and replies - sharing the node's expert cache.
+2. **Requesting**: `encodeDecodeRoutedMoE` reads `moeActs` back, calls `participant.remotePartials(...)`, and
+   passes the result as `remotePartials`.
+3. **The service has to be started and told its plan** on all four nodes, which is what `D206`'s flags now carry.
+
+**This does not change the arithmetic, and it does not falsify the target.** It means the thing to build is larger
+than the previous round's plan said, and that the per-step exchange cost has to be **measured** with a real peer
+rather than assumed from a fake one - which is the same lesson as `D188`/`D190`/`D195` in a different costume: a
+number derived from a stand-in is a hypothesis.
