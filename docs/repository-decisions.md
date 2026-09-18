@@ -10618,3 +10618,45 @@ project's own rule is that no speedup may be quoted from an arm that fell back t
 ratios from arms that - on the evidence of the sister project's design - **could not have touched the ANE at all**,
 and reported one of them as a positive before catching my own flaw. **`used_ane` is the instrument I was missing,
 and it existed upstream the whole time.**
+
+## D301 — At the right chunk size the GPU path wins and ALL is still last: still no ANE benefit
+
+`D300` found the sister project's operating point - **a full 4,096-token chunk** - and that my four probes had run
+at 128 and 512, eight to thirty-two times below it. The same 1x1 conv, at the correct size, with a discarded
+warm-up per arm:
+
+    1x1 conv at 4,096 tokens   42.95 GFLOP   (input 34 MB)
+
+| unit | warm-up | median | GFLOP/s |
+| --- | --- | --- | --- |
+| **CPU_AND_GPU** | 70.8 ms | **28.88 ms** | **1,487.3** |
+| CPU_ONLY | 95.1 ms | 83.31 ms | 515.5 |
+| **ALL** | 265.0 ms | **110.36 ms** | **389.2** |
+
+**Three things, and the third is the one that matters.**
+
+**1. The correct chunk size changed the ordering completely.** At 128 tokens every unit was within a factor of two
+of every other and the numbers were dominated by fixed cost; at 4,096 the GPU path is **2.9x the CPU** and
+**3.8x the ANE-eligible path**. **`D300` was right that the earlier probes were measuring the wrong regime** -
+they were not merely imprecise, they were uninformative.
+
+**2. `CPU_AND_GPU` at 1,487 GFLOP/s is a real positive result**, and it is the first useful throughput figure this
+exercise has produced. The Core ML GPU path is fast at this shape; that is worth knowing independently of the ANE.
+
+**3. And `ALL` - the unit that is *allowed* to use the Neural Engine - is the slowest of the three.** If the ANE
+were contributing usefully, `ALL` would be at least as fast as `CPU_AND_GPU`, because it includes it. **It is 3.8x
+slower.** So at the correct operating point, on this shape, **the ANE still shows no benefit and the evidence is
+now stronger rather than weaker**: not "the shape was wrong", but "the shape is right and the ANE-eligible path is
+the worst option available".
+
+**What that most likely means, and it is a reading of the sister project rather than a measurement.** Its README
+says what the ANE moves: **"the full-attention prefill block"** - attention, not a projection. **A 1x1 conv is a
+linear projection; attention is QK^T, softmax and PV, at 4,096 x 4,096 with a head dimension of 128.** That is a
+different shape family, and it is the one the ANE is reported to help with. **So the honest conclusion is not that
+the ANE is useless, it is that four probes of a projection have told us nothing about attention** - and the next
+measurement, if it is made, must be attention-shaped at a full chunk.
+
+**What is established at the end of this round.** The Core ML toolchain works, converts this model's shapes, and
+runs; the GPU path through it reaches **1,487 GFLOP/s at a 4,096-token chunk**; a projection shows **no** ANE
+benefit at any size tried, from 128 to 4,096; and **the shape the ANE is actually used for has not been probed.**
+Section 8b of the design document continues to carry no measured ANE support, which remains correct.
