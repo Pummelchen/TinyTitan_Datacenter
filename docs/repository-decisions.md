@@ -8185,3 +8185,48 @@ overlapped**; what the layer spends its time on is the **wait, 1332 us x 40 = 53
 writing down: **a sum that fits is not a sequence.** `io_us + wait_us = body_us` was true and was read as "the IO
 happens, then the wait happens" - when the engine was saying, in a counter it was already keeping,
 that they overlap. **The measurement was in the binary the whole time; the trace simply did not print it.**
+
+## D235 — The ceiling is ~1.14x, and D234 explains why: sharding divides the read, and the read is already hidden
+
+`D234` established that `exposed_io_us` is zero on every layer - the expert read is already overlapped and therefore
+contributes **nothing to the critical path at any node count**. Following that through settles the goal's question,
+because sharding is a change that divides the read.
+
+`D222` measured the GPU at **62.0 ms per token, 45% occupied**, and `D221` split it **56.5% replicated** (attention,
+shared expert, router) against the rest (routed MoE, head). Since the read is hidden, the step divides only where
+the **GPU** divides:
+
+    step 137.0 ms    GPU 62.0 ms
+      replicated GPU (no divide)   35.0 ms
+      divisible GPU                27.0 ms
+
+    1 node    137.0 ms    7.30 tok/s   1.00x
+    2 nodes   126.7 ms    7.89 tok/s   1.08x
+    4 nodes   120.0 ms    8.34 tok/s   1.14x
+
+**The original ~1.0-1.1x ceiling was right**, and it is right for a reason this session can now state instead of
+defending: **expert sharding divides the expert read, the expert read is already hidden behind the GPU, and dividing
+a hidden cost recovers nothing.** `D183` and `D188` reached ~1.0-1.1x from an exchange cost that was 5.4x too high
+(`D208`) - so their arithmetic was wrong - and landed on the right answer anyway, because they subtracted the cost
+of moving data that was never on the critical path in the first place.
+
+**And attention sharding does not rescue it.** Moving the 22.5 ms of `attn_norm_qkv` from replicated to divisible
+changes the split to roughly 18.1 ms replicated against 43.9 ms divisible, and the four-node step becomes
+
+    137.0 - 43.9 + 43.9/4 + 3.2 (expert exchange) + 6.3 (two all-reduces a layer)  =  113.6 ms  ->  8.80 tok/s
+
+**1.21x.** The target needs a 47.6 ms step and this design's floor is the **35.0 ms of replicated GPU plus the
+~75 ms of non-GPU step that no node divides** - so **21 tok/s is not reachable by distributing this engine**, on
+either the expert plan alone or with attention sharded as well.
+
+**What that means for the goal, stated plainly.** The objective asked for 3x across four nodes, and asked that the
+earlier ~1.0-1.1x ceiling be **tested rather than defended**. It has been tested: the exchange was measured on the
+switch, the read was measured with the engine's own exposed-IO counter, the GPU was split by kernel role, and the
+answer that comes back is **1.14x, or 1.21x with a second kind of sharding built that has never been built**. Six
+independent measurements now agree, and **three of them initially said otherwise** - `D217`, `D219` and `D228` all
+projected 15-20 tok/s before the read turned out to be hidden.
+
+**The version of this conclusion that this session can defend:** reachable speedup is bounded by the fraction of the
+step that divides, that fraction is `divisible GPU / step`, and on this engine it is **20%**. Everything else -
+dense attention, the shared expert, the router, the token loop - is work every node performs in full, and no plan
+that only partitions experts can touch it.
