@@ -289,6 +289,13 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     /// request made every alternation rebuild the whole set and produced **2.47 s/step against 0.92**, with the
     /// damage appearing in `mix.gather`, a phase the change never named.
     public var remotePartialsBuffer: MTLBuffer?
+
+    /// Serve-side scratch, see `init`. fp16 activation [D], fp16 acts [FmoE], float y/residual [D], float weight [1].
+    var remoteActivation: MTLBuffer!
+    var remoteActs: MTLBuffer!
+    var remoteY: MTLBuffer!
+    var remoteResidual: MTLBuffer!
+    var remoteWeight: MTLBuffer!
     /// Width-2 MTP verify scratch (B2 pair schedule): per-row activation and
     /// output buffers plus two persistent routed argument buffers, created on
     /// first verify. Per-row buffers are deliberately *separate allocations*,
@@ -787,6 +794,18 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         // failure; the footprint is negligible beside the weights and the single-node path never reads it.
         self.remotePartialsBuffer = context.device.makeBuffer(
             length: D * 8 * MemoryLayout<Float>.stride, options: .storageModeShared)
+        // Serve-side scratch for peer requests. Created here because `cfg` and `context` are init-locals -
+        // FmoE is cfg.moeIntermediateSize and the device is context.device, neither reachable from a method.
+        // Persistent rather than per request: 40 requests a token would be D114's failure.
+        self.remoteActivation = try buf(D, label: "shard.activation")
+        self.remoteActs = try buf(cfg.moeIntermediateSize, label: "shard.acts")
+        self.remoteY = context.device.makeBuffer(length: D * MemoryLayout<Float>.stride, options: .storageModeShared)!
+        self.remoteResidual = context.device.makeBuffer(length: D * MemoryLayout<Float>.stride, options: .storageModeShared)!
+        self.remoteWeight = context.device.makeBuffer(length: MemoryLayout<Float>.stride, options: .storageModeShared)!
+        // The weight is 1.0 and the residual is zero because the REQUESTER owns the router's decision and applies
+        // the weight (D168). A peer that applied it too would be counted twice, silently.
+        self.remoteWeight.contents().bindMemory(to: Float.self, capacity: 1)[0] = 1.0
+        memset(self.remoteResidual.contents(), 0, D * MemoryLayout<Float>.stride)
         self.moeHitActiveSlots = try buf(cfg.topKExperts, MemoryLayout<UInt32>.size, label: "decode.moeHitActiveSlots")
         self.moeMissActiveSlots = try buf(cfg.topKExperts, MemoryLayout<UInt32>.size, label: "decode.moeMissActiveSlots")
         self.residencyHitCount = try buf(1, MemoryLayout<UInt32>.size,
