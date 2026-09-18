@@ -9672,3 +9672,35 @@ number honest about the design rather than about the dispatch pattern.
 
 **Recorded rather than built** because the change spans both the scratch sizing and the loop, and a build that fails
 there should not be attempted without room to verify it.
+
+## D276 — The serving batch is a loop restructure: `actsOffset` already exists, and `y` needs one buffer per expert
+
+`D275` located the batch in the server's per-expert commit and await. Checking what the encodes accept settles
+whether it is reachable without touching a kernel, and the answer is yes:
+
+    func encodeRoutedPersistentPhase2Reduce(... acts: MTLBuffer, actsOffset: Int = 0, ... y: MTLBuffer, ...)
+
+**`acts` already takes an offset**, so several experts' intermediate activations can live in one buffer at different
+regions - which is what a single command buffer needs. **The kernels are not in the way.**
+
+**`y` is the one thing that is.** Each dispatch writes `y[d]` for `d` in `0..<D` at the buffer's start, so N
+dispatches into one `y` leave only the last expert's answer. Two ways out, and the second is smaller:
+
+  * give `y` an offset the way `acts` has one - a kernel signature change;
+  * **give each expert its own `y`** - N one-slot buffers, each bound to its own dispatch, which needs no kernel
+    change at all and is the arithmetic the readback already does one expert at a time.
+
+**So the change is**: `remoteActs` sized for the request's expert count, `remoteY` an array of one-slot buffers, the
+loop building every argument buffer and encoding every pair **without committing**, one `cb.commit()` and one
+`await cb.completed()` after the loop, then the existing readback. **No frame change, no plan change, no kernel
+change, and the one-expert `MoE` from `D273` stays.**
+
+**The argument buffers must outlive the commit**, which they do not today - they are locals built and dropped inside
+the loop. That is the one lifetime constraint, and it is the same class as `D265`'s first candidate: a Metal buffer
+released before the GPU is done with it. **It is worth stating because it is the failure this change would produce
+if it were done carelessly, and it would present as wrong values rather than as an error** - exactly the shape of
+`D269` and `D260`.
+
+**And the ceiling on it is `D272`'s, unchanged**: making the exchange free leaves 122.5 ms of a 137.0 ms step, or
+8.2 tok/s, against the 47.6 the target needs. **This change is worth making to measure the design honestly - a 0.85x
+distribution becoming a ~1.0x one - and it is not a route to 21.**
