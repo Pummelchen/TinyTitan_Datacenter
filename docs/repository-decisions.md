@@ -5926,3 +5926,85 @@ this cost one unit test rather than a four-node run: `residentBytes(count: 64, l
 `4_529_848_320`, so the 40x error cannot be reintroduced quietly, and the same test asserts that replication plus
 `D178`'s measured cache exceeds 7 GB. A number that had been carried in prose for many rounds became falsifiable
 the moment it became a function.
+
+## D180 — The peers' partials have to reach the ordered sum in their own slot positions
+
+The join between the exchange and the arithmetic, and the one place a plausible wiring is wrong.
+
+`moe_phase2_down_reduce_k8` computes `partial[sg] = routing_w[sg] * value` and then `acc = residual + partial[0]
++ … + partial[7]`, in that order, fp32. A sharded node owns some of the eight slots and its peers own the rest.
+
+**The host cannot form the sum.** Reducing each node's own slots and adding the node-level results associates
+the additions differently — `(residual + p0 + p4) + (p1 + p2 + p3 + p5 + p6 + p7)` against
+`residual + p0 + p1 + … + p7` — and a different association is a different fp32 number. `ShardReduce`'s tests
+demonstrate the sensitivity directly: `1e8 + 1.0 - 1e8` is `0.0` while `1e8 - 1e8 + 1.0` is `1.0`. So the peer's
+partials must be **in** the sum, in slot, and the kernel has to see them.
+
+**The change is one buffer and one branch.** `device const float* remote [[buffer(9)]]`, laid out `[d][8]` fp32,
+zero where a peer owns nothing; the per-slot partial becomes
+
+```metal
+float p = float(routing_w[sg_idx]) * value;
+if (remote != nullptr) { p += remote[d * 8 + sg_idx]; }
+partial[sg_idx] = p;
+```
+
+added **before** the ordered sum below and not after it. On the Swift side `encodeRoutedPersistentPhase2Reduce`
+gains `remotePartials: MTLBuffer? = nil` and sets index 9 only when non-nil, so it is left **unbound** rather
+than bound to a zero buffer: an unbound device pointer is null in Metal, which is what the kernel tests, and the
+single-node path then takes no allocation and does not execute the add at all. `D181` verifies that the
+single-node tokens are unchanged.
+
+**What a peer sends is `value`, not `routing_w * value`.** The routing weights are the same on every node
+because the router ran identically, so sending the product would send numbers the receiver can already derive,
+and risks the two disagreeing if the gate's rounding ever differed. Computing the product at the node that owns
+the expert keeps `routing_w * value` in exactly one place, and it is the last operation before the sum.
+
+## D181 — The 7 tok/s target holds on a quiet node, and the kernel change is bit-identical on the single-node path
+
+**Two results, and the second is what promotes the first from a bound to a level.**
+
+### The kernel change is safe
+
+`D180` added `remote` to `moe_phase2_down_reduce_k8` — the peers' partials, added into `partial[sg]` before the
+ordered sum, `NULL` on every single-node run. That is a change to a reduction kernel, so the thing to establish
+is that it changes **nothing** when unsharded:
+
+| | tokens | tok/s |
+| --- | --- | --- |
+| pre-change | `Paris, a city renowned for its rich history, culture, and iconic landmarks.` | 7.264 |
+| post-change, 3 runs | **identical** | 7.148, 7.292, 7.305 |
+
+**The tokens are the same and the speed is the same.** The guard is `remote != nullptr`, so on the single-node
+path the branch is not taken at all — the answer is not "unchanged on average", it is the same computation. A
+kernel edit that moved one token would have shown up here rather than inside a four-node run, where the cause
+would have been ambiguous between the exchange, the plan, and the kernel.
+
+### And the node was quiet
+
+```
+run 1  load 0.95  7.148
+run 2  load 1.03  7.292
+run 3  load 1.33  7.305   ->  median 7.292
+```
+
+**The quietest node3 has been all session.** `D174` measured it at 2.49-2.98; `D177` recorded that every node on
+this farm is busy as a standing condition, and `D178`'s 7.30 was therefore a **lower bound**. At load ~1 the
+machine is essentially its own, and the figure is **7.292 against the reference's 7.075**.
+
+**So `D176`'s 6.580 is now fully explained**: it was the cold-page-cache reading of the same configuration, taken
+immediately after the receipt re-issue. And `D177`'s caution was correct to be cautious — but the conclusion it
+deferred is now available: **the single-node target is met as a level, not merely as a floor.**
+
+### What is still not done
+
+The four-node engine does not run. The pieces are built and tested — the shard plan with ownership and
+replication, the exchange frames, the peer channel, the LAN transport, the exact zero-padded fp32 reduce, the
+participant, and now the kernel input — and the **call site** is missing: `encodeDecodeRoutedMoE`
+(`RealForwardRunner+Decode.swift:1773`) needs to read `moeActs` back, exchange with the peers, build the
+`[d][8]` remote buffer, and pass it. That round trip is synchronous and inside the decode loop, which is exactly
+why the measured exchange costs 17.3 ms/step rather than being free.
+
+`D179` also removed the assumption the earlier throughput projection rested on: replication was sized 40x too
+small, so "R = 64 -> 21.5 tok/s" is not reachable by that mechanism on 8 GB, and the four-node target needs
+measuring rather than asserting.
