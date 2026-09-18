@@ -274,9 +274,35 @@ public func run(args: Args,
         // which is synchronous and shares this node's expert cache because it uses the same entry points the
         // request path does.
         if let servePort = args.shardServePort {
+            // THE 1.5 ms PER REQUEST, MEASURED RATHER THAN GUESSED. D277 showed the serving penalty is not the
+            // slot width, the dispatch count, the expert read or the cache - four candidates eliminated - and put
+            // the remainder at 1.5 ms per request against a 0.079 ms wire. This times the compute alone, so what
+            // is left is attributable: if this is milliseconds, the cost is in remoteExpertValues; if it is tens of
+            // microseconds, the cost is the frame, the parse and the readback around it.
+            //
+            // Logged every 64 requests so a run reports it without needing a place to print at the end.
+            // unchecked-invariant: only the server's single accept loop touches this, one request at a time, so
+            // the two counters are never written concurrently - the `@unchecked` is because the closure that reads
+            // them is `@Sendable`, not because the access is concurrent.
+            final class ServeTally: @unchecked Sendable {
+                var nanos: UInt64 = 0
+                var count: Int = 0
+            }
+            let tally = ServeTally()
             let server = ShardExchangeServer(port: UInt16(servePort)) { layer, experts, activation in
-                try await runner.remoteExpertValues(layer: layer, experts: experts,
-                                                    activation: activation, dims: activation.count)
+                let t0 = DispatchTime.now().uptimeNanoseconds
+                let values = try await runner.remoteExpertValues(layer: layer, experts: experts,
+                                                                 activation: activation,
+                                                                 dims: activation.count)
+                tally.nanos &+= DispatchTime.now().uptimeNanoseconds - t0
+                tally.count += 1
+                if tally.count % 64 == 0 {
+                    let meanMicros = Double(tally.nanos) / Double(tally.count) / 1000.0
+                    FileHandle.standardError.write(Data(String(
+                        format: "[shard] served %d requests, %.0f us each in compute\n",
+                        tally.count, meanMicros).utf8))
+                }
+                return values
             }
             // Task rather than DispatchQueue.global(): the loop awaits instead of blocking and holds no thread.
             // That reverses D197's reason for moving the accept off the pool - a *blocking* accept had to leave it,
