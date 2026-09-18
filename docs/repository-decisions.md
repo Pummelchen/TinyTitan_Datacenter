@@ -9349,3 +9349,37 @@ which it does - the only unwritten memory is beyond what `f` addresses. **Unless
 **So the arithmetic is consistent and the NaN must come from the data.** The next step is the comparison `D265`
 named - call `remoteExpertValues` for one expert on one node and check it against the same expert computed locally -
 and it is now the only thing left that can distinguish "the wire is wrong" from "the arithmetic is wrong".
+
+## D267 — The phase-1 kernel can return without writing `acts`, and `acts` is never zeroed
+
+`D266` left the NaN on the data rather than the layout, and chasing the one buffer this method passes that the decode
+path does not turned up a mechanism worth recording even though the obvious candidate is ruled out.
+
+`encodeRoutedPersistentPhase1U16Load` takes `ioStatus: MTLBuffer? = nil`, and this method passes nothing. **That is
+not the bug**: the Swift encode binds `encoder.setBuffer(ioStatus ?? alwaysReadyIOStatus, ...)`, so `nil` becomes a
+buffer that is always ready. But the kernel reads it like this:
+
+    static inline bool moe_io_ready(device const uint* io_status) {
+        ... || io_status[0] != 2u;
+    }
+    if (!moe_io_ready(io_status)) return;
+
+**The kernel can return without executing a single write.** When it does, `acts` keeps whatever it held, and in this
+method that is **uninitialised memory**: `remoteActs` is allocated in `init` and - unlike `remoteResidual`, which is
+explicitly `memset` - **is never zeroed**. `remoteY` is not zeroed either.
+
+**So there are two ways for a peer's answer to be a NaN that have nothing to do with the exchange being wired wrong:**
+
+  1. the early return above, if `moe_io_ready` is ever false on this path - and the default `alwaysReadyIOStatus`
+     exists precisely because the decode path always supplies a real status buffer, so a path that does not is
+     **untested territory**;
+  2. any slot the kernels do not write, which is zeroed in `remoteResidual` and not in `remoteActs` or `remoteY`.
+
+**This is a one-line defensive fix - zero the three scratch buffers in `init` - and it is worth making whatever the
+diagnosis turns out to be**, because a scratch buffer read before it is written is a defect whether or not it is the
+one causing this NaN. It also has a diagnostic value: if zeroing turns the NaN into a **finite wrong number**, then
+the kernel is not writing and the cause is the early return; if the NaN survives, the values are being written and
+are wrong, which points at the one-hot or the slot mapping.
+
+**That is a better next experiment than the equality check `D265` named**, because it distinguishes the two families
+of cause with a change that is correct on its own merits. The comparison remains the decisive one; this one is free.
