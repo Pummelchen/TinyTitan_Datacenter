@@ -307,6 +307,11 @@ public func run(args: Args,
             // Task rather than DispatchQueue.global(): the loop awaits instead of blocking and holds no thread.
             // That reverses D197's reason for moving the accept off the pool - a *blocking* accept had to leave it,
             // an awaiting one belongs back on it.
+            // LOGGED BEFORE THE BRANCH, so every path reports that it is up. This write used to follow the Task
+            // block, which the serve-only path returns before - so a serve-only node was silent at the one moment
+            // its state mattered, and D281 could not tell a slow install from a bind that never happened.
+            FileHandle.standardError.write(Data((
+                "[shard] serving peer expert requests on port \(servePort).\n").utf8))
             if args.shardServeOnly {
                 // SERVE ON THE MAIN PATH. Awaiting here makes the process live exactly as long as the server does,
                 // which is what makes an idle serving node measurable (D279). The accept loop awaits rather than
@@ -319,8 +324,6 @@ public func run(args: Args,
                     FileHandle.standardError.write(Data("[shard] serve stopped: \(error)\n".utf8))
                 }
             }
-            FileHandle.standardError.write(Data((
-                "[shard] serving peer expert requests on port \(servePort).\n").utf8))
         }
 
         // The requesting half of the exchange: with a plan, a node and peers, ask the peers that own the experts
