@@ -8270,3 +8270,47 @@ supports and `D234` denied.
 the prefetch invariance and the non-stationary step all stand. What it changes is that **the session does not have a
 defensible answer to its own objective**, and it will not manufacture one by picking whichever of two contradictory
 measurements is more convenient.
+
+## D237 — Resolved: `exposed_io_us` reads zero because the overlap clock returns nil, not because the read is hidden
+
+`D236` left the session with two measurements that could not both be descriptions of the same thing: the cache sweep
+saying the read is on the critical path (156 MiB fewer per token, 46 ms shorter step) and the engine's
+`exposed_io_us` counter saying it is entirely hidden. **The definition of the counter settles it, and the counter is
+the one that is wrong.**
+
+    func latest(expected: Int) -> UInt64? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard completionCount == expected else { return nil }      // <- here
+        return latestCompletion
+    }
+
+**`latest` returns `nil` unless the completion count is EXACTLY `expected`.** And every caller is written as
+`if let latest = completionClock?.latest(expected: ...)`, so a `nil` **skips the increment entirely** rather than
+contributing a zero. `expected` is `phase1HitCB == nil ? 1 : 2` at one site and `pending.expectedOverlapCompletions`
+at the other - a predicted count, not an observed one.
+
+**So `exposed_io_us = 0` means "the clock had not seen exactly the predicted number of completions", which is a
+statement about the prediction and not about the IO.** My own `exposed_io_us` field inherits that: I added it inside
+the same `if let`, so it reports zero whenever the guard fails, exactly as `totalExposedIoNanos` does.
+
+**That resolves `D236` in favour of the sweep, and it retires `D234` for the second and final time.** The read is
+exposed - four points across a 5x range say so - and the counter that appeared to deny it was returning "I do not
+know" in the form of a zero. **A guard that returns nil and a call site that skips on nil produce a silent zero, and
+a silent zero is indistinguishable from a measured one.**
+
+**The lesson is `D233`'s rule completed.** `D233` said: before concluding from a counter, find out what it counts.
+This adds the other half: **find out what it does when it cannot count.** Every counter has a value it emits when it
+has nothing to say, and if that value is the same as a legitimate reading - here, 0 - then the counter cannot be read
+without reading its guard first. **Three records (`D234`, `D235`, `D236`) were spent on this one `guard`.**
+
+**What it restores.** `D226` and `D227`'s reading stands: the layer body is **2616 us of which io is ~1078 us and
+wait ~1332 us**, and the read is on the critical path. `D228`'s calibrated projection is back in play -
+**14.33 tok/s at four nodes without attention sharding, 16.35 with** - and the four-node question is the one `D228`
+posed rather than the one `D235` answered.
+
+**And a concrete fix, so the counter cannot lie again.** `latest` should distinguish "not yet" from "wrong count" -
+returning an enum, or having the call site count its own skips - so that `totalExposedIoNanos` is either a measured
+number or an explicit unknown. **It is not changed here**, because a metric's semantics are the server's contract and
+`ServerInference.swift` publishes it; the finding is recorded instead, and `exposed_io_us` should be read as
+"exposed, or the clock was not ready" until it is.
