@@ -5818,3 +5818,40 @@ applied one round later.
 recorded beside the number, the reference's own install, the engine and the slot count named, and a median over
 repeats rather than a single sample. It is **93% of the 7 tok/s target** and the remaining 7% is the next
 question, not this one.
+
+## D177 — Every node on this farm is busy, so every number here is a lower bound
+
+The operator's correction, and it applies to `D176` one round after it was written: **all the nodes are busy.**
+Not occasionally — as a standing condition. The readings taken across the farm say the same thing and I had
+them in front of me:
+
+| node | CPU load (8 cores) | what it is |
+| --- | --- | --- |
+| node1 | **8.71** | saturated, 1.6 GB of swap in use |
+| node2 | 1.32 | the quietest seen, still another user's work |
+| node3 | 2.49-2.98 | where `D176`'s 6.58 tok/s was measured |
+| node4 | 4.21 | plus this session's own copy at 97 MB/s |
+
+**So `D176`'s 6.580 tok/s median is a lower bound, not a level.** It was taken on node3 at load 2.49-2.98 on
+eight cores — a third of the machine already committed to something else — and the reference's 7.075 tok/s is
+not known to have been taken under that handicap. The gap between 6.580 and 7.075 is **7%**, and a third of a
+machine is far more than 7% of a measurement. The honest statement is therefore:
+
+> **6.580 tok/s is what this engine does on a node that is already one-third busy, and 7.075 is the reference
+> figure. The two are not yet a like-for-like comparison, and nothing here says the engine is 7% short.**
+
+This repository already says the shape of it — `AGENTS.md` records that "the farm's nodes are shared with other
+work, so cluster runs are functional rather than benchmarked until the timing phase", and `D38` put a
+`--quiet-load` rule in the M3 gate for exactly this reason. What was missing was applying it to my own
+single-node readings, which `D174` did and `D176` then half-honoured: it recorded the load beside each run and
+still compared the median to a reference as though the two were measured alike.
+
+**What follows, and it is a rule about reporting rather than about code:**
+
+1. **A number from this farm is quoted with its load, and as a lower bound**, unless the node is quiet — and no
+   node here has been observed quiet. node2's 1.32 is the closest, and it is still another user's work.
+2. **A comparison to a reference figure requires the same condition**, or it is stated as a bound. `D176`'s
+   "93% of it" reads as a shortfall; what was measured is a floor.
+3. **The measurement is not wrong and does not need re-taking to be useful.** A lower bound of 6.580 against a
+   target of 7 puts the engine at no worse than 7% short on a busy node — which is a perfectly good thing to
+   know, and a different claim from "it is 6.58".
