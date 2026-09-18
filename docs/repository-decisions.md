@@ -4196,3 +4196,44 @@ is the one the evidence supports.
 the read that was supposed to dominate turns out not to. The next measurement should be a sub-mark inside
 `preloadPacked` and `SlabCache` — the trace noted there is none — so the read, the lock, the eviction scan and
 the fan-out can be told apart instead of inferred from a single phase mark.
+
+## D134 — The phase split three ways, and the exchange rate this node charges for resident memory
+
+`mix.gather` was one mark covering three different things: the pairs dictionary, the concurrent read fan-out,
+and the gather loop. `D128`'s trace could not separate them and had to infer which dominated — an inference it
+then had to retract. A mark either side of `provider.preload` is free, and the answer is unambiguous:
+
+| phase | ms/step |
+| --- | --- |
+| **`mix.preload`** (the read fan-out) | **300** |
+| `mix.prepare` (pairs dictionary) | ~0 |
+| `mix.gather` (the gather loop) | ~0 |
+| `attn.core` | 134 |
+| `mix.read` | 88 |
+| `load` | 77 |
+| `head` | 49 |
+| `mix.down` | 44 |
+
+Three runs, digest `ed5e0328c087e4db…`, median 0.718 s/step. So **the phase was entirely the read**: the
+pairs dictionary and the gather loop together are below a millisecond. The "fixed per-slab cost" reading
+(`D125`) is now dead beyond argument, and `D128`'s counter-based inference stands as the explanation.
+
+**And putting `D133` next to this gives the number that matters for everything that follows.** The read is
+**300 of 718 ms — 42%**. `D133` showed that at a 1024 MiB bank the bytes read halve (727 -> 365 MB/step) and the
+step does *not* improve (0.645 against the default's 0.639-0.648). Halving a 300 ms phase should have saved
+~150 ms; the step saved nothing; so the extra gigabyte of resident memory cost ~150 ms. **This node charges
+roughly 150 ms per gigabyte of resident memory**, and it is the *anonymous-ness* that costs it, not `mlock` —
+`D133` ran that arm unwired.
+
+That exchange rate is the useful result, because it makes future trades checkable rather than arguable:
+
+- **A change that enlarges a cache must beat 150 ms/GB to be worth doing.** A bank that halves the reads
+  saves ~150 ms and costs ~150 ms, which is why every sweep from `D106` to `D133` has landed flat or worse.
+  The line of work is closed by arithmetic, not by another measurement.
+- **A change that frees memory is not subject to the exchange.** The int4 head removes ~676 MB of *wired,
+  anonymous* payload without adding a bank anywhere, so it is worth roughly 100 ms of headroom on this scale
+  **plus** its own arithmetic — the head's weight traffic falls from 1,017 MB to 294 MB a step, against a
+  `head` phase currently at 49 ms.
+- **And the remaining 418 ms is where the target now has to come from**: `attn.core` 134, `mix.read` 88,
+  `load` 77, `head` 49, `mix.down` 44, against 143 ms total. The read was never going to be the whole story,
+  and this is the first breakdown that says so from measurement rather than from a model of the machine.

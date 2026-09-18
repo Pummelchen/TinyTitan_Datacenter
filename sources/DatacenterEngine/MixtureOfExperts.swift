@@ -156,7 +156,13 @@ public enum MixtureOfExperts {
         // Everything this layer will ask for is known here, so it is the one place a preload can be useful
         // (`DC-118`). The provider decides whether it has anywhere to put the bytes.
         let chosen = pairs.keys.sorted().filter { provider.serves($0) }
+        // **The phase is split three ways** (`D134`). `mix.gather` was a single mark covering the pairs
+        // dictionary, the concurrent read fan-out and the gather loop, and the trace that could not separate
+        // them had to infer which one dominated — an inference it then had to retract. A mark either side of
+        // `preload` costs nothing and makes the read its own number.
+        profiler?.mark("mix.prepare")
         provider.preload(experts: chosen, shape: shape)
+        profiler?.mark("mix.preload")
 
         // **A layer's experts are independent, so they are asked for in one dispatch** (`D114`). Each of the
         // 640 fused calls a decode step makes builds a command buffer, commits it and blocks on it, and at
