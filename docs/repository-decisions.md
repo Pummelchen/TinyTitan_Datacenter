@@ -4508,3 +4508,30 @@ The tests earn their keep by covering the three things a LAN transport must get 
 path: a message round-trips; a **partial** frame reassembles (a single `read` may return short, so a test that
 reads once tests the loopback's buffering rather than the transport); and a peer that vanishes **mid-frame**
 ends the stream instead of hanging or raising `SIGPIPE` — which is why the transport sets `SO_NOSIGPIPE`.
+
+## D144 — The work directory is *not* bounded, and `D141` was wrong in the same way `D139` was
+
+`D141` corrected an earlier prediction ("the repack will fail on space") with a third data point — work dir
+8.5, 8.4, then **5.5 GB** — and concluded the scratch area was bounded, calling the earlier reading an
+over-read of a two-point trajectory. **It is growing, and the correction was itself premature:**
+
+| shard | work dir | free |
+| --- | --- | --- |
+| 2/26 | 8.5 GB | 19 GB |
+| 4/26 | 5.5 GB | 21 GB |
+| 13/26 | **9.4 GB** | **11 GB** |
+
+The 5.5 GB point was the low of a sawtooth, not a ceiling — the converter writes a shard's worth of
+intermediates and releases them as it goes, so the *shape* of the series is a sawtooth around a rising mean,
+and three points taken at arbitrary phases cannot distinguish that from a bound. Free space is now falling
+roughly a gigabyte per observation, against a watchdog floor of 5 GB.
+
+**This is the third time in this session that a trajectory has been read from too few points**, and the failure
+is identical each time: `D126`'s "7,040 lookups a step" was a run total, `D133`'s 512 MiB "win" reversed under
+alternated pairs, and now this. The rule the record already states — alternate, quote a median, do not read a
+trend from two or three samples — applies to *any* series, not only to timings, and I applied it to benchmarks
+while continuing to ignore it for disk and for counters.
+
+What is established: the converter is at 13 of 26 shards with 8.1 GB of output written and 11 GB free, and it
+will most likely be stopped by the disk watchdog before it finishes. That is a **prediction from a rising
+series**, not a measurement, and it is labelled as one.
