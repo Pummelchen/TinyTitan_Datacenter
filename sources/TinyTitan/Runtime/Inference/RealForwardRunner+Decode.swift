@@ -1790,6 +1790,25 @@ extension RealForwardRunner {
         // local experts on. NOT `moeActs` (post-gate_up) and NOT `h1Buf` (post-shared-expert) - either would give a
         // peer a different input from the one the node's own experts saw, which is a wrong number rather than an
         // error, because the arithmetic stays exact about the wrong thing (`D247`, `D250`).
+        // ROUTING TRACE. The eight expert ids this layer selected, one line per layer per token: 40 bytes a
+        // layer, 640 B a token, 82 KB per 128-token prompt. It sits before the exchange guard below so it fires
+        // whenever routing happens, not only when peers are being asked - which is what makes it usable on a
+        // single node, where the analysis has to start (D286 test 1, D288).
+        if let tracePath = ProcessInfo.processInfo.environment["TINYTITAN_ROUTING_TRACE"] {
+            let count = Int(topK)
+            let ids = outIndices.contents().bindMemory(to: UInt32.self, capacity: count)
+            var line = "\(L)"
+            for slot in 0..<count { line += " \(ids[slot])" }
+            line += "\n"
+            if let handle = FileHandle(forWritingAtPath: tracePath) {
+                handle.seekToEndOfFile()
+                handle.write(Data(line.utf8))
+                try? handle.close()
+            } else {
+                try? line.write(toFile: tracePath, atomically: true, encoding: .utf8)
+            }
+        }
+
         var remotePartials: MTLBuffer? = nil
         if let provider = remotePartialsProvider {
             let dims = Int(D)

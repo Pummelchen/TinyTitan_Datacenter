@@ -273,6 +273,10 @@ public func run(args: Args,
         // cooperative-pool task does to the task that has to connect to it. The Compute is `remoteExpertValues`,
         // which is synchronous and shares this node's expert cache because it uses the same entry points the
         // request path does.
+        // PROBE (D284): one line immediately before the serve block, to separate "the block was never
+        // reached" from "it was reached silently". Removed once the question is settled.
+        FileHandle.standardError.write(Data("[shard] probe: reached the serve block, port \(String(describing: args.shardServePort)), only=\(args.shardServeOnly)\n".utf8))
+
         if let servePort = args.shardServePort {
             // THE 1.5 ms PER REQUEST, MEASURED RATHER THAN GUESSED. D277 showed the serving penalty is not the
             // slot width, the dispatch count, the expert read or the cache - four candidates eliminated - and put
