@@ -5750,3 +5750,30 @@ measuring the copy**, exactly as `D90`'s cluster runs measured the farm.
 that was simply wrong. 536 MB in 30 s is **17.9 MB/s**. The raw numbers were right and the rate derived from them
 was not, which is the failure this session has hit repeatedly — an instrument whose output is believable and
 wrong.
+
+## D175 — The verified install is on node4, and the completeness check earned its place
+
+The TinyTitan install built on macbook-ab — quantised 4-bit, repacked, `--verify-install`ed, every file
+SHA-256'd — is now **on node4 complete**: all 46 files the record lists, present at the recorded size,
+19 GB, with node4 at 11 GB free.
+
+**The check that found the last four files is the point.** After the dense weights landed and every
+transfer had exited, the install was still **missing four files**:
+
+    packed_experts/layout.json      22,493,846 B   the expert->offset table, without which nothing is readable
+    tokenizer/tokenizer.json        12,807,982 B
+    tokenizer/tokenizer_config.json      16,718 B
+    tokenizer/config.json                 3,091 B
+
+Two causes, both mine. The **eight parallel streams were built from `ls .../packed_experts/layer_*.bin`**,
+so they copied the forty layer files and never the `layout.json` beside them. And the **stream that held the
+tokenizer was the one my over-broad `pkill -f "model_weights.bin andreborchert"` killed** a round earlier —
+so the directory existed and was empty, which `ls` had been showing me for a hundred rounds as a bare name in
+a list.
+
+**What this changes.** `--verify-install` on macbook-ab proved the install it *wrote* is internally consistent.
+It says nothing about what arrives here, and a transfer is exactly where files go missing without any byte
+being corrupted. The instrument that catches it is **the record compared against the filesystem** — 46 listed,
+0 missing, 0 size mismatch — and it is a different question from a checksum: a checksum over the files present
+cannot notice that four are absent. The earlier "all 40 layers complete" line was true and I read it as "the
+install is here", which it was not.
