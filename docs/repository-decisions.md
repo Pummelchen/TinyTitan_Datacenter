@@ -7203,3 +7203,34 @@ rather than work.
 and on four, so cutting it raises the single-node number by the same factor - which is the only route in this
 session's measurements that improves the four-node case *and* the one-node case, and the only one that needs no
 distribution, no draft head, and no more memory.
+
+## D210 — The three decode expert execution modes are within noise of each other, and there is no host-parallelism knob
+
+`D209` moved the obstacle to the **41.3 ms of host CPU work** that does not divide, so the two things worth
+checking are whether the engine has a better decode execution path and whether the host work can be spread across
+cores. Both come back negative.
+
+**The execution paths.** `TINYTITAN_DECODE_EXPERT_EXECUTION` accepts `hit-fixup` (the default), `barrier` and
+`gpu-residency`. Node3, the reference's install, 40 slots, 32 tokens, three alternating pairs:
+
+| pair | load | hit-fixup | barrier | gpu-residency |
+| --- | --- | --- | --- | --- |
+| 1 | 1.20 | 6.879 | 7.097 | **7.264** |
+| 2 | 1.55 | **7.384** | 7.198 | 7.290 |
+| 3 | 1.62 | **7.357** | 7.229 | 7.381 |
+| median | | **7.357** | 7.198 | 7.290 |
+
+**All three within about 2%, and the signs disagree across pairs** - `gpu-residency` wins the first and loses the
+next two, which is what noise looks like at this spread (`D187`). The default is not beaten, and the knob is
+closed.
+
+**The host work cannot be spread.** The environment surface was enumerated and there is **no threading knob at
+all**: `TINYTITAN_KERNEL_SPLIT` is per-kernel GPU timing and not parallelism, and every other control affects IO,
+the cache, the prefetch ring or the kernels. The 41.3 ms is single-threaded by construction, at 31% of one core
+(`D191`), and no setting in the engine changes that.
+
+**This is the tenth lever closed by measurement in this goal**, and it leaves the target's obstacle stated exactly:
+**16.2 ms of host work available against 41.3 measured, with no configuration that moves it.** Reaching it needs
+either the host loop spread across cores - which `D94` did for this repository's *other* engine with
+`SHARD_DECODE_THREADS` and which was worth **1.74x** there - or its dispatch count reduced, which is `D114`'s
+shape and was worth **1.27x**. Both are code changes to the decode loop, and neither is available as a setting.
