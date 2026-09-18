@@ -460,3 +460,33 @@ so `ctx` is in scope on the runner and carries the queue.
 node's cache because `planRoutedExperts`/`routedExpertBuffers` are the same entry points the request path uses, it
 needs no change to `ShardExchangeServer`, and its one silent-failure mode - sending `w * value` when the requester
 also multiplies by `w` - is written down before the code.
+
+### The last real piece: phase 2 reduces, so a peer needs either a new kernel or N encodes
+
+The serve path's down projection was the one step written as "a down projection" without saying which. Checking it
+finds that **the existing one cannot do the job**:
+
+* `encodeRoutedPersistentPhase2Reduce` (`MoE.swift:555`) takes `routingWeights`, `residual` and writes a **single
+  `y:`** - it **reduces** across slots. That is the right shape for the node that owns the router's decision and the
+  wrong shape for a peer, which must return **one row per expert**;
+* a grep for a down-only or per-expert output encode finds **nothing**.
+
+**So the last piece is real work, not wiring.** Two ways, and they differ in kind:
+
+1. **A new down-only encode** - the same down projection with the weight and the reduce removed, writing
+   `[expert][d]`. It is a small kernel, it is the clean shape, and it means a new `.metal` source, a new PSO and its
+   pipeline state, which is why it is not written here.
+2. **N single-slot phase-2 encodes** with **unit routing weights** and a zero residual, one per requested expert, so
+   each call reduces a single slot and yields that expert's down output. No new kernel, but `experts.count` encodes
+   per request and `experts.count` readbacks - and at eight experts a layer, forty layers, that is 320 encodes and
+   320 readbacks per token **on the serving node**, which is very likely to dominate the exchange cost that `D208`
+   measured at 3.2 ms on raw frames and explicitly excludes this.
+
+**The choice is between a kernel and a lot of dispatches, and it should be made knowing the second's cost is
+measured nowhere.** `D114` is the precedent for what dispatch counts do to this engine - 640 to 80 was **1.27x** -
+and the second option adds 320.
+
+**This is the honest end of the specification.** The serve path is not one function on existing pieces; it is one
+function plus either a small kernel or a dispatch pattern whose cost is unknown. **Everything before it is built and
+verified** - the exchange on both sides, the requesting half wired and behaviourally verified, the queue and the
+synchronous fetch located - and this is what stands between that and a four-node number.
