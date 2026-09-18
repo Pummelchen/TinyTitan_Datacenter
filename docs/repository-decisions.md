@@ -3057,3 +3057,56 @@ rather than a caching one.
 One incidental fix in the same round: `ReadState.addUnpack` was written in `D94` and **nothing called it**, so the
 unpack counter was still an unguarded `+=` shared with the fan-out. It is routed through the guarded method now,
 and the cache's hit path uses it too.
+
+## D107 — The fused int4 matmul is 4.7x slower than the split, and that closes the CPU side
+
+`DC-120` was the last CPU-side lever standing: dequantise **inside** the matmul's inner loop so the fp32 slab never
+exists. The arithmetic looked good — `mix.read` writes **6.5 GB of `Float` per token** and the matmul reads it
+straight back — and `D106` had just shown that avoiding the *read* costs memory this node does not have, which left
+avoiding the *materialisation* as the only move that costs nothing.
+
+**It was built, and correctness was never the question.** `InstallFile.int4Matmul` was proved **bit-identical** to
+`dequantizeInt4` followed by `Ops.orderedMatmul` over a grid of every residue mod 4, `k = 1`, groups of 1, 4, 8 and
+64, output widths 1 to 8, **and the model's real shapes** (512×2048, 4096×2048). That is the only reason the speed
+result is worth anything: a fast wrong kernel would have been discarded for the wrong reason.
+
+**Measured**, release build, one 512×2048 slab, 20 iterations after warm-up:
+
+| path | unpack | matmul | total | ratio |
+| --- | --- | --- | --- | --- |
+| split (what the engine does) | 0.23 ms | 0.10 ms | **0.33 ms** | 1.00x |
+| fused (`int4Matmul`) | — | — | **1.55 ms** | **0.21x** |
+
+**4.7x slower**, and 0.14x in a debug build. The reason is structural rather than incidental: dequantising per
+element means per-element group-index arithmetic, a scale and zero load, and a signed-nibble extraction **inside**
+the accumulation loop — which destroys the vectorisation that `dequantizeInt4`'s eight-wide path and the matmul's
+four-wide path each enjoy on their own. Two tight loops beat one clever loop.
+
+**And the probe bounded the prize**, which matters more than the loss. A 512×2048 slab unpacks in **0.23 ms**, so
+the ~520 slabs a token asks for cost about **0.12 s per step — roughly 7%**. Even a fused kernel that had been
+*faster* had almost nothing to win on this workload. The engine's split of dequantise-then-multiply is not a
+compromise it settled for; it is the right shape for a CPU.
+
+**Reverted, not kept** — the code, the test and the probe — on the `DC-122` precedent that a measured failure is
+worth more on the record than in the tree. Nothing is left behind to rot.
+
+**What this closes, stated plainly.** With `D105` (the expert read is saturated at ~2 GB/s, so hiding it with a
+prefetch makes things worse), `D106` (a 4x denser packed cache is a *loss* because the memory costs more than the
+bytes save) and now this, **every CPU-side lever in this engine has been measured and closed**:
+
+| lever | verdict |
+| --- | --- |
+| thread the element-wise passes and the unpack (`D94`, `D99`) | kept, 0.230 → 0.443 tok/s |
+| fan the expert misses (`D101`) | kept, 0.443 → 0.55 |
+| thread the contract matmul on aligned chunks (`D104`) | kept, → ~0.55 |
+| the head's vocabulary blocks (`D102`) | kept |
+| predictive prefetch (`DC-121`/`D105`) | measured, loses, default off |
+| packed slab cache (`DC-126`/`D106`) | measured, loses, default off |
+| fused int4 matmul (`DC-120`/`D107`) | measured 4.7x slower, reverted |
+
+The engine stands at **~0.55 tok/s**, up from 0.230, with every step bit-identical. The remaining distance to the
+operator's 7 tok/s is **not** more of this work: the reference reaches 7.075 with a 3 GB cache on comparable
+hardware, and this node cannot hold that beside **fp32** weights — so what separates the two designs is the format
+the weights are held in and the device that consumes them. `DC-113` is therefore no longer a candidate but the
+route: packed int4 weights resident in GPU buffers, dequantised in the kernel, with the residency table and
+prefetch ring the reference uses.
