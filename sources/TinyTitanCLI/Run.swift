@@ -264,6 +264,29 @@ public func run(args: Args,
             maxContext: args.maxContext,
             runtimeConfiguration: runtime)
 
+        // START SERVING BEFORE CONNECTING. `connect()` below is synchronous and every peer must already be
+        // listening, so a server started after it would deadlock a whole farm against itself: no node serves until
+        // it has connected, and no node can connect until every peer serves. This is the same shape D197 records -
+        // an ordering that works for one node and hangs for four.
+        // The serving half: answer peers that ask this node for the experts it owns. Runs on a background queue
+        // because `serve` blocks, and `D197` is this repository's record of what a blocking accept inside a
+        // cooperative-pool task does to the task that has to connect to it. The Compute is `remoteExpertValues`,
+        // which is synchronous and shares this node's expert cache because it uses the same entry points the
+        // request path does.
+        if let servePort = args.shardServePort {
+            let server = ShardExchangeServer(port: UInt16(servePort)) { layer, experts, activation in
+                try runner.remoteExpertValues(layer: layer, experts: experts,
+                                              activation: activation, dims: activation.count)
+            }
+            DispatchQueue.global().async {
+                do { try server.serve(connections: Int.max) } catch {
+                    FileHandle.standardError.write(Data("[shard] serve stopped: \(error)\n".utf8))
+                }
+            }
+            FileHandle.standardError.write(Data((
+                "[shard] serving peer expert requests on port \(servePort).\n").utf8))
+        }
+
         // The requesting half of the exchange: with a plan, a node and peers, ask the peers that own the experts
         // this node does not and fold their contributions into the phase-2 reduce. Without all three the provider
         // stays nil and the engine is single-node, unchanged.
@@ -283,24 +306,6 @@ public func run(args: Args,
                 + "expert contributions are being exchanged.\n").utf8))
         }
 
-        // The serving half: answer peers that ask this node for the experts it owns. Runs on a background queue
-        // because `serve` blocks, and `D197` is this repository's record of what a blocking accept inside a
-        // cooperative-pool task does to the task that has to connect to it. The Compute is `remoteExpertValues`,
-        // which is synchronous and shares this node's expert cache because it uses the same entry points the
-        // request path does.
-        if let servePort = args.shardServePort {
-            let server = ShardExchangeServer(port: UInt16(servePort)) { layer, experts, activation in
-                try runner.remoteExpertValues(layer: layer, experts: experts,
-                                              activation: activation, dims: activation.count)
-            }
-            DispatchQueue.global().async {
-                do { try server.serve(connections: Int.max) } catch {
-                    FileHandle.standardError.write(Data("[shard] serve stopped: \(error)\n".utf8))
-                }
-            }
-            FileHandle.standardError.write(Data((
-                "[shard] serving peer expert requests on port \(servePort).\n").utf8))
-        }
         let scratch = try RawCompletionScratch(context: context,
                                                vocab: model.config.vocabSize,
                                                logitSoftcap: Float(model.config.finalLogitSoftcap))
