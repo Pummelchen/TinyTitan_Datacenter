@@ -6059,3 +6059,48 @@ tok/s", is a target that the measured phase budget does not support for this eng
 tokens, so it is indicative rather than a decode-only profile; a decode-only breakdown would tighten the 0.85
 factor. It would not move it far: to reach 3x, **more than 88% of the step would have to be work that divides
 across four nodes**, and the measurement says a fifth of it is.
+
+## D183 — Decode-only: the occupancy is 33%, not 20%, and only 13% of the step divides
+
+D182's conclusion rested on a 20% occupancy figure measured over a span dominated by PREFILL, which its own
+caveat said. Measured again with 24 decode tokens so decode dominates:
+
+  busy 1579 ms of 4763 ms span (33% occupied)
+  decode 3.35 s / 24 tokens = 139.6 ms/step -> 7.160 tok/s   (node3, quiet)
+
+So D182's 20% was too low and its 0.85 factor too pessimistic. But occupancy is the WRONG QUANTITY, and
+separating the roles is what shows why:
+
+  DECODE-RELEVANT, and DIVISIBLE (per-node expert work):
+    moe_phase1_hit                 165.0 ms  x664
+    moe_phase1_miss_fixup_phase2   161.8 ms  x664
+    moe_phase1_2_routed            113.5 ms  x256
+                                   --------
+                                   440.3 ms  = 13.2% of the 3350 ms decode wall
+
+  REPLICATED (identical on every node, so sharding cannot divide it):
+    head_logits                    221.1 ms  x23
+    shared_expert                  183.7 ms  x920
+    attn_tail_router               163.6 ms  x920
+                                   --------
+                                   568.4 ms  = 17.0% of the wall
+
+A perfect, free four-way division of everything that divides:
+
+  139.6 x (0.132/4 + 0.868) = 139.6 x 0.901 = 125.8 ms  ->  7.95 tok/s  (1.11x)
+
+and with D173's measured 17.3 ms exchange on top:
+
+  125.8 + 17.3 = 143.1 ms  ->  6.99 tok/s  (0.98x)
+
+So the ceiling is about 1.0-1.1x, and the corrected occupancy number makes the conclusion STRONGER rather than
+weaker: 33% of the step is on the device, but two thirds of THAT is replicated work that every node repeats.
+Only the mixture divides, and the mixture is 13% of the step.
+
+To reach 3x, more than 88% of the step would have to divide. It is 13%.
+
+The one further lever visible in these numbers is head_logits at 221.1 ms (6.6% of the step): the repository's
+own engine made its head vocabulary-parallel in D93 and went from 1.13x to 1.36x, and the same change here -
+which is not a sharding change at all, it is a change to how the head is computed on ONE node - is worth more
+than the entire expert exchange. That is the honest place the remaining effort belongs if the throughput target
+is to be pursued rather than renegotiated.
