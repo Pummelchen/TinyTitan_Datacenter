@@ -6281,3 +6281,48 @@ it with device work it currently serialises behind**.
 levers. The read is twice the head, it is genuinely divisible, and overlapping it is the one change that helps
 the single node *and* the four-node ratio at once. That is the next thing to measure, and the measurement to beat
 is 139.4 ms/step with 101.0 MiB/token of it on the read path.
+
+## D189 — What 21 tok/s would actually require, in the measured terms
+
+`D188` established the terms. Writing them as the budget the target has to fit, because the conclusion is that the
+target needs two independent reductions and not one.
+
+Measured on node3, the reference's install, 40 slots, load 1.67:
+
+    step                        139.4 ms
+    device busy                 ~42 ms      (from [gpu by role], 24-token run)
+      of which mixture          ~18 ms      divides
+      of which replicated       ~24 ms      head, shared expert, attn tail
+    host expert reads           ~61 ms      101.0 MiB/token at ~1.65 GB/s cold
+    other host                  ~36 ms      plan, encode, dispatch, readback
+
+**Perfect, free four-way sharding**, with the divided reads hiding behind the device work the same node still
+does:
+
+    device   = 18/4 + 24            = 28.5 ms
+    reads    = 61/4 = 15.3 ms       hidden behind 28.5, so not additive
+    other    = 36 ms                does NOT divide - every node runs the same host loop
+    exchange = 17.3 ms              D173's measured cost
+    ----------------------------------------------------
+    step     = 28.5 + 36 + 17.3     = 81.8 ms   ->  12.2 tok/s   (1.70x)
+
+**So sharding, done perfectly and for free, lands at about 1.7x — and the target needs 2.9x.** The gap is
+`other host`, 36 ms of a 47.6 ms budget, and it is the same on every node because every node runs the same
+per-layer orchestration.
+
+**Two reductions are needed and only one of them is distribution:**
+
+1. **Divide the reads** — sharding, ~1.7x as above, and it also removes the exposed read on the single node.
+2. **Cut `other host`** — 36 ms/step is **0.9 ms per layer** of plan, encode, dispatch and readback, and it does
+   not divide at all. At 47.6 ms/step the whole non-device budget is 19 ms, so this has to fall by more than
+   half *on one node*, and the same change is what makes the single-node number move too.
+
+**What that rules in and out.** It rules out treating this as a distribution problem: no plan, no replication set
+and no exchange arrangement touches the 36 ms, because it is not per-expert work. It rules in the levers that
+change per-layer orchestration — fewer command buffers per layer, encoding without blocking, and readback that
+does not sit on the critical path. `D114` is the precedent: batching 640 synchronous dispatches into 80 took
+`mix.read` from 179 to 84 ms and the step from 0.919 to 0.722 s, a 1.27x, by removing **waits** rather than work.
+
+**The honest position on the target.** 21 tok/s is reachable only if `other host` falls from 36 ms to under
+~19 ms *and* the reads are divided. Neither has been attempted in this session; both are measurable on one node,
+which is where the next round should work.
