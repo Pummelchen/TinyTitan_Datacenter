@@ -1,0 +1,111 @@
+import Foundation
+
+/// A transport the exchange can be driven over, so the merging logic is testable without a socket.
+///
+/// `ShardPeerChannel` is the real one — a length-prefixed frame over two `FileHandle`s, used across the LAN by
+/// `DecodeTCPSocket`. This protocol exists so the *decision* logic (who to ask, what to send, how to merge) can
+/// be tested on one machine, which is the part that can be wrong in a way a four-node run would only show as a
+/// wrong token.
+public protocol ShardTransport: Sendable {
+    func exchange(_ request: ShardExchange.Request) throws -> ShardExchange.Reply
+}
+
+/// One node's part in a layer's expert exchange.
+///
+/// The division of labour is deliberate and is what keeps the arithmetic exact:
+///
+/// * The **engine** computes this node's own partials, for the slots it owns, in the reference's layout.
+/// * This type **asks** the peers that own the rest, and returns their replies.
+/// * `ShardReduce` adds everything, zero-padded, in slot order.
+///
+/// Nothing here computes a mixture value. That matters: `moe_phase2_down_reduce_k8` is a fixed k = 8 fp32 sum
+/// in slot order, and the only way to reproduce it across nodes is for every node's contribution to be a
+/// partial in that same sum rather than a separately-reduced number. A peer that returned a *summed* answer
+/// could not be merged exactly, because the association would already have been chosen.
+public struct ShardExchangeParticipant {
+    public enum Error: Swift.Error, Equatable {
+        case layerMismatch(expected: Int, got: Int)
+        case slotOutOfRange(Int)
+        case dimensionMismatch(expected: Int, got: Int)
+        case expertOutOfRange(Int)
+    }
+
+    public let plan: ShardPlan
+    public let node: Int
+    public let transport: ShardTransport
+
+    public init(plan: ShardPlan, node: Int, transport: ShardTransport) {
+        self.plan = plan
+        self.node = node
+        self.transport = transport
+    }
+
+    /// The peers that own at least one of `experts`, and which of them they own.
+    ///
+    /// A peer is asked **once per layer**, carrying every slot it owns, rather than once per expert: the reply
+    /// is one frame either way, and a node routing eight experts to four peers would otherwise pay four times
+    /// the latency for the same bytes (`D173` — the per-step frame beats the per-layer one, and within a step
+    /// the same argument applies to the peers).
+    public func requests(layer: Int,
+                         experts: [Int],
+                         slots: [Int],
+                         activation: [Float]) -> [ShardExchange.Request] {
+        precondition(experts.count == slots.count, "experts and slots are carried together by construction")
+        var byPeer: [Int: (experts: [Int], slots: [Int])] = [:]
+        for (index, expert) in experts.enumerated() {
+            guard expert >= 0, expert < plan.experts else { continue }
+            // `isLocal`, not `owner(of:) != node`: a REPLICATED expert is held by every node, so this node
+            // must not ask anyone for it. Asking by ownership alone would put a replicated expert on the wire
+            // - exactly the bytes replication exists to remove.
+            guard !plan.isLocal(expert: expert, to: node) else { continue }
+            let owner = plan.owner(of: expert)
+            byPeer[owner, default: ([], [])].experts.append(expert)
+            byPeer[owner, default: ([], [])].slots.append(slots[index])
+        }
+        // Sorted by peer so two runs produce the same request order, which keeps a failure reproducible.
+        return byPeer.keys.sorted().map { peer in
+            let group = byPeer[peer]!
+            return ShardExchange.Request(layer: layer, slots: group.slots,
+                                         experts: group.experts, activation: activation)
+        }
+    }
+
+    /// Ask every peer and return their replies, in **peer order**.
+    ///
+    /// The order is immaterial to the result — `ShardReduce.accumulate` is exact under any order — and that is
+    /// the point of returning them as a list rather than folding here: the caller hands all of them to
+    /// `ShardReduce` together with its own partial, so there is exactly one place the sum is formed.
+    public func replies(layer: Int,
+                        experts: [Int],
+                        slots: [Int],
+                        activation: [Float]) throws -> [ShardExchange.Reply] {
+        try requests(layer: layer, experts: experts, slots: slots, activation: activation).map(transport.exchange)
+    }
+
+    /// The peer contributions, ready to be added to this node's own partials.
+    ///
+    /// Returned as `[slot][dimension]` rows for `ShardReduce.reduceRows`, and **re-sorted by the slot each row
+    /// belongs to** rather than trusted in arrival order: a reply carries its slots explicitly (`D168`), and
+    /// renumbering or reordering them changes the answer (`D154`).
+    public func contributions(layer: Int,
+                              experts: [Int],
+                              slots: [Int],
+                              activation: [Float],
+                              dims: Int) throws -> [[Float]] {
+        var out = [[Float]](repeating: [Float](repeating: 0, count: dims), count: ShardReduce.k8)
+        for reply in try replies(layer: layer, experts: experts, slots: slots, activation: activation) {
+            guard reply.layer == layer else {
+                throw Error.layerMismatch(expected: layer, got: reply.layer)
+            }
+            for (index, slot) in reply.slots.enumerated() {
+                guard slot >= 0, slot < ShardReduce.k8 else { throw Error.slotOutOfRange(slot) }
+                let row = reply.row(at: index)
+                guard row.count == dims else {
+                    throw Error.dimensionMismatch(expected: dims, got: row.count)
+                }
+                for d in 0..<dims { out[slot][d] += row[d] }
+            }
+        }
+        return out
+    }
+}
