@@ -280,7 +280,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     /// `nil` means unsharded, which is every run that is not given a plan. Arguments are
     /// `(layer, experts, slots, activation-fp32, dims)`; the result is `dims * 8` floats, or `nil` when a peer
     /// could not be reached - in which case the caller proceeds single-node rather than contributing a wrong sum.
-    var remotePartialsProvider: ((Int, [Int], [Int], [Float], Int) -> [Float]?)?
+    public var remotePartialsProvider: ((Int, [Int], [Int], [Float], Int) -> [Float]?)?
 
     /// The reply buffer for peer contributions: `[D * 8]` floats, **created once** and reused.
     ///
@@ -288,7 +288,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     /// `MetalBufferCache` is `D114`'s failure exactly - the batch's 40-buffer request and the dense path's 5-buffer
     /// request made every alternation rebuild the whole set and produced **2.47 s/step against 0.92**, with the
     /// damage appearing in `mix.gather`, a phase the change never named.
-    var remotePartialsBuffer: MTLBuffer?
+    public var remotePartialsBuffer: MTLBuffer?
     /// Width-2 MTP verify scratch (B2 pair schedule): per-row activation and
     /// output buffers plus two persistent routed argument buffers, created on
     /// first verify. Per-row buffers are deliberately *separate allocations*,

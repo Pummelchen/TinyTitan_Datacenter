@@ -256,6 +256,25 @@ public func run(args: Args,
             context: context,
             maxContext: args.maxContext,
             runtimeConfiguration: runtime)
+
+        // The requesting half of the exchange: with a plan, a node and peers, ask the peers that own the experts
+        // this node does not and fold their contributions into the phase-2 reduce. Without all three the provider
+        // stays nil and the engine is single-node, unchanged.
+        if let planPath = args.shardPlanPath, let node = args.shardNode, let peersSpec = args.shardPeersSpec {
+            let plan = try ShardPlan.load(from: URL(fileURLWithPath: planPath))
+            let peers = try ShardConfiguration.parsePeerSpec(peersSpec)
+            let configuration = try ShardConfiguration(plan: plan, node: node, peers: peers)
+            let transport = configuration.makeTransport()
+            try transport.connect()
+            let participant = ShardExchangeParticipant(plan: plan, node: node, transport: transport)
+            runner.remotePartialsProvider = { layer, experts, slots, activation, dims in
+                try? participant.remotePartials(layer: layer, experts: experts, slots: slots,
+                                                activation: activation, dims: dims)
+            }
+            FileHandle.standardError.write(Data((
+                "[shard] node \(node) of \(plan.nodes), peers \(configuration.peerIndices) connected; "
+                + "expert contributions are being exchanged.\n").utf8))
+        }
         let scratch = try RawCompletionScratch(context: context,
                                                vocab: model.config.vocabSize,
                                                logitSoftcap: Float(model.config.finalLogitSoftcap))
