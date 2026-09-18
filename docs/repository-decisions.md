@@ -10534,3 +10534,45 @@ is what says whether prefill on the ANE is worth building. **Third probe: larger
 
 **Nothing is claimed about ANE benefit.** Two negatives and one mechanism, no measured speedup, and section 8b of
 the design document continues to carry them.
+
+## D299 — D298 is withdrawn: the "free arithmetic" was my model being optimised away, and the ANE is never faster
+
+`D298` concluded that `ComputeUnit.ALL` pays a **fixed ~96 ms dispatch and that the arithmetic inside it is free**,
+on the evidence that eight convolutions cost the same as one. **That evidence was an artefact of my own test.**
+Every one of the K convolutions took **the same input and the same weight**, so they were not eight operations to
+be computed - they were **one expression the compiler folded**, and the flat curve measured common-subexpression
+elimination rather than dispatch.
+
+**Redone with a chain in which each convolution consumes the previous one's output**, so nothing can be folded:
+
+| K | GFLOP | ALL ms | ALL GFLOP/s | CPU_ONLY ms | CPU GFLOP/s |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 1.34 | 96.68 | 13.9 | 2.32 | 578.4 |
+| 2 | 2.68 | 191.94 | 14.0 | 3.35 | 801.3 |
+| 4 | 5.37 | 152.59 | 35.2 | 6.10 | 880.4 |
+| 8 | 10.74 | 152.77 | 70.3 | 10.19 | 1,053.9 |
+| 16 | 21.47 | 154.21 | 139.3 | 18.49 | 1,161.6 |
+| 32 | 42.95 | 156.57 | 274.3 | 34.56 | 1,242.6 |
+
+**Three corrections to `D298`, all in the same direction.**
+
+**1. There is no "free arithmetic".** The `ALL` curve is not flat in the arithmetic - its **GFLOP/s rises from 13.9
+to 274.3** as K grows, which is the signature of a fixed cost being amortised, not of free compute. **A fixed cost
+and a slow rate, not a fixed cost and no rate.**
+
+**2. `CPU_ONLY` is the only well-behaved path in the whole exercise.** It scales **linearly** - 1.34 GFLOP in
+2.32 ms, 42.95 GFLOP in 34.56 ms - at **~1.2 TFLOP/s**, which is a plausible figure for this CPU. Every other unit
+is either pathological or beaten by it.
+
+**3. `ALL` is slower than the CPU at every size tested, and never comes close.** At K=32 it takes **156.57 ms**
+against the CPU's **34.56 ms** - **4.5x slower** for identical work.
+
+**And the ANE itself was never demonstrated anywhere in these four rounds.** 274 GFLOP/s is an order of magnitude
+below the M2's ~15.8 TOPS Neural Engine, so on the balance of evidence Core ML never selected it - through a
+matmul (`D296`), a bare conv (`D297`), a folded repeated conv (`D298`) or a chained one (`D299`).
+
+**The honest summary of four probes: no ANE, no speedup, one of my own conclusions retracted, and the CPU is the
+fastest Core ML unit measured here.** The route the operator described - ANE for prefill - is **not reachable from
+Core ML on this machine by any formulation I have tried**, and the next step is not another probe of this kind: it
+is to look at how the sister project actually built its ANE model, because four attempts from first principles
+have produced nothing.
