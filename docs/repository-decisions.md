@@ -4237,3 +4237,46 @@ That exchange rate is the useful result, because it makes future trades checkabl
 - **And the remaining 418 ms is where the target now has to come from**: `attn.core` 134, `mix.read` 88,
   `load` 77, `head` 49, `mix.down` 44, against 143 ms total. The read was never going to be the whole story,
   and this is the first breakdown that says so from measurement rather than from a model of the machine.
+
+## D135 — The plan was wrong, and the reference already has the seam: build the distributed engine ON TinyTitan, not inside this one
+
+The operator has said this twice and I have not acted on it: **use TinyTitan's code and turn it into a
+distributed engine.** Rounds 5-8 of this goal went into micro-optimising this repository's own runtime instead,
+which is the wrong work, and the work is stopped here.
+
+**And looking at the reference's module list rather than only its decode loop shows why the right plan is much
+better than the one I was executing.** TinyTitan has `sources/TinyTitanDecodeProtocol/` and
+`sources/TinyTitanDecodeService/` — a **decode service with a framed wire protocol**, already factored:
+
+| what it already has | where |
+| --- | --- |
+| a framed codec and its errors | `TinyTitanDecodeProtocol/DecodeProtocol.swift` (`DecodeFrameCodec`, `DecodeFrameError`) |
+| a transport | `TinyTitanDecodeProtocol/DecodeUnixSocket.swift` |
+| Codable load/generate requests | `DecodeLoadRequest`, `DecodeGenerationRequest` |
+| a command/event vocabulary | `DecodeServiceCommand`, `DecodeServiceEvent`, `DecodeServiceEventKind` |
+| queues and an outbox | `TinyTitanDecodeService/DecodeCommandQueue.swift`, `DecodeServiceOutbox.swift` |
+| runtime + prefill diagnostics on the wire | `DecodeRunnerDiagnostics`, `DecodePrefillDiagnostics` |
+
+It is **not** sharded — `grep` for `shard|peer|remote|distribut` across both modules finds nothing — so what
+exists is a *single-machine client/server* split over a **Unix socket**. That is precisely the seam a LAN
+distribution needs, and it is one transport swap plus a shard plan away:
+
+- **Transport**: a TCP listener beside `DecodeUnixSocket`, speaking the same `DecodeFrameCodec` frames. This
+  repository has already built and demonstrated exactly that — a `wire-protocol.md`, a reduction contract, a
+  four-node mesh and a TCP transport, all bit-identical to the single-node forward.
+- **Sharding**: which peer owns which experts, as **data** — which this repository already has as a shard plan
+  (`D20`) with a plan file, and which the reference has no equivalent of at all.
+
+So the correct shape of the project is the two halves joined, and neither half needs inventing: **TinyTitan is
+the fast single-node runtime and its own service boundary; this repository is the distribution design.** Porting
+72,585 lines of the former into the latter was never the right move, and it is not what "use the code of
+TinyTitan" means.
+
+**Working tree set up**: the reference is forked to `~/Downloads/tinytitan-datacenter` at `bea4034`, beside this
+repository, and that fork — not this tree — is where the distributed engine gets built. The next round starts
+by getting that fork to build on this node and then extending `DecodeService` with a LAN transport and a shard
+plan, in that order, each measured against the single-node 7 tok/s.
+
+**What this repository keeps contributing:** the shard plan as data, the reduction contract, the wire-protocol
+discipline, the head-sharding result, the gate set, and the record of what has already been measured and
+refuted. It is the design and the gate, not the runtime.
