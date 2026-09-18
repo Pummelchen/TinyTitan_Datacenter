@@ -469,7 +469,11 @@ finds that **the existing one cannot do the job**:
 * `encodeRoutedPersistentPhase2Reduce` (`MoE.swift:555`) takes `routingWeights`, `residual` and writes a **single
   `y:`** - it **reduces** across slots. That is the right shape for the node that owns the router's decision and the
   wrong shape for a peer, which must return **one row per expert**;
-* a grep for a down-only or per-expert output encode finds **nothing**.
+* a grep for a down-only or per-expert output encode finds **nothing** - and one candidate that looks like it is
+  not one. `moe_phase1_2_routed`, which appears in the kernel profile at 190 dispatches, is a **diagnostic role
+  label** attached to the phase-1 + phase-2 chain at `RealForwardRunner+Decode.swift:1850` and named in
+  `RealForwardRunner+Diagnostics.swift:75`, **not a separate kernel**. Following it costs a search and yields
+  nothing, so it is recorded here rather than left for the next attempt to chase.
 
 **So the last piece is real work, not wiring.** Two ways, and they differ in kind:
 
