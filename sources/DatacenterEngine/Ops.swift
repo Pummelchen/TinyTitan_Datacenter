@@ -26,7 +26,102 @@ public enum Ops {
         // The scalar body below is the **definition**; this is the fast path, and it is bit-equal
         // to it on every shape the tests try (measured, `D9`). Keeping both is deliberate: a
         // faster formulation is only trustworthy while something independent says it agrees.
-        orderedMatmulVectorized(x: x, w: w, rows: rows, k: k, out: out)
+        //
+        // It fans out across output columns when there is enough work (`DC-122`), and the fan-out is
+        // bit-identical by construction rather than by luck — see `orderedMatmulThreaded`. Callers that are
+        // *already* parallel at a higher level (`headLogits`' vocabulary blocks) call the serial body directly
+        // rather than nesting dispatches inside dispatches.
+        // The **policy** lives here, at the call site, and the mechanism does not: a dispatch costs more than it
+        // saves below a threshold (`D59`), and keeping that decision out of `orderedMatmulThreaded` is what lets a
+        // test drive the chunking directly on deliberately awkward shapes.
+        guard DecodeThreads.wantsParallelism(work: rows * out * k) else {
+            return orderedMatmulVectorized(x: x, w: w, rows: rows, k: k, out: out)
+        }
+        return orderedMatmulThreaded(x: x, w: w, rows: rows, k: k, out: out, threads: DecodeThreads.count)
+    }
+
+    /// `orderedMatmulVectorized`, with the output columns split across threads — **the second attempt at
+    /// `DC-122`, and this one keeps the contract.**
+    ///
+    /// The first attempt moved bits, and the reason is now known precisely enough to build around. The serial
+    /// body runs a four-wide loop while `column + 4 <= out`, so its vector groups are the fixed partition
+    /// `{0-3}, {4-7}, …` and its **scalar tail is exactly the last `out % 4` columns**. A decomposition that gives
+    /// a thread a range like `[0, 6)` and lets it run its own `column + 4 <= last` loop **moves the tail**: the
+    /// thread's grouping is re-cut at 6 and the scalar part lands where the vector part used to be. That is what
+    /// "bounding each thread by its own `last`" did.
+    ///
+    /// So the rule is: **every chunk boundary is a multiple of four.** Then a non-final chunk covers whole vector
+    /// groups and reaches its end with no tail at all, and the final chunk ends at `out` and performs the same
+    /// `out % 4` scalar tail the serial body performs. Each thread's additions are the same additions in the same
+    /// order as the serial body's; only the thread differs, which is what `D63` permits.
+    ///
+    /// `ThreadedOpsTests` asserts this on a grid of shapes that includes `out % 4 != 0`, `rows > 1`, `k = 1` and
+    /// outputs the vector body never reaches — the shapes where a regrouping would show.
+    public static func orderedMatmulThreaded(
+        x: [Float], w: [Float], rows: Int, k: Int, out: Int, threads: Int
+    ) -> [Float] {
+        guard threads > 1, out > 4 else {
+            return orderedMatmulVectorized(x: x, w: w, rows: rows, k: k, out: out)
+        }
+        // The chunk size is rounded **down** to a multiple of the vector width, so every boundary but the last
+        // is aligned; the last chunk carries the remainder and therefore the tail.
+        let chunk = max(4, (((out + threads - 1) / threads) / 4) * 4)
+        let chunks = (out + chunk - 1) / chunk
+        var result = [Float](repeating: 0, count: rows * out)
+        let xValues = x
+        let wValues = w
+        result.withUnsafeMutableBufferPointer { buffer in
+            nonisolated(unsafe) let target = buffer.baseAddress!
+            DispatchQueue.concurrentPerform(iterations: rows * chunks) { item in
+                let row = item / chunks
+                let lower = (item % chunks) * chunk
+                let upper = min(lower + chunk, out)
+                columns(
+                    x: xValues, w: wValues, xRow: row * k, k: k, into: target, at: row * out,
+                    from: lower, to: upper
+                )
+            }
+        }
+        return result
+    }
+
+    /// One thread's columns of one row: the serial body's two loops, with the thread's own bounds.
+    ///
+    /// Deliberately a copy of `orderedMatmulVectorized`'s inner loops rather than a call to it, because the whole
+    /// point is that the bounds — not the body — are what differ. The scalar tail is the same scalar loop, so a
+    /// thread that has a tail computes it exactly as the definition would.
+    private static func columns(
+        x: [Float], w: [Float], xRow: Int, k: Int, into target: UnsafeMutablePointer<Float>, at base: Int,
+        from lower: Int, to upper: Int
+    ) {
+        var column = lower
+        while column + 4 <= upper {
+            var accumulator = SIMD4<Float>(repeating: 0)
+            for index in 0..<k {
+                let value = SIMD4<Float>(repeating: x[xRow + index])
+                let weights = SIMD4<Float>(
+                    w[(column + 0) * k + index],
+                    w[(column + 1) * k + index],
+                    w[(column + 2) * k + index],
+                    w[(column + 3) * k + index]
+                )
+                accumulator = accumulator + value * weights
+            }
+            target[base + column + 0] = accumulator[0]
+            target[base + column + 1] = accumulator[1]
+            target[base + column + 2] = accumulator[2]
+            target[base + column + 3] = accumulator[3]
+            column += 4
+        }
+        while column < upper {
+            let wRow = column * k
+            var accumulator: Float = 0
+            for index in 0..<k {
+                accumulator = accumulator + x[xRow + index] * w[wRow + index]
+            }
+            target[base + column] = accumulator
+            column += 1
+        }
     }
 
     /// The definition: ascending accumulation over `k`, one rounding per multiply and per add.

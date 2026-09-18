@@ -2926,3 +2926,46 @@ before it could produce its own version of this.
 round is one guarded counter. What the round bought is a gate that can be trusted — the Python suite was failing
 75% of the time for a reason that had nothing to do with any measurement in this repository, and every claim
 made this session was made on runs that happened to be in the clean 25%.
+
+## D104 — The contract matmul is threaded, on width-aligned chunks: `DC-122` is solved on the second attempt
+
+`DC-122` had been open since the first attempt moved bits: the threaded `Ops.orderedMatmulVectorized` was caught
+by a comparison that had held since `D9`, reverted verbatim, and left with a *hypothesis* about a block-local
+`last`. The hypothesis was right, and writing it down precisely is what made the second attempt possible.
+
+**The rule.** The serial body runs a four-wide loop while `column + 4 <= out`, so its vector groups are the fixed
+partition `{0-3}, {4-7}, …` and its **scalar tail is exactly the last `out % 4` columns**. A decomposition that
+gives a thread a range such as `[0, 6)` and lets it run its own `column + 4 <= last` loop **re-cuts the grouping
+at 6 and puts the scalar part where the vector part used to be** — a different sequence of additions, hence
+different bits. The rule is therefore: **every chunk boundary is a multiple of four.** Then a non-final chunk
+covers whole groups and reaches its end with *no tail at all*, and the final chunk ends at `out` and performs the
+same `out % 4` tail the serial body performs. Each thread's additions are the same additions in the same order;
+only the thread differs, which is what `D63` permits.
+
+**Two other decisions fell out of it.** The chunk size is rounded **down** to a multiple of four, so the remainder
+lands in the last chunk rather than in an unaligned boundary. And the work **threshold lives at the call site**,
+not in the fan-out: a dispatch costs more than it saves below `DecodeThreads.minimumWork` (`D59`), and keeping
+that policy out of the mechanism is what lets `OrderedMatmulThreadTests` drive the chunking directly on
+deliberately awkward shapes instead of only on shapes large enough to trip the threshold.
+
+**Measured**, alternated, one binary, 8-step decode, load average 2.53. The phase columns are the isolated
+evidence — `SHARD_DECODE_THREADS=1` switches off `D99`, `D101` and `D102` as well as this — and the step is the
+sum:
+
+| phase | one thread | fanned out | factor |
+| --- | --- | --- | --- |
+| `attn.core` | 0.493 / 0.495 s | **0.209 / 0.202 s** | 2.4x |
+| `mix.gateup` | 0.224 / 0.225 s | **0.077 / 0.073 s** | 3.0x |
+| `mix.down` | 0.102 / 0.102 s | **0.049 / 0.047 s** | 2.1x |
+| step | 4.124 / 4.103 s | **1.866 / 1.797 s** | — |
+
+Digest `89d654ff54b0fd03` in **all four arms**. The step is now **~0.55 tok/s**, from 0.230 when the operator
+re-scoped the work and 0.443 before this change — 2.4x overall, every step of it bit-identical.
+
+**What the tests assert, and why they are the point.** `OrderedMatmulThreadTests` compares bit patterns against
+*both* the definition and the serial fast path, over `out ∈ {1,2,3,4,5,6,7,8,9,11,15,16,17,33,64,65,129}` (every
+residue mod 4), `out < 4` where the vector loop never runs, `k = 1`, `rows ∈ {1,2,3}`, thread counts 0, 1, 2, 3,
+5, 8 and 16, and the two shapes the decode path actually spends its time in. It also repeats a call on the same
+buffers, because **a reused buffer changing the answer is how the first attempt was caught**. A faster
+formulation is only trustworthy while something independent says it agrees — and the argument above is a reason,
+not that something.
