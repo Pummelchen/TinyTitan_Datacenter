@@ -8314,3 +8314,39 @@ returning an enum, or having the call site count its own skips - so that `totalE
 number or an explicit unknown. **It is not changed here**, because a metric's semantics are the server's contract and
 `ServerInference.swift` publishes it; the finding is recorded instead, and `exposed_io_us` should be read as
 "exposed, or the clock was not ready" until it is.
+
+## D238 — The engine's exposed-IO metric never fires in this configuration, and the trace now says so instead of printing zero
+
+`D237` found that `CommandCompletionClock.latest` returns `nil` unless the completion count is exactly `expected`, and
+that every call site skips the increment on `nil` - so `totalExposedIoNanos` reports a zero it has not measured.
+`D237` named the fix but declined to make it, because the counter's semantics are the server's published contract.
+**The local half is now made:** the layer trace prints `exposed_io_us=-1` when the clock was not ready and the number
+otherwise, so "not measured" and "measured zero" are different strings.
+
+Node3, the reference install, 40 slots, 48 tokens, 119 layers:
+
+    TinyTitan layer ... io_us=1196  exposed_io_us=-1     <- a MISS layer: clock not ready
+    TinyTitan layer ... io_us=1     exposed_io_us=0      <- a HIT layer: a real measured zero
+    body 2672 us   io 1110 us   wait 1332 us
+
+**The split is exactly along the miss boundary.** Every layer with a read in it reports `-1`; every layer without one
+reports `0`. So:
+
+  - **the zero `D234` built on was the `nil` guard, and there was never a measurement behind it.** `D237`'s reading of
+    the `guard` line is confirmed by the instrument rather than inferred from it;
+  - **`totalExposedIoNanos` never increments in this configuration** - `completionCount == expected` is not satisfied
+    on any layer of the decode - so **the metric the server publishes as `exposedIo` is dead here**, returning zero
+    for a reason that has nothing to do with how much IO is exposed;
+  - **and the read's exposed fraction is therefore genuinely unknown.** The counter cannot supply it. What supplies
+    it is the cache sweep: 156 MiB fewer per token buys 46 ms of step across four points, so the read is **on the
+    critical path** and the amount of it that is hidden is somewhere between "some" and "none".
+
+**Why `completionCount == expected` fails is not established here**, and it matters for anything reading that metric:
+`expected` is a prediction (`phase1HitCB == nil ? 1 : 2` at one site, `pending.expectedOverlapCompletions` at the
+other) and the clock counts every tracked command buffer, so the guard is comparing an observation against a guess.
+**A guard of the form `observed == predicted` will be false whenever the prediction is wrong, and its falseness is
+indistinguishable from the zero it returns.**
+
+**This is the cleanest instance in the session of the rule `D233` and `D237` built**, and it is worth stating once
+more because it cost four records: **a counter is two things - a number and a condition under which the number means
+anything - and the condition has to be printed beside the number.** The trace now prints both.
