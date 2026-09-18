@@ -6712,3 +6712,53 @@ where the demand reads lose that half is now the sharper question.
 (`D193`), speculative decoding (`D187`), the MTP knobs (`D187`). Open: why the demand reads run at 985 MB/s when
 the identical reads with no compute interleaved run at 1,940 MB/s - which is a question about **what the step does
 between reads**, not about the reader.
+
+## D198 — The step is device time PLUS read time: they do not overlap, and overlapping them is worth 3.2x
+
+`D197` left one question — what the step does between reads that leaves them idle half the time. The measured
+terms answer it without another proxy, because they **add up**:
+
+    device busy per step          42.0 ms     D183, [gpu by role] over 24 tokens
+    reads at the ACHIEVED rate    97.4 ms     95.9 MB at the measured 985 MB/s (D194, D195)
+    ----------------------------------------------------------------
+    sum                          139.4 ms     against a measured step of 132.7 ms (D195)
+
+**The sum of the two largest terms is the step.** To within 5%, the decode spends its time either reading or
+computing, and **not both at once** — so the device is idle while the host reads (which is exactly the ~30%
+occupancy `D182` measured) and the host is idle while the device computes (which is exactly the 31-37% of one
+core `D191` measured). Two independent instruments recorded the two halves of this and neither was read as the
+same fact until the terms were added.
+
+**What it is worth.**
+
+    95.9 MB per step at the microbenchmark's measured rates:
+      depth 1                     49.4 ms
+      depth 8                     32.6 ms
+
+    perfectly overlapped with the 42.0 ms of device work:
+      max(42.0, 32.6) = 42.0 ms   ->  23.8 tok/s
+    serialised, even at depth 8:
+      42.0 + 32.6     = 74.6 ms   ->  13.4 tok/s
+
+**Overlapping the reads with the compute is worth up to 3.2x** - 7.5 to 23.8 tok/s - and it is the only lever
+measured in this session that reaches the 21 tok/s target. It needs no distribution, no extra memory, and no new
+hardware; it needs the reads for layer L to be in flight while layer L-1 computes.
+
+**And the engine already has the mechanism, which is the puzzle.** There is a prefetch ring, and depth 1 is the
+setting that pays (`D197`). So the overlap exists and is worth only 5% (`D190`) where the composition says it
+should be worth up to 3.2x. **The reconciliation is the next question, and it is a bounded one**: the ring reads
+*predicted* experts at 90.8% top-1 (`RealForwardRunner`), so at depth 1 roughly one read in ten is for an expert
+that is never used, and the *demand* read for a miss the prediction did not cover is synchronous and waits. Those
+two are not the same read, and the measurements so far cannot say what fraction of the 97.4 ms is demand versus
+prefetch.
+
+**What to measure next, precisely.** Per-layer: the time from the ring's read issue to its completion, against the
+time the layer's device work occupies. If the ring's reads complete inside the compute window, the 5% is
+explained by the ring covering only part of the miss set; if they do not, the ring is not overlapping and the
+composition above says where the 3.2x lives. That is one instrumented run, not a redesign.
+
+**The honest summary of thirteen rounds.** Every read-path hypothesis is now measured and closed - MTP, prefetch
+depth, access order, read size, the reader itself - and the composition has produced one term that is worth the
+whole target and has a known mechanism that is not delivering it. That is a much better place to stop than the
+~70% host loop estimate the goal opened with, which was itself an artefact of an instrument that could not see
+I/O.
