@@ -8230,3 +8230,43 @@ projected 15-20 tok/s before the read turned out to be hidden.
 step that divides, that fraction is `divisible GPU / step`, and on this engine it is **20%**. Everything else -
 dense attention, the shared expert, the router, the token loop - is work every node performs in full, and no plan
 that only partitions experts can touch it.
+
+## D236 — D234 and D235 are wrong: the read is not free, and the cache sweep proves it in one table
+
+`D234` read `exposed_io_us = 0` as "the read is already overlapped and contributes nothing to the critical path",
+and `D235` built a ~1.14x ceiling on it. **The engine's own cache sweep falsifies both, and it takes one table:**
+
+| slots | MiB/token | step | tok/s |
+| --- | --- | --- | --- |
+| 8 | 244.9 | 175.0 ms | 5.71 |
+| 16 | 165.9 | 159.0 ms | 6.29 |
+| 24 | 131.8 | 154.0 ms | 6.49 |
+| 40 | 89.0 | 129.0 ms | 7.75 |
+
+**Reading 156 MiB fewer per token makes the step 46 ms shorter**, monotonically across four points, an implied
+marginal rate of **3.39 GB/s**. **If the read contributed nothing to the critical path, changing its volume could not
+change the step at all.** It changes it by a third of the total.
+
+**So `exposed_io_us = 0` does not mean what `D234` said it means.** Whatever the overlap clock is measuring, it is not
+the quantity the cache sweep responds to. The two are in flat contradiction, the sweep is the stronger evidence -
+four points, a 5x range, monotone, reproducing `D217` and `D219` - and **`D234`'s interpretation and `D235`'s
+conclusion are both withdrawn.**
+
+**The methodological point is the one this session keeps earning and it is worth more than either record.** `D234`
+was written *because* an instrument was added and it printed a number; the number was real, its meaning was assumed,
+and one existing measurement was enough to overturn it. **When a new counter disagrees with an old curve, the curve
+usually wins** - it took four points across a 5x range to produce, and the counter took one reading of a quantity
+whose definition had not been checked. That is `D233`'s rule ("before concluding from a counter, find out what it
+counts") applied to the record that wrote the rule.
+
+**Where that leaves the question, stated without a conclusion this time.** The read is on the critical path - the
+sweep says so at four points - and the engine reports its exposed share as zero. **Both cannot be descriptions of
+the same quantity, and which one the four-node case turns on is now an open question rather than a settled one.**
+`D228`'s calibrated projection (14.33 tok/s without attention sharding, 16.35 with, and the higher figures its
+overlap column gave) is therefore **not withdrawn either** - it was built on the read being exposed, which the sweep
+supports and `D234` denied.
+
+**Nothing in this record changes what is built or measured.** The exchange, the single-node figures, the layer body,
+the prefetch invariance and the non-stationary step all stand. What it changes is that **the session does not have a
+defensible answer to its own objective**, and it will not manufacture one by picking whichever of two contradictory
+measurements is more convenient.
