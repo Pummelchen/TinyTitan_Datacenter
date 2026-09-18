@@ -8038,3 +8038,33 @@ absorb it. **`D229`'s 20.77 ms is therefore an over-estimate, and the honest fig
 measured quantities attributed the remainder to a term that had not been measured directly. The instrument that
 would settle it - a trace of the token loop from the last layer's body to the next token's first - still does not
 exist in the engine.
+
+## D231 — The reference comparison is apples-to-apples in code, and the one variable it does not control is generation length
+
+`D230` found the decode step degrades with context, which puts any tok/s comparison at risk if the two sides were
+measured over different generation lengths. Checking what is actually on the node resolves half of it:
+
+    node3:~/tt-bins/   TinyTitanCLI, TinyTitanDecodeService, TinyTitanRepack, TinyTitan_TinyTitan.bundle
+
+**There is no separate reference binary, and there does not need to be.** This fork is a clone of TinyTitan at
+`bea4034`, and everything this session added - the shard plan, the exchange, the peer set, the remote-buffer kernel,
+the configuration - **is not on the forward path**. `TinyTitanCLI` as built here *is* the reference engine, so the
+7.357-7.451 measured against the reference's 7.075 are the same code on the same install with the same flag, and the
+comparison is apples-to-apples by construction rather than by argument.
+
+**What that leaves is the one thing it does not control: how many tokens were generated.** `D230` measures the body
+growing 8.5% between position 16 and position 160, so a run of 32 tokens and a run of 300 are not the same
+measurement. **The reference's 7.075 has no recorded generation length in this repository**, and neither do the
+7.357-7.451 that were compared to it. They were all short runs of the same order - 32 to 48 tokens - which is why the
+comparison holds, but that is a reconstruction and not a record.
+
+**So the discipline gains a fifth field.** Every tok/s claim in this document already needs the node, its load, the
+configuration and the repeat count (`D187`, `D177`). It now needs the **generation length**, because the step is a
+function of it and the effect is large enough to matter at three hundred tokens. A future run that quotes 7.4 at 32
+tokens against 7.075 at an unknown length is comparing two things it cannot fully describe - and the fix is one
+number in the command line, not another measurement.
+
+**A note on what this does not change.** The four-node projection of `D228` (19.42 tok/s, attention sharding and read
+overlap both built) was computed from a 24-token trace and is therefore **optimistic**: at longer generations the
+attention term grows and the projection falls. It should be read as an upper bound on that configuration rather than
+as an expectation, which is how `D228` already marked it.
