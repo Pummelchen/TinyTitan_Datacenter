@@ -1111,7 +1111,10 @@ against a sequential loop.
 `Ops.orderedMatmul` over **288 shapes** — `rows` 1, 2, 3, 5; `k` 1, 2, 3, 4, 5, 8, 17, 64, 257; `out` 1, 2, 3,
 4, 5, 8, 17, 129 — chosen so that output counts which are **not** multiples of four are in it, because that is
 where the CPU's four-wide vector takes its tail. Plus the head's real shape at `k = 2048`, buffer-cache reuse
-across shapes, and refusals for mismatched buffers.
+across shapes, and refusals for mismatched buffers. **One boundary the grid does not reach was found later
+(`D108`):** an Apple GPU flushes a denormal *product* to zero where the CPU keeps it, so "bit-identical" means
+"bit-identical whenever no intermediate product is denormal" — which is every value the 288 shapes and the real
+model produce, and is now asserted as a named test rather than left implicit.
 
 **The choice lives in the forward, not in `Ops`.** `Ops` **is** the definition of the contract and should not
 know about a device; `Qwen3_5Forward` is the wiring, which is what its own comment says. So a small chooser
@@ -3110,3 +3113,54 @@ hardware, and this node cannot hold that beside **fp32** weights — so what sep
 the weights are held in and the device that consumes them. `DC-113` is therefore no longer a candidate but the
 route: packed int4 weights resident in GPU buffers, dequantised in the kernel, with the residency table and
 prefetch ring the reference uses.
+
+## D108 — The fused int4 matmul is 1.2–2.4x faster on the GPU, and the unpack was never the bottleneck
+
+`D107` closed the **CPU** side of `DC-120`: dequantising inside the inner loop destroys the vectorisation the
+split path has, and it measured 4.7x slower. The same fusion on the **device** is a different question in kind,
+not degree. The unpack already runs there (`D59`), so the fp32 slab is not a compute cost — it is **traffic**.
+`mix.read` materialises about **6.5 GB of `Float` per token** into a Metal buffer, copies it back to the CPU as a
+Swift array, and the contract matmul reads it a second time. A fused kernel removes the write and the read-back:
+it reads the packed codes it needs and writes `out` floats.
+
+**Built and proved first.** `MetalInt4Matmul` (`sources/DatacenterEngine/MetalInt4Matmul.swift`) computes
+`x @ dequantizeInt4(w)ᵀ` in one dispatch — one thread per output, `k` ascending, the weight built with the same
+one-multiply rounding, the same `D34` zero-sign/NaN normalisation and the same `D11` denormal-scale flush the
+unpack kernel uses, accumulated as `accumulator + metal::fma(x, w, 0.0f)` because that is the only spelling that
+keeps the contract's product and add apart (`D61`). `MetalInt4MatmulTests` asserts it **bit for bit** against
+`InstallFile.dequantizeInt4` followed by `Ops.orderedMatmul` over the `D107` grid — every residue mod 4, `k = 1`,
+groups of 1/4/8/64, a partly-filled final group, a padded width wider than the real one, and one and two tokens —
+and against the engine's own path (the GPU unpack followed by the contract matmul) on the real expert shapes.
+
+**Measured**, release build, one binary, 20 iterations after warm-up, one token:
+
+| shape `out × k` | payload | unpack | matmul | split | fused | fused/split |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1024 × 2048 (`gate_up`) | 1,212,416 B | 0.83 ms | 0.21 ms | 0.940 ms | **0.763 ms** | 1.23x |
+| 2048 × 512 (`down`) | 606,208 B | 0.49 ms | 0.10 ms | 0.582 ms | **0.402 ms** | 1.45x |
+| 4096 × 2048 (the head's width) | 4,849,664 B | 2.62 ms | 0.79 ms | 2.972 ms | **1.258 ms** | 2.36x |
+
+A token asks for 8 experts in each of 40 layers, i.e. **320 slices of each projection** (the install's own
+geometry): split **0.487 s**, fused **0.373 s**, so the fusion is worth **0.114 s per step — about 6.6%** of the
+1.74 s step `D104` left. That is the same order as the 7% `D107` bounded from the CPU and it says the same thing
+from the other side: **the unpack and the matmul together are not where the step goes.** `mix.read` is the *disk
+read* — 1.08 GB a step at the device's floor — and no kernel helps with bytes that have not arrived. The route to
+the operator's 7 tok/s remains **residency**, not arithmetic; this kernel is what makes residency possible (a
+resident slab never has to become fp32), not what makes it fast on its own.
+
+**The denormal boundary, found by the grid and pinned rather than hidden.** The first grid run failed exactly one
+output in seventeen, by 128 ULP. The weights were bit-identical on both sides; the difference was a single term
+where `x * w ≈ -5.8e-39`, a **denormal**, which the CPU keeps and the GPU returns as zero. It is the device, not
+the kernel and not the math mode: `MetalMatmul.matmul` — the kernel the tree already calls bit-exact — gives the
+same flushed answer on the same input, and switching the fused pipeline from `.relaxed` to `.safe` changed
+nothing. Weights themselves can never be denormal, because the smallest non-zero code is 1 and a denormal scale
+is flushed to zero first, so the property cannot be reached through the unpack; it needs a product of two small
+normals, which real activations and real weights never produce. `MetalInt4MatmulTests` asserts the boundary
+directly — the CPU keeps the denormal, both GPU kernels flush it — and `MetalMatmul`'s claim is narrowed to the
+form that is true.
+
+**Disposition.** Kept as a tested, measured asset and **not wired into the engine yet**. Wiring it means the
+provider hands over a **packed payload** instead of a `[Float]` slice and the slot bank stops holding fp32 — the
+residency change `DC-113`/`DC-123` describe — and that change is the next row, gated by the M1 install trace
+rather than by a kernel test. `D63` is the precedent: a bit-exact, faster kernel sat opt-in until something
+called it, and the switch it needs is a call site, not a flag.

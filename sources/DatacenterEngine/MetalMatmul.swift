@@ -124,7 +124,12 @@ public enum MetalMatmul {
     ///
     /// The arithmetic is settled — `D61` measured it, and `MetalMatmulTests` asserts this kernel is
     /// bit-identical to `Ops.orderedMatmul` over 288 shapes, the head's real shape and cache reuse — and the
-    /// real trace is `b0d382dbabf36df0…` either way. What is *not* settled is that it is ever faster, and the
+    /// real trace is `b0d382dbabf36df0…` either way. **One boundary is now known and stated rather than
+    /// assumed (`D108`):** an Apple GPU flushes a denormal *result* to zero, so a product of two small normals
+    /// is a different number here than on the CPU, for this kernel and for every other one on the device (the
+    /// math mode does not change it). The 288 shapes do not reach it because their values are O(1); real
+    /// activations and weights do not either. `MetalInt4MatmulTests.testADenormalProductFlushesOnTheGpu` is
+    /// where it is pinned. What is *not* settled is that it is ever faster, and the
     /// measurement says it is not (`D63`): with the conditions alternated rather than run in sequence, every
     /// phase that uses it is slower — `attn.core` 4.05 → 5.55 s, `mix.gateup` 1.17 → 1.62 s, `head` 1.74 →
     /// 1.86 s — while `mix.read`, which no matmul touches, is unchanged, so the difference is the kernel and

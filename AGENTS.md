@@ -16,7 +16,7 @@ A distributed inference engine for large MoE language models on a cluster of Mac
 minis and Mac Studios, over LAN/SFP/QSFP and Thunderbolt. The Swift engine under
 `sources/` **builds and passes its tests on Swift 6.4 / Xcode 27**, the toolchain
 `swift-tools-version:6.4` requires: `swift build` clean, `swift test --no-parallel`
-at **253 tests, 0 skipped, 0 failures** — the Metal kernel tests run on the node's GPU
+at **259 tests, 0 skipped, 0 failures** — the Metal kernel tests run on the node's GPU
 since `D34`. **M0, M1 and M2 are done and their gates have passed** — M0 on `Qwen/Qwen3.5-2B`
 (three frozen prompts, **40,683,520 bytes identical** to the contract, every discrete
 decision matching: `docs/m0-gate.md`), and **M1's gate passes in both of its forms** — the **checkpoint**
@@ -135,6 +135,16 @@ prefill, and its launcher's "at most 30% of physical RAM" warning is calibrated 
 archive — **dry run by default**, gates first, a clean scratch build scanned for warnings, `lipo -archs`
 asserted on the binaries *inside* the archive, one checksum beside it — and publishes only with
 `--publish`. The design, the plan and the status live in the wiki; the measurements live in `docs/`.
+**The GPU side of the int4 path was then built and measured (`D108`): the fused kernel is real, and the unpack
+was never the bottleneck.** `MetalInt4Matmul` dequantises inside the matmul, so the fp32 slab the engine
+materialises — about **6.5 GB of `Float` per token** — never exists, and it is **bit-identical** to
+`InstallFile.dequantizeInt4` followed by `Ops.orderedMatmul` over the `D107` grid. In release on the real shapes
+it is **1.23x / 1.45x / 2.36x** faster than unpack-then-matmul, which across a token's 320 slices of each
+projection is **0.114 s of a 1.74 s step — about 6.6%**, the same order as the 7% `D107` bounded from the CPU.
+So the arithmetic is not the route to 7 tok/s: `mix.read` is the **disk read**, and the route is **residency**.
+The grid also found a boundary that had been assumed away — **an Apple GPU flushes a denormal product to zero
+where the CPU keeps it**, for this kernel and for the `MetalMatmul` already in the tree, and no math mode changes
+it — now pinned by a named test rather than left implicit.
 
 ## Scope of this checkout
 
@@ -270,7 +280,7 @@ python3 tools/run_all_gates.py
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 253 --swift-skipped 0 --python-tests 427
+python3 tools/check_status_claims.py --swift-tests 259 --swift-skipped 0 --python-tests 427
 
 # The provenance position: no copied code, and no NOTICE to carry
 python3 tools/check_provenance.py
@@ -440,7 +450,7 @@ any failure.
   evidenced.** The first revision said there was no source code; the second said the
   engine runs; the third said it is "untested and does not run". The first two were
   wrong, and so is the third as written — on the toolchain the manifest requires, the
-  build is clean and **253 Swift tests pass**, while on the `macos-26` CI image (Xcode
+  build is clean and **259 Swift tests pass**, while on the `macos-26` CI image (Xcode
   26.x, below the 6.4 floor) the manifest does not even parse. **Any status claim must
   name the toolchain**, because that is the whole difference between "does not build"
   and "builds and passes". Point at a command and its output, never at an adjective.
