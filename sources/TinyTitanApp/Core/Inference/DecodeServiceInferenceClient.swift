@@ -17,12 +17,42 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
         case connected
     }
 
+    /// How this client reaches its decode service.
+    ///
+    /// The Unix socket is the local default and stays the default: it lives in a uid-private directory and is
+    /// reachable only by this user on this machine. TCP exists so the service can run on **another machine** —
+    /// the point of a LAN distribution — and it is opt-in, because it is strictly the wider exposure.
+    ///
+    /// Either case answers the same `(input, output)` pair, so nothing downstream of the connect knows which is
+    /// in use. That is the property the server side relies on too, and it is why this is a value rather than
+    /// two parallel code paths.
+    enum Transport: Sendable, Equatable {
+        case unixSocket(path: String)
+        case tcp(host: String, port: UInt16)
+
+        /// The file a Unix transport leaves behind; `nil` for TCP, which has nothing to unlink.
+        var socketPathToRemove: String? {
+            if case .unixSocket(let path) = self { return path }
+            return nil
+        }
+
+        var launchArguments: [String] {
+            switch self {
+            case .unixSocket(let path): return ["--socket", path]
+            case .tcp(let host, let port): return ["--host", host, "--port", String(port)]
+            }
+        }
+    }
+
     private struct Connection {
         var state: ConnectionState = .dead
         var input: FileHandle?
         var responses: DecodeServiceResponseRouter?
         var launchLabel: String?
-        var socketPath: String?
+        /// The transport this connection was opened over. A remote connection carries **no `launchLabel`**,
+        /// because nothing was launched — which is what makes `tearDownService`'s `guard let label` correctly a
+        /// no-op for a service that is not ours to tear down.
+        var transport: Transport?
     }
 
     /// Serializes command writes and carries the load epoch (D6): every unload
@@ -32,6 +62,8 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
     private var loadEpoch: UInt64 = 0
     private let connection = Mutex(Connection())
     private let serviceURL: URL
+    /// Where the service is, when it is not here. `nil` means the local default: launch a helper, use its socket.
+    private let remoteService: Transport?
     private let inferenceMemory = Mutex<UInt64?>(nil)
     private let activeGenerationID = Mutex<UUID?>(nil)
     /// A Stop that arrived before a generation had an id to name.
@@ -63,7 +95,25 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
         inferenceMemory.withLock { $0 }
     }
 
-    public init(serviceURL: URL? = nil) throws {
+    /// - Parameters:
+    ///   - serviceURL: the local helper binary. Used only when no remote endpoint is given.
+    ///   - remoteServiceHost: a **literal IPv4 address** of a decode service on the network. Supplying this means
+    ///     the client connects to that service instead of launching one, and `serviceURL` is unused.
+    ///   - remoteServicePort: the port that service listens on. Host and port are required together.
+    public init(
+        serviceURL: URL? = nil,
+        remoteServiceHost: String? = nil,
+        remoteServicePort: UInt16? = nil
+    ) throws {
+        switch (remoteServiceHost, remoteServicePort) {
+        case (nil, nil):
+            self.remoteService = nil
+        case (let host?, let port?):
+            self.remoteService = .tcp(host: host, port: port)
+        default:
+            throw DecodeServiceInferenceClientError.serviceURLUnavailable(
+                "a remote decode service needs both a host and a port; got host: \(remoteServiceHost ?? "nil"), port: \(remoteServicePort.map(String.init) ?? "nil")")
+        }
         if let serviceURL {
             self.serviceURL = serviceURL
         } else if let fallback = Self.resolvedServiceURL() {
@@ -234,7 +284,7 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
                     DecodeServiceCommand.shutdown))
                 try? input.close()
             }
-            Self.tearDownService(label: state.launchLabel, socketPath: state.socketPath)
+            Self.tearDownService(label: state.launchLabel, transport: state.transport)
         }
     }
 
@@ -243,6 +293,10 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
     private func ensureProcess() throws
         -> (input: FileHandle, responses: DecodeServiceResponseRouter) {
         if let handles = currentHandles() { return handles }
+        // **A remote service is not launched, it is reached.** This is the branch that makes the LAN case a
+        // lifecycle change rather than a connect swap: bootstrapping a launchd job for a service on another
+        // machine would start a second, local one and then talk to the wrong place.
+        if let remoteService { return try connectRemote(remoteService) }
         return try launchIndependentService()
     }
 
@@ -262,9 +316,14 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
         let socketDirectory = try Self.socketDirectory()
         let socketPath = socketDirectory
             .appendingPathComponent("\(getpid()).\(token).sock").path
-        guard socketPath.utf8.count < DecodeUnixSocket.sunPathCapacity else {
+        // **The `AF_UNIX` limit belongs to the Unix transport, not to this client.** This function only ever runs
+        // for the local case, so the constraint still holds — but stating it on the transport means a remote path
+        // cannot inherit a limit that means nothing for TCP.
+        let transport = Transport.unixSocket(path: socketPath)
+        if let path = transport.socketPathToRemove,
+           path.utf8.count >= DecodeUnixSocket.sunPathCapacity {
             throw AppInferenceError.modelLoadFailed(
-                "decode service socket path exceeds AF_UNIX limit (\(socketPath.utf8.count) >= \(DecodeUnixSocket.sunPathCapacity))")
+                "decode service socket path exceeds AF_UNIX limit (\(path.utf8.count) >= \(DecodeUnixSocket.sunPathCapacity))")
         }
         let propertyListURL = URL(
             fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
@@ -273,7 +332,7 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
             "Label": label,
             "ProgramArguments": [
                 serviceURL.path,
-                "--socket", socketPath,
+            ] + transport.launchArguments + [
                 "--launch-label", label,
             ],
             "RunAtLoad": true,
@@ -307,14 +366,14 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
         var lastError: Error?
         for _ in 0..<200 {
             do {
-                let handles = try DecodeUnixSocket.connect(path: socketPath)
+                let handles = try Self.connect(transport)
                 let responses = DecodeServiceResponseRouter(output: handles.output)
                 connection.withLock {
                     $0.state = .connected
                     $0.input = handles.input
                     $0.responses = responses
                     $0.launchLabel = label
-                    $0.socketPath = socketPath
+                    $0.transport = transport
                 }
                 return (handles.input, responses)
             } catch {
@@ -325,9 +384,33 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
         // Socket never became ready: boot out the launch job, terminate the
         // service process if it is still alive, and unlink the socket file so
         // no stale entry is left behind (D12).
-        Self.tearDownService(label: label, socketPath: socketPath)
+        Self.tearDownService(label: label, transport: transport)
         throw AppInferenceError.modelLoadFailed(
             "decode service socket did not become ready: \(lastError.map(String.init(describing:)) ?? "unknown error")")
+    }
+
+    /// Connect to a service already running elsewhere. **Nothing is launched**, so the connection carries no
+    /// `launchLabel` and `tearDownService` will not touch a job that is not this client's to touch.
+    private func connectRemote(_ transport: Transport) throws
+        -> (input: FileHandle, responses: DecodeServiceResponseRouter) {
+        let handles = try Self.connect(transport)
+        let responses = DecodeServiceResponseRouter(output: handles.output)
+        connection.withLock {
+            $0.state = .connected
+            $0.input = handles.input
+            $0.responses = responses
+            $0.transport = transport
+        }
+        return (handles.input, responses)
+    }
+
+    /// Open the transport's handles. One function, so which transport is in use is decided in exactly one place.
+    private static func connect(_ transport: Transport) throws
+        -> (input: FileHandle, output: FileHandle) {
+        switch transport {
+        case .unixSocket(let path): return try DecodeUnixSocket.connect(path: path)
+        case .tcp(let host, let port): return try DecodeTCPSocket.connect(host: host, port: port)
+        }
     }
 
     /// Re-establishes the service connection after a crash and re-issues the
@@ -499,7 +582,7 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
             return value
         }
         if state.state == .connected {
-            Self.tearDownService(label: state.launchLabel, socketPath: state.socketPath)
+            Self.tearDownService(label: state.launchLabel, transport: state.transport)
         }
     }
 
@@ -562,7 +645,7 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
         return directory
     }
 
-    private static func tearDownService(label: String?, socketPath: String?) {
+    private static func tearDownService(label: String?, transport: Transport?) {
         guard let label else { return }
         // Capture the PID before bootout so a service that survives the
         // bootout (slow startup, wedged accept loop) can still be killed.
@@ -571,7 +654,9 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
         if let pid, kill(pid, 0) == 0 {
             _ = kill(pid, SIGKILL)
         }
-        if let socketPath { unlink(socketPath) }
+        // Only a Unix transport leaves a file behind. Calling `unlink` on a host string would be meaningless
+        // rather than harmful — but it would also misreport what was cleaned up.
+        if let path = transport?.socketPathToRemove { unlink(path) }
     }
 
     /// Boots out decode-service jobs whose owning app is gone, killing any
@@ -593,7 +678,10 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
         for job in DecodeServiceJobSweep.orphans(in: jobs,
                                                  isAlive: DecodeServiceJobSweep.processIsAlive) {
             let socketPath = directory?.appendingPathComponent(job.socketName).path
-            tearDownService(label: job.label, socketPath: socketPath)
+            // Orphaned launchd jobs are local by construction — the sweep reads `launchctl` on this machine —
+            // so these are Unix transports whatever this client is configured to use.
+            tearDownService(label: job.label,
+                            transport: socketPath.map { Transport.unixSocket(path: $0) })
         }
     }
 
