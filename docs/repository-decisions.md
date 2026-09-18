@@ -5151,3 +5151,42 @@ without a conflict between them.
 **Not started.** This is the port's specification, recorded while the source copy runs. What it does not yet
 answer is where the plan is *read* on the reference's side — a CLI flag, a config field or an environment
 variable — which is a small question that belongs with the code that consumes it rather than with the design.
+
+## D161 — Reproducing the reference's `-ram 3gb` means `--expert-cache-slots 40`, and the CLI has no `--ram` at all
+
+The objective's reference is *"7.075 tok/s at a 3 GB expert cache"*, and the operator's goal text names it as
+**`-ram 3gb`**. Reproducing the number needs the same configuration, so it matters what that flag actually is —
+and reading it found three things that would each have made the comparison wrong.
+
+**1. `--ram` is a `server_launcher.sh` argument, not a runtime flag.** `TinyTitanCLI --help` lists its complete
+option set and **there is no `--ram` and no `--ram-budget`**. The CLI exposes
+`--expert-cache-slots <n>` — *"Routed-expert cache slots per layer"* — and the launcher's `--ram <1|2|4|8|16|32>`
+is its own interface, documented as *"expert-cache budget in GB (**GPU models only**)"*.
+
+**2. `--ram` does not apply to the CPU engine at all.** The launcher says so outright:
+
+> *"Nothing to ask: the CPU engine holds the whole model resident and has no routed-expert cache, so a budget
+> would be a number that changes nothing."*
+
+So a CPU-engine run ignores the budget entirely. If the 7.075 tok/s figure is a GPU/Metal-engine number — and
+`--expert-cache-slots`, `--rdadvise`, `--kv-bits` and `--prefill-chunk` in the CLI's own help all point that way
+— then **the right comparison for a CPU run is not the same configuration at all**, and saying "7 tok/s on this
+node" without naming the engine would be comparing two different things.
+
+**3. The budget maps onto slots in a way worth writing down.** The expert's stored size for a 256-expert
+35B-A3B is **1,818,624 B** (gate_up 1,212,416 + down 606,208), 40 layers:
+
+```
+40 slots/layer x 1,818,624 B x 40 layers = 2.91 GB  ~= the reference's 3 GB
+```
+
+and `40` is one of the values `--expert-cache-slots` accepts (8, 16, 24, 32, 40, 48, 64, 96, 112, 128, 160,
+192, 256). So **`--expert-cache-slots 40` is the equivalent of the reference's `-ram 3`** on this model, and it
+is the configuration to measure against. That is arithmetic from the expert size and the layer count, **not** a
+measurement, and it is labelled as one.
+
+**What this changes.** The first single-node run must **name its engine and its slot count**, and the claim it
+supports must say which reference figure it is being compared against. The reference's own curve is
+non-monotonic — 5.164 tok/s at 1 GB, 6.019 at 2 GB, **7.075 at 3 GB**, 2.756 at 4 GB, the last collapsing
+because a 4 GB wired cache no longer fits in 8 GiB — so a run at the wrong slot count is not merely a different
+number, it is a **different point on a curve with a peak in it**.
