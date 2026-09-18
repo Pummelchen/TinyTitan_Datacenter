@@ -5058,3 +5058,47 @@ of it required a working model to establish.
 array for a real layer would be larger, so its serialisation cost would be higher and 15.0 ms is again a **floor**
 for that exchange, not a prediction. The link is Wi-Fi (`D155`), so a wired cluster would do better; the farm of
 four Mac minis may not be on Wi-Fi at all, and this measures **this pair**, not that farm.
+
+## D159 — The install is two steps, not one, and the disk peak needs sequencing because of it
+
+Checking what the engine actually loads — rather than assuming the converter's output was the install — found
+that `prepare_agentworld.py` produces an **intermediate**, not a model the CLI can open. The full pipeline for
+`qwen36`, read from `tools/install_models.sh`'s `convert_qwen35moe` branch:
+
+```bash
+# 1. quantize, one source shard at a time
+tools/prepare_agentworld.py --model qwen36 --bits 4 8 \
+    --output .build/qwen36-affine --work .build/qwen36-shards
+
+# 2. repack that snapshot into the install
+TinyTitanRepack --input-snapshot .build/qwen36-affine-4bit \
+    --model-id qwen3.6-35b-a3b --output <install-dir>
+```
+
+`TinyTitanCLI --model <dir>` wants a **`.gturbo` model directory**, and step 1 does not produce one: its comment
+says the release is *"quantized one shard at a time by `prepare_agentworld.py` … **then repacked**"*. The script
+even keeps the affine snapshot until both widths' installs exist, precisely because the snapshot is an input
+rather than an artifact.
+
+**Had I run only step 1 — which is what `D139` recorded and what the last several rounds planned — the result
+would have been ~20 GB of affine snapshot that no engine can load**, discovered only after the conversion time
+was spent. This is the same class as the earlier mis-scoped work in this session: acting on a plan derived from
+a filename and a flag rather than from reading the code that runs it.
+
+**And it changes the disk arithmetic, which is the part that has bitten twice already.** `D151` planned
+source + scratch + output. The real chain is:
+
+| stage | what is on disk | total |
+| --- | --- | --- |
+| quantize | source 67 + work ~10 + snapshot ~20 | **~97 GB** |
+| **delete the source** (`rm -rf` the hf-cache copy; it is a copy) | snapshot ~20 | ~20 GB |
+| repack | snapshot ~20 + install ~20 | **~40 GB** |
+
+Against macbook-ab's **110 GB** free, doing it in that order is comfortable. Doing it naively — keeping the
+source while repacking — would be 67 + 20 + 20 = **~107 GB against 110 GB**, a 3 GB margin on a machine whose
+whole job is to avoid exactly the disk exhaustion that cost two attempts on this node. The source is deleted
+between the stages because by then it has done its job and macbook-ab's copy is itself only a copy.
+
+**Only 4-bit is built.** `--bits 4` rather than the installer's `--bits 4 8`, because the 8-bit snapshot would
+double the intermediate for a width this objective does not use, and the whole reason for building on
+macbook-ab is that space there is finite too.
