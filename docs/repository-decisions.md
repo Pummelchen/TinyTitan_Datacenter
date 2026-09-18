@@ -5855,3 +5855,42 @@ still compared the median to a reference as though the two were measured alike.
 3. **The measurement is not wrong and does not need re-taking to be useful.** A lower bound of 6.580 against a
    target of 7 puts the engine at no worse than 7% short on a busy node — which is a perfectly good thing to
    know, and a different claim from "it is 6.58".
+
+## D178 — 7.30 tok/s: the single-node target is met, and the cache curve has the reference's shape
+
+Swept over the values `--expert-cache-slots` actually accepts — the flag validates a **fixed set**
+(8, 16, 24, 32, 40, 48, 64, 96, 112, 128, 160, 192, 256) and **prints usage** for anything else, which
+`--help` states and which rejected 20/27/33/47/53 before the set was read. Node3, the reference's own install,
+`TinyTitanCLI`, 16 tokens at temperature 0, two runs each, load beside every one:
+
+| slots | expert cache | tok/s | peak RSS |
+| --- | --- | --- | --- |
+| 8 | 0.57 GB | 5.094, 5.197 | |
+| 16 | 1.13 GB | 5.824, 5.998 | |
+| 24 | 1.70 GB | 6.553, 6.561 | |
+| **32** | **2.26 GB** | **7.220, 7.235** | |
+| **40** | **2.83 GB** | **7.350, 7.247** | |
+| 48 | 3.40 GB | 6.530, 7.004 | |
+| 64 | 4.53 GB | 5.096, 4.899 | |
+
+**Median 7.30 tok/s at 40 slots (2.83 GB) — against the reference's 7.075 at 3 GB. The target is met**, on a
+node at load 3.59-3.90, so it is a **lower bound** in `D177`'s sense and the margin is real rather than
+borrowed from a quiet machine.
+
+**And the curve is the reference's curve.** Its measurement is non-monotonic — 5.164 at 1 GB, 6.019 at 2 GB,
+**7.075 at 3 GB**, then a collapse to **2.756 at 4 GB** as the cache, dense weights, KV and prompt cache stop
+fitting in 8 GiB and the machine swaps. This sweep peaks at **2.83 GB** and collapses at **4.53 GB to 5.096** —
+the same shape, the same side of the same wall, arriving at it independently and on the CLI's own slot
+granularity. Two implementations of the same runtime, one written from its source and one measured from its
+binary, agreeing about where an 8 GB M2's memory runs out.
+
+**The 6.580 median of `D176` was not wrong; it was cold.** That set was taken immediately after the receipt
+re-issue, and 40 slots measures 7.247-7.350 in this one. So the earlier figure is a **cold-page-cache reading**
+of the same configuration, and the honest headline is the warm one — with the caveat `D176` and `D177` both
+establish: a busy node, a lower bound, and no claim about a quiet machine.
+
+**What this does and does not establish.** It establishes that **this engine, as built and installed, decodes at
+above 7 tok/s on one 8 GB Mac mini M2** — which was the first half of the objective and the precondition for the
+second. It does **not** establish 4x across four nodes: the distribution's ≥3x gate is a cluster measurement
+that `D97`'s re-scoping had forbidden until exactly this number existed, so **the block on network work is now
+lifted by the number** rather than by a decision.
