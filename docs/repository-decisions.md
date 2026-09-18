@@ -10167,3 +10167,50 @@ the reference's near-linear cache curve argues for weak skew, while a measured 1
 real structure. **The trace is the instrument that separates them, and it now exists.** The next step is the
 corpus - twenty prompts x 128 tokens, minutes of a single node's normal work - and then the per-layer Gini and
 entropy that turn this impression into a number.
+
+## D290 — Test 1 measured: routing is near-uniform, the affinity graph is not justified, and the cache is losing half its hits
+
+Twenty prompts spanning code, prose, mathematics, translation and recall, 128 tokens each, on one node: **2,745
+tokens and 109,800 layer-routing decisions**, 640 B a token exactly as `D289` predicted. The per-layer
+distributions over the 256 experts:
+
+| | min | median | max |
+| --- | --- | --- | --- |
+| Gini | 0.226 | **0.431** | 0.498 |
+| normalised entropy | 0.923 | **0.943** | 0.985 |
+| top-32 of 256 coverage | 0.224 | 0.337 | 0.399 |
+| top-64 of 256 coverage | 0.389 | 0.533 | 0.599 |
+
+**All 256 experts are used**, and the single hottest expert takes **0.604%** of all picks against **0.391%** for a
+perfectly uniform distribution - **1.5x the uniform rate**, which is very weak skew indeed.
+
+**Verdict against `D286`'s own thresholds: the affinity idea is not justified.** `D286` said a median Gini above
+0.5 would mean building the map and the co-activation partition, 0.2-0.5 would mean the replication tier only, and
+below 0.2 would mean the idea is dead. **0.431 with an entropy of 0.943 - a normalised entropy where 1.0 is
+perfectly uniform - is the middle case at best, and the entropy argues for the lower end.** There is no hot core to
+replicate and no structure for a graph partition to exploit. **The operator's hypothesis was worth testing, the
+instrument to test it was cheap, and the answer is no.** That is a result, and it is recorded as one.
+
+**It also settles which of two contradictory priors was right.** `D286` recorded that the reference's near-linear
+cache curve argued for weak skew while a measured **1.78x** slot-count lever argued for real structure. **The
+curve was right and the lever was not evidence of skew** - slot count matters because misses are expensive, not
+because routing concentrates.
+
+**And then the measurement found something neither prior predicted.** The same coverage statistic, computed two
+ways:
+
+    per layer, top-64 of 256 cover   0.533
+    pooled across all 40 layers, top-64 cover   0.302
+
+**A cache of 64 slots catches 53% of the picks if it is partitioned per layer, and only 30% if it is one shared
+bank - because the hot experts of one layer are largely not the hot experts of another.** The engine has a single
+shared bank, so **it is leaving roughly 40% of its achievable hits on the floor**, and this is the first
+measurement in this session that points at a change with a clear mechanism: **partition the cache per layer, as the
+sister project's runtime already does** ("per-layer slot caches", `D286` section on what is left).
+
+**What it does to the design document.** `D286` section 9's first test is answered and its section 8 - the
+two-tier placement - is **withdrawn**: with this routing there is no hot core worth replicating. The 70% hit rate
+that section 3 called "an assumption today and the first thing to measure" is **not achievable from skew**; the
+realistic figure is capacity-bound at **53% per-layer** and **30% pooled**. **Design A is unaffected** - it
+partitions by layer, so its per-stage cache *is* per-layer by construction, which is exactly why it reads 0.533
+rather than 0.302. **That is now a measured point in its favour rather than an argument.**
