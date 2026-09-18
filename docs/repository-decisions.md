@@ -8916,3 +8916,28 @@ called it verification.**
 passed. `swift test --no-parallel`: **0 failure markers**. Not yet run: the Markdown link check, and the
 ThreadSanitizer pass, which is the one most likely to say something about the exchange's blocking sends and receives
 and which is therefore the one most worth running before anything is concluded about the wire.
+
+## D255 — ThreadSanitizer is clean on the exchange, so the prose invariants hold under a tool
+
+`D254` left ThreadSanitizer as the one gate most worth running, because `ShardPeerChannel` does blocking sends and
+receives, `ShardPeerSet` holds connections across threads, and `D253` had just added an `unchecked-invariant:`
+comment whose content was **an argument in prose rather than a checked fact**.
+
+    swift test --no-parallel --sanitize=thread --filter "Shard"
+    TSAN EXIT=0      0 ThreadSanitizer warnings      65 tests in 14 suites passed
+
+**So the invariants hold.** `ShardPeerSet`'s "written only by `connect()`, which runs once before any request" and
+`ShardExchangeServer`'s equivalent are not merely documented - no data race was reported on any of the paths that
+exercise them, including `ShardExchangeIntegrationTests`, which drives both halves over a real socket.
+
+**What this does and does not establish.** It establishes that the exchange has no race the sanitizer can see on
+these paths, which is more than the prose claim had behind it an hour ago. It does not establish that the four-node
+run would be clean: the paths TSan exercised are the tests', and a real run adds forty layers of pipelining, a
+serving peer whose work is on the requesting node's critical path, and a `Compute` that does not exist yet. **It
+retires a doubt rather than answering the question the doubt was standing in for.**
+
+**The fork's gate set is now fully run except one.** Build release with the warning grep: 0 warnings. `tools/lint.sh`:
+all ok, with `converter-expert-order` SKIP for a missing `numpy` - reported, not passed. `swift test --no-parallel`:
+0 failure markers. `--sanitize=thread --filter Shard`: 0 warnings. **Not run: the Markdown link check**, which the
+fork's CI also performs and which this session has not executed once. Its documentation has been edited heavily, so
+that is the next thing to run rather than the next thing to assume.
