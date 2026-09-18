@@ -107,6 +107,40 @@ struct DecodeTCPSocketTests {
         try? accepted.input.close()
     }
 
+    /// **The test the three above are not.** Those prove the *socket* carries bytes; this proves the
+    /// **service protocol** does — a real `DecodeServiceCommand` encoded by `DecodeFrameCodec`, framed, sent
+    /// over TCP, and read back as the same command. It is the difference between "the transport works" and
+    /// "the service can run across a LAN", and only the second is what a distributed engine needs.
+    ///
+    /// Both directions are exercised, because a transport that delivers one way is not a transport: the
+    /// reply path is the one an expert shard's result travels back on.
+    @Test("a real service-protocol frame round-trips over TCP, both directions")
+    func serviceCommandOverTCP() async throws {
+        let server = Self.acceptInBackground(port: Self.port)
+        let client = try await Self.connectWhenListening(port: Self.port)
+        let accepted = try await server.value
+
+        // Client -> service: the shutdown command, which carries no payload, so a failure here is the frame
+        // and not the encoding of a large request.
+        try client.output.write(contentsOf: DecodeFrameCodec.encode(DecodeServiceCommand.shutdown))
+        let received = try DecodeFrameCodec.read(DecodeServiceCommand.self, from: accepted.input)
+        guard case .shutdown = received else {
+            Issue.record("expected .shutdown, decoded \(received)")
+            return
+        }
+
+        // Service -> client: the reply path.
+        try accepted.output.write(contentsOf: DecodeFrameCodec.encode(DecodeServiceCommand.cancel(nil)))
+        let reply = try DecodeFrameCodec.read(DecodeServiceCommand.self, from: client.input)
+        guard case .cancel(let identifier) = reply, identifier == nil else {
+            Issue.record("expected .cancel(nil), decoded \(reply)")
+            return
+        }
+
+        try? client.output.close()
+        try? accepted.input.close()
+    }
+
     /// The listening side is started in a detached task, so a connect can arrive before `bind`/`listen` has
     /// run. Retrying is the honest way to express that: the transport has no "ready" signal to wait on, and
     /// a fixed sleep would be a race that passes on a quiet machine and fails on a busy one.

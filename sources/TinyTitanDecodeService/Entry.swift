@@ -12,10 +12,18 @@ import TinyTitanDecodeProtocol
     static func main() async {
         let socketPath = argument(after: "--socket")
         let launchLabel = argument(after: "--launch-label")
+        // A LAN peer of `--socket`. Either transport answers the same `(input, output)` pair, so nothing below
+        // this point knows which one is in use — that is the whole reason the TCP path is a peer rather than a
+        // parallel implementation. `--socket` wins if both are given, because a Unix socket in a uid-private
+        // directory is the narrower exposure and the older, better-tested path.
+        let socketHost = argument(after: "--host")
+        let socketPort = argument(after: "--port").flatMap(UInt16.init)
         let handles: (input: FileHandle, output: FileHandle)
         do {
             handles = if let socketPath {
                 try DecodeUnixSocket.listenAndAccept(path: socketPath)
+            } else if let socketHost, let socketPort {
+                try DecodeTCPSocket.listenAndAccept(host: socketHost, port: socketPort)
             } else {
                 (.standardInput, .standardOutput)
             }
