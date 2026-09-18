@@ -6550,3 +6550,37 @@ unattributed.
 across four, so the read stops being the obstacle the moment it runs at the rate the repository has already
 measured — and the obstacle becomes whatever the remaining ~100 ms of waiting is. That is the question the next
 round has to answer, and it needs the unattributed 280 MB/s identified first.
+
+## D194 — The engine reads 91.4 MiB/token and the disk moves ~148 MB/step, so a third of the I/O is not the expert path
+
+`Q11` asked whether `D191`/`D193`'s disk figure and the engine's own counter really disagree. Measured, not
+inferred, on node3 with the reference's install at 40 slots:
+
+    TINYTITAN_DECODE_IO_TRACE=1, 64 tokens
+    [decode expert io] hits 16694 misses 3466 (82.8% hit) 5.71 GiB = 91.4 MiB/token
+    decode 8.62 s / 64 tokens = 134.7 ms/step -> 7.427 tok/s
+
+**91.4 MiB/token = 95.9 MB per step**, which agrees with the 16-token run's 101.0 MiB/token and is therefore not
+a startup artefact. Against the disk's measured **~1.1 GB/s**, which over a 134.7 ms step is **~148 MB**, that
+leaves **~52 MB per step, about 35%, that the expert path does not account for**.
+
+**The leading candidate, not yet measured.** The install's `model_weights.bin` is **1,923,425,536 B** and the
+node's RSS during decode is **4.45 GB** of 8 GB, so the dense payload cannot be fully resident and the page cache
+is small. `SHARD_INSTALL_CACHED` is on by default (`D111`), which routes those reads *through* the buffer cache
+rather than bypassing it - fast when they hit, a disk read when they do not. Attention and head weights are
+touched every step, so a partly-missing dense payload would show up exactly as this: steady per-step I/O that is
+not the experts.
+
+**Why this is worth resolving rather than filing.** It is the last unexplained term, it is the same size as the
+expert misses are after sharding divides them (`D188`: 96/4 = 24 MB), and it decides which lever is next:
+
+* if it is **residency** - the dense payload partially evicted - it is removable by holding more of it, and
+  `D89`'s decoded-weight cache and `D122`'s `mlock` are the repository's two existing attempts at that, one of
+  which lost on a swapping machine and one of which won by 5.7%;
+* if it is **prefill or the page cache settling** inside the measurement window, then `D193`'s 820 MB/s achieved
+  rate is an underestimate, the read path is nearer its measured 3.44 GB/s ceiling than it appears, and the
+  remaining gap is elsewhere entirely.
+
+**The measurement that separates them** is the same iostat run with the prefill excluded and the run long enough
+that the decode dominates, which is the next thing to take. Until then this is a **measured disagreement with two
+live explanations**, and `D190` is the standing reminder of what happens when one of them is assumed.
