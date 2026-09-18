@@ -9600,3 +9600,40 @@ saying that before doing it is the point of having the arithmetic.
 **Order, if it is done:** the second `MoE` with `topKExperts: 1`; one-slot `remoteActs`, `remoteY` and `remoteResidual`;
 `remoteExpertValues` without `remoteWeight`; then the same three-repeat measurement `D271` took, so the two numbers
 are comparable.
+
+## D274 — The eight-slot waste was worth 11%, not eight times: the serving cost is elsewhere
+
+`D273` proposed a second `MoE` with `topKExperts: 1` on the reasoning that a peer's request costs eight phase-1 and
+eight phase-2 encodes to answer one expert, and that this eight-times term was "the whole of the 4.9x gap `D271`
+measured between a serving node and a requesting one". **It is built and it is measured, and the reasoning was
+wrong:**
+
+| | `D271` (eight slots) | now (one slot) |
+| --- | --- | --- |
+| serving node | 1.358, 1.374, 1.363 | **1.499, 1.517** |
+| requesting node | 6.605, 6.581, 6.392 | **6.643, 6.507** |
+
+**The serving node gained 11% and the requesting node gained nothing.** Zero NaN throughout, loads 1.11-1.42.
+
+**So the eight encodes were not eight times the cost of answering.** The reduction is real and worth keeping - it
+removes work that was pure waste, and it deletes the one-hot weight buffer whose element type caused the NaN - but
+**the serving node's cost is dominated by something else**, and this is the third time in this session that a
+component costing "obviously most of it" turned out to be a fraction: `D239` found the expert read worth zero,
+`D241` found the ownership filter irrelevant to the device work, and now the slot width is worth 11%.
+
+**What the serving path actually costs, since the encodes are not it.** Per request it builds a Metal argument
+buffer, encodes two dispatches, commits, `await`s completion, and reads `y` back through shared memory; then the
+exchange adds a round trip over the wire, which `D208` measured at **0.079 ms** for a request and reply of this
+size. At eight routed experts and forty layers that is 320 requests a token on the serving node, and **1.51 tok/s is
+663 ms a token against a single node's 130 ms** - so roughly 533 ms over 40 layers and 8 experts is **1.7 ms per
+request**, of which the wire is 0.079. **The remaining ~1.6 ms is the dispatch-and-wait pair**, which is exactly the
+shape `D114` found in the single-node path: at these shapes the kernel is microseconds and the *wait* is the cost.
+
+**Which gives the next lever a name, and it is not the one this record set out to test**: batching a layer's peer
+requests into one command buffer, as `D114` did for the local experts, rather than the per-request commit and await
+this path performs. **A down-only kernel would not address it** - `D114`'s lesson was that the kernel was never the
+cost.
+
+**And none of it reaches 21 tok/s**, for the reason `D272` gives: the step outside the routed MoE is 117.6 ms of
+137.0 and is replicated on every node by construction. **The honest summary of this round is that a change I
+expected to be worth 4.9x was worth 1.11x, and the measurement is what says so.**
