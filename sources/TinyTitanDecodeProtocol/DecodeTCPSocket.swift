@@ -113,6 +113,11 @@ public enum DecodeTCPSocket {
 
     private static func makeAddress(host: String, port: UInt16) throws -> sockaddr_in {
         var address = sockaddr_in()
+        // The BSD convention is to carry the length in the address as well as pass it to `connect`/`bind`.
+        // It was added while diagnosing an `EINVAL` and it was **not** what fixed it — the failures were a
+        // test-suite port collision and an `fsync` on a socket. It is kept because it is conventional and
+        // harmless, and it is labelled here so nobody later reads it as a proven requirement.
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         address.sin_family = sa_family_t(AF_INET)
         address.sin_port = port.bigEndian
         guard inet_pton(AF_INET, host, &address.sin_addr) == 1 else {
