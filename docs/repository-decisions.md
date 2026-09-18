@@ -4599,3 +4599,75 @@ What this cost: six rounds of reporting an "unexplained" defect in a gate that w
 messages repeat the false claim, and a standing caveat that made every honest gate report weaker than it should
 have been. The lesson is the one the repository already teaches and I did not apply: **keep the output, label
 the results, and before calling something intermittent, read what it said.**
+
+## D147 — The decode service accepts a LAN transport, and the protocol is proven to cross it
+
+The two changes `D145` specified, and the first one is in the service:
+
+**The server** (`sources/TinyTitanDecodeService/Entry.swift`, fork) now reads `--host` and `--port`, and when
+there is no `--socket` it starts a `DecodeTCPSocket` listener. It went into the `if-let` chain the stdio
+fallback already used, because either transport answers the same `(input, output)` pair and **nothing below
+that point knows which one is in use** — which is the whole reason the TCP path was built as a peer rather than
+a parallel implementation. `--socket` wins if both are given: a Unix socket in a uid-private directory is the
+narrower exposure and the older, better-tested path.
+
+**The test** is the one the three existing socket tests deliberately are not. Those prove the *socket* carries
+bytes; this proves the **service protocol** does — a real `DecodeServiceCommand` encoded by `DecodeFrameCodec`,
+framed, sent over TCP, read back as the same command, **in both directions**. The reply direction is not
+decoration: it is the path an expert shard's result travels back on, and a transport that delivers one way is
+not a transport.
+
+```
+swift build -c release                     0 errors, 0 warnings
+swift test --filter DecodeTCPSocketTests   4 tests in 1 suite passed
+  ✔ a message round-trips over loopback                                       0.001 s
+  ✔ a partial frame arrives in pieces and still reassembles                   0.051 s
+  ✔ a peer that disappears mid-frame surfaces as a closed handle, not a signal 0.021 s
+  ✔ a real service-protocol frame round-trips over TCP, both directions        0.001 s
+```
+
+**Not done, deliberately: the client.** `DecodeServiceInferenceClient` is coupled to the Unix path in more than
+the `connect` — it builds a launchd plist carrying `--socket`, guards on `sunPathCapacity`, and stores
+`socketPath` for cleanup — so making it transport-agnostic is a larger change than the server's and belongs in
+its own step with its own test. The service can be reached over TCP today; nothing yet reaches it that way from
+the app. That is the next code step, and it is the last piece before a two-node run can be attempted on
+anything.
+
+## D148 — The disk reached 1.2 GB free, and `D140`'s fix was correct but not running
+
+The disk watchdog stopped a run and wrote `.build/DISK_STOP`, and the Python suite then refused every heavy
+test with *"the disk watchdog stopped a run and nobody has cleared it"* — the guard doing exactly what it was
+built to do. The marker read:
+
+```
+2026-09-18 13:15:57 STOP: 1.33 GB free, below 5.0 GB; stopping 0 heavy job(s)
+2026-09-18 13:16:07 STOP: 0.77 GB free, below 5.0 GB; stopping 0 heavy job(s)
+```
+
+**`stopping 0 heavy job(s)` is the defect, and it is mine.** `D140` added the reference's converters to
+`HEAVY_PATTERNS` precisely so the watchdog could name the job filling the disk — but **the watchdog process
+(pid 81268) had been started several rounds before that change and was still running the old pattern list**.
+Editing `tools/disk_watchdog.py` does not reach a process that imported it. So the guard detected the
+condition, wrote its marker, and then could not act on the one process responsible: `prepare_agentworld.py`
+kept writing while free space fell to **0.77 GB**, which is the shape of the incident that panicked this node
+(`D58`).
+
+**What was done, in order:** read both markers before touching them; stopped the converter (`SIGTERM` had not
+been enough — it needed `SIGKILL`); deleted the partial, useless output (`.build/qwen36-shards` and
+`.build/qwen36-affine-4bit`, ~19 GB); confirmed **1.2 GB → 29 GB free**; killed the stale watchdog and started
+a fresh one, **verifying in the new process that `prepare_agentworld.py` and `install_models.sh` are in
+`HEAVY_PATTERNS`**; then, and only then, cleared the markers.
+
+**The lesson is not "the watchdog failed".** It detected the condition correctly and refused further heavy work
+correctly, and the marker is what surfaced the whole thing — the 5 GB floor and the three-reading rule both
+did their job. The lesson is that **a guard's *configuration* is live only when its *process* is restarted**,
+which is `D132` and `D140`'s theme one level further out: `D132` was a list that went stale as the tree moved,
+`D140` was a list that did not name the new work, and this is a process still enforcing a list that had already
+been fixed. Every one of them is the same failure — **the check is not the file, it is what is running** — and
+it is why the restart is now part of the fix rather than an afterthought.
+
+**What this costs the objective:** the 4-bit `qwen36` install is gone, and with it about an hour of conversion.
+The reference is still one install away from the single-node measurement, but the install must be rebuilt from
+scratch and **cannot fit on this node at the same time as its 67 GB source** — which is the decision that has
+been outstanding for many rounds and is now the only thing standing between this repository and the first
+half of its goal.
