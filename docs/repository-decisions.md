@@ -10660,3 +10660,45 @@ measurement, if it is made, must be attention-shaped at a full chunk.
 runs; the GPU path through it reaches **1,487 GFLOP/s at a 4,096-token chunk**; a projection shows **no** ANE
 benefit at any size tried, from 128 to 4,096; and **the shape the ANE is actually used for has not been probed.**
 Section 8b of the design document continues to carry no measured ANE support, which remains correct.
+
+## D302 — The ANE does win, on attention at a full chunk: 1.9x the GPU path, and the shape family was the whole story
+
+`D301` concluded from the sister project's README that its ANE win was for **"the full-attention prefill block"**, that
+a 1x1 conv is a **linear projection** and therefore a different shape family, and that a projection probe had told
+us nothing about attention. **The attention probe is run, and it reverses five rounds of negatives.**
+
+    QK^T at a full 4,096-token chunk:  [1,1,4096,128] x [1,1,128,4096]   4.29 GFLOP, 34 MB output
+
+| unit | median | GFLOP/s |
+| --- | --- | --- |
+| **ALL (ANE-eligible)** | **3.83 ms** | **1,122.4** |
+| CPU_AND_GPU | 7.14 ms | 601.8 |
+| CPU_ONLY | 7.64 ms | 562.3 |
+
+**`ALL` is 1.9x faster than the GPU path and 2.0x the CPU - the first time in six probes that the ANE-eligible unit
+has won anything.** And the contrast with the previous round is the entire finding:
+
+| shape (both at 4,096 tokens) | ALL | CPU_AND_GPU | verdict |
+| --- | --- | --- | --- |
+| **projection** (1x1 conv) | 389.2 GFLOP/s | **1,487.3** | ANE-eligible **3.8x slower** |
+| **attention** (QK^T) | **1,122.4** | 601.8 | ANE-eligible **1.9x faster** |
+
+**Same chunk size, same toolchain, same machine, opposite results - because the shape family changed.** That is the
+whole answer to `D296` through `D301`: every negative in those rounds was a **projection**, and the ANE is not for
+projections. **It is for attention**, exactly as the sister project's README says and as `D300`/`D301` inferred from
+it rather than measured.
+
+**What this establishes, and it is worth being precise about.** The ANE **does** engage on this machine through Core
+ML, and on an attention-shaped op at a full chunk it is **1.9x the GPU path Core ML offers**. Six probes have
+finally produced a positive, and the four negatives before it were mine: `D298` was a folded model I should have
+caught sooner, and `D296`, `D297`, `D299`, `D301` all tested a shape the ANE does not serve.
+
+**What it does NOT establish.** That 1,122 GFLOP/s is **7% of the M2's ~15.8 TOPS** Neural Engine, so this is
+evidence that the ANE is *engaged and useful*, not that it is being used well - a properly built attention block
+should be faster still. And one op is not a block: the sister project moves the **whole full-attention prefill
+block** - QK^T, softmax and PV together - so **the 1.9x is a floor on the op, not a measured speedup on the block.**
+
+**And it makes `docs/distribution-design.md` section 8b testable rather than merely intended.** The design says ANE
+prefills, GPU decodes. **The measurement now says that is plausible for attention at a full 4,096-token chunk and
+not for projections** - which is a narrower and more useful claim than the section previously carried, and it comes
+with the operating point, the compile cost and the `used_ane` guard that `D300` recovered from upstream.
