@@ -7165,3 +7165,41 @@ none by more reading.
 now unambiguously the **41.3 ms of host work that does not divide** - the same term `D202` isolated. But the
 margin is smaller than it has looked all session, and the exchange is no longer a reason to doubt the target: at
 3.2 ms it is 2.4% of the step, not 13%.
+
+## D209 — The host term is CPU, it does not divide, and 21 tok/s needs it cut 2.5x
+
+`D202` decomposed the single-node step into three terms that sum exactly to it, and `D208` replaced the exchange
+cost with a measured 3.2 ms. What was left unstated is **what the 41.3 ms host term is**, and a measurement
+already taken answers it:
+
+    step 132.7 ms = reads 49.4 + device 42.0 + host 41.3      D202
+    host share of the step                31.1%
+    host CPU measured during decode       31-37% of one core   D191
+
+**They match.** The host remainder is **the CPU work the host was observed doing** - planning, encoding,
+dispatching, reading back - and not a hidden read wait. That matters because the two scale differently: a read
+wait is per-expert and divides with the experts, while CPU work in the host loop is **per layer and identical on
+every node**.
+
+**So the scaling, with the reads hidden behind the device work a node still has:**
+
+    1 node   device 42.0  reads 49.4   host 41.3  exchange 3.2  =  93.9 ms  ->  10.65 tok/s
+    2 nodes  device 32.8  reads 24.7   host 41.3  exchange 3.2  =  77.3 ms  ->  12.94 tok/s
+    4 nodes  device 28.2  reads 12.3   host 41.3  exchange 3.2  =  72.7 ms  ->  13.76 tok/s
+
+**Note the one-node row reads 10.65 where the engine measures 7.5**: the model hides the reads behind the device,
+and the real ring cannot (`D200` - one layer's window is 1.05 ms against a 0.91 ms read, and a layer misses 1.6).
+So the model is optimistic at one node and the four-node figure inherits that optimism. **13.76 is an upper bound,
+not a prediction**, and the honest statement is that the measured exchange (3.2 ms) and the measured split make
+a sharded step somewhere between the measured 132.7/4-of-nothing and this 72.7.
+
+**What it establishes beyond doubt is where the target lives.** At four nodes the non-host terms are 31.4 ms of
+the 47.6 that 21 tok/s needs, leaving **16.2 ms for a host loop that measures 41.3** - a **2.5x reduction in CPU
+work per layer**. That is `D189`'s conclusion arrived at from the other end, and `D114` is the precedent for the
+size of change that produces it: batching 640 synchronous dispatches into 80 was **1.27x** by removing waits
+rather than work.
+
+**And it is a change that helps both halves of the objective at once.** The host loop runs identically on one node
+and on four, so cutting it raises the single-node number by the same factor - which is the only route in this
+session's measurements that improves the four-node case *and* the one-node case, and the only one that needs no
+distribution, no draft head, and no more memory.
