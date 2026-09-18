@@ -7018,3 +7018,36 @@ twenty-two rounds is unchanged and complete:
 Nothing in the measurements supports a fourth option, and no further measurement is outstanding: the composition
 closes exactly (`D202`), every term is measured independently, and every lever has been closed by measurement or
 by inspection.
+
+## D205 — The draft-head route is chosen, and its first obstacle is that the source snapshot is gone
+
+The operator's decision on `D204`'s options: **produce a draft head**, the only route the measurements support.
+The first thing that route needs is the model's own MTP weights, and the two facts that bear on it are both
+negative.
+
+**The install does not carry them.** Verified in `D187`: the `qwen36-4bit.gturbo` manifest contains **zero**
+occurrences of `mtp`, `draft`, `nextn`, `next_n`, `speculat` or `eagle`.
+
+**And the source snapshot they would come from is no longer on any machine this session can reach.** The repack
+was made from a 67 GB snapshot on macbook-ab, whose cleanup deleted its copy when verification completed
+(`D175`); node4 holds only a **3.1 MB** HuggingFace cache; node3 holds only installs (19 GB, 20 GB, 20 GB). So the
+weights would have to be **re-obtained**, and the disk to hold them is not free either: a 69 GB snapshot does not
+fit on node3 (22 Gi), node4 (11 Gi) or node2 (12 Gi), and node1 has 29 Gi.
+
+**Which leaves two sub-routes, and they are not the same size.**
+
+1. **Re-obtain the snapshot and check whether it carries MTP tensors at all.** If it does, the repack simply
+   omitted them and the work is a repack option, not a training run - the cheapest possible outcome and worth
+   establishing **before** anything else, because it decides whether route 2 is even necessary. It needs ~70 GB
+   free on one node and a download.
+2. **Use a separate small draft model with the target's tokenizer.** `StreamingMTPDecoder` owns **two
+   `RealForwardRunner`s** and the server takes `--mtp-model <path>` with its own memory budget
+   (`--mtp-memory-mib`, 256-512), which is the shape of a draft-model mechanism rather than a head that rides the
+   target's hidden state. If that is what it is, a small same-tokenizer Qwen model would serve and would fit on an
+   8 GB node.
+
+**Neither is started, and the reason is stated rather than implied.** Route 1 is gated on disk that no node has
+and on a download; route 2 is gated on understanding whether `StreamingMTPDecoder` accepts a generic draft or
+requires the model's native MTP head, which is a code question and the cheapest next step of the two. **That
+reading is where the next round starts**, because it costs nothing and it decides whether the whole route needs a
+69 GB download or a 1 GB one.
