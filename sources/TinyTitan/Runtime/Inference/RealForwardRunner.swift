@@ -171,6 +171,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     let kvQuantizer: KVCacheQuantizer?
     let shared: SharedExpertRuntime
     let moe: MoE
+    /// The serving instance - identical but one expert wide. `maxStreamedExperts` comes from
+    /// `topKExperts` and the precondition permits 0...16, so `topK: 1` is legal here while the
+    /// generating pass needs eight. A request then costs one phase-1 and one phase-2 encode instead
+    /// of eight, which is the whole of the 4.9x gap D271 measured between a serving node and a
+    /// requesting one (D273).
+    let serveMoE: MoE
     let fusionHead: LMHeadChainInt4
     let fusedQKVGEMV: FusedQKVGEMV
     let fusedQKVEpilogue: FusedQKVEpilogue
@@ -614,6 +620,16 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                  specializedF: UInt32(cfg.moeIntermediateSize),
                                  specializedNumExperts: UInt32(cfg.numExperts),
                                  topKExperts: cfg.topKExperts)
+        self.serveMoE = try MoE(context: context,
+                                routerTopKSimd: profile.routerTopKSimd,
+                                siluActivation: silu,
+                                routedWeightBits: model.routedExpertWeightBits,
+                                routerWeightBits: model.effectiveRouterWeightBits,
+                                eventGatedIO: expertIOSynchronization == .event,
+                                specializedD: UInt32(cfg.hiddenSize),
+                                specializedF: UInt32(cfg.moeIntermediateSize),
+                                specializedNumExperts: UInt32(cfg.numExperts),
+                                topKExperts: 1)
         self.fusionHead = try LMHeadChainInt4(context: context,
                                               maxD: cfg.hiddenSize,
                                               maxVocab: cfg.vocabSize)
@@ -801,7 +817,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         // EIGHT SLOTS. The kernels validate `topK == maxStreamedExperts` and write all eight, so a
         // single-slot buffer here would be overrun by the first request. One slot was the original
         // allocation and the overrun was caught before it ran, not by it.
-        self.remoteActs = try buf(8 * cfg.moeIntermediateSize, label: "shard.acts")
+        self.remoteActs = try buf(cfg.moeIntermediateSize, label: "shard.acts")
 // FP16, like `routing_w`. The kernel declares `device half* y` and `device const half* residual`, and
         // a Float `y` is written as halfs and read back as floats - which is garbage, and was node1's NaN. The
         // residual happened to survive because zero is zero in both widths; `y` did not.
@@ -813,18 +829,17 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         // pairs of halfs: 1.0f is 0x3F800000, which is 0.0 then 1.875. The weights were therefore
         // [0.0, 1.875, 0, 0, ...] - the WRONG EXPERT scaled by the wrong amount - which is the NaN D268
         // narrowed to the arithmetic. The router's own outWeights are half, and this must match them.
-        self.remoteWeight = context.device.makeBuffer(length: 8 * MemoryLayout<Float16>.stride, options: .storageModeShared)!
+        self.remoteWeight = context.device.makeBuffer(length: MemoryLayout<Float16>.stride, options: .storageModeShared)!
         // The weight is 1.0 and the residual is zero because the REQUESTER owns the router's decision and applies
         // the weight (D168). A peer that applied it too would be counted twice, silently.
-        let weights = self.remoteWeight.contents().bindMemory(to: Float16.self, capacity: 8)
-        for slot in 0..<8 { weights[slot] = slot == 0 ? Float16(1) : Float16(0) }
+        self.remoteWeight.contents().bindMemory(to: Float16.self, capacity: 1)[0] = Float16(1)
 
         // ZERO THE SCRATCH. `remoteResidual` was zeroed and these two were not, and the phase-1 kernel can return
         // WITHOUT WRITING `acts`: `if (!moe_io_ready(io_status)) return;` in the Metal source (D267). A scratch
         // buffer read before it is written is a defect whether or not it is what produced the NaN, so this is
         // correct on its own merits - and it discriminates: if the NaN becomes a finite wrong number the kernel is
         // not writing, and if it survives the values are being written and are wrong.
-        memset(self.remoteActs.contents(), 0, 8 * cfg.moeIntermediateSize * MemoryLayout<Float16>.stride)
+        memset(self.remoteActs.contents(), 0, cfg.moeIntermediateSize * MemoryLayout<Float16>.stride)
         memset(self.remoteY.contents(), 0, D * MemoryLayout<Float16>.stride)
         memset(self.remoteResidual.contents(), 0, D * MemoryLayout<Float16>.stride)
         self.moeHitActiveSlots = try buf(cfg.topKExperts, MemoryLayout<UInt32>.size, label: "decode.moeHitActiveSlots")
