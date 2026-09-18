@@ -802,8 +802,11 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         // single-slot buffer here would be overrun by the first request. One slot was the original
         // allocation and the overrun was caught before it ran, not by it.
         self.remoteActs = try buf(8 * cfg.moeIntermediateSize, label: "shard.acts")
-        self.remoteY = context.device.makeBuffer(length: D * MemoryLayout<Float>.stride, options: .storageModeShared)!
-        self.remoteResidual = context.device.makeBuffer(length: D * MemoryLayout<Float>.stride, options: .storageModeShared)!
+// FP16, like `routing_w`. The kernel declares `device half* y` and `device const half* residual`, and
+        // a Float `y` is written as halfs and read back as floats - which is garbage, and was node1's NaN. The
+        // residual happened to survive because zero is zero in both widths; `y` did not.
+        self.remoteY = context.device.makeBuffer(length: D * MemoryLayout<Float16>.stride, options: .storageModeShared)!
+        self.remoteResidual = context.device.makeBuffer(length: D * MemoryLayout<Float16>.stride, options: .storageModeShared)!
         // Eight, not one: the kernels validate `topK == maxStreamedExperts`, so a request always has eight slots
         // and only the first is weighted. The other seven compute the same expert and contribute zero.
 // FP16, NOT FLOAT. The kernel declares `device const half* routing_w`, so a Float buffer is read as
@@ -822,8 +825,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         // correct on its own merits - and it discriminates: if the NaN becomes a finite wrong number the kernel is
         // not writing, and if it survives the values are being written and are wrong.
         memset(self.remoteActs.contents(), 0, 8 * cfg.moeIntermediateSize * MemoryLayout<Float16>.stride)
-        memset(self.remoteY.contents(), 0, D * MemoryLayout<Float>.stride)
-        memset(self.remoteResidual.contents(), 0, D * MemoryLayout<Float>.stride)
+        memset(self.remoteY.contents(), 0, D * MemoryLayout<Float16>.stride)
+        memset(self.remoteResidual.contents(), 0, D * MemoryLayout<Float16>.stride)
         self.moeHitActiveSlots = try buf(cfg.topKExperts, MemoryLayout<UInt32>.size, label: "decode.moeHitActiveSlots")
         self.moeMissActiveSlots = try buf(cfg.topKExperts, MemoryLayout<UInt32>.size, label: "decode.moeMissActiveSlots")
         self.residencyHitCount = try buf(1, MemoryLayout<UInt32>.size,

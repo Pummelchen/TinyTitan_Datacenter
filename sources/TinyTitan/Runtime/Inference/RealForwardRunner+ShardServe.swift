@@ -76,8 +76,9 @@ extension RealForwardRunner {
             // `await completed()`, NOT `waitUntilCompleted()`: Swift marks the blocking form unavailable from an
             // asynchronous context, which is the compiler saying a cooperative-pool thread must not be parked.
             await cb.completed()
-            let src = remoteY.contents().bindMemory(to: Float.self, capacity: dims)
-            for d in 0..<dims { out[index * dims + d] = src[d] }
+            // `half`, matching the kernel's `device half* y`.
+            let src = remoteY.contents().bindMemory(to: Float16.self, capacity: dims)
+            for d in 0..<dims { out[index * dims + d] = Float(src[d]) }
         }
         return out
     }
