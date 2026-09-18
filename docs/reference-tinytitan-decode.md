@@ -65,3 +65,22 @@ than its 3 GB run *on the same machine*. This node has ~4.5 GB usable, a 4 GB me
 5 GB disk floor, so the bank is capped well below the reference's 3 GB until the dense payload, KV and prompt
 cache are measured beside it — and the measurement to make is theirs: **hit rate and host wait per token at
 each size**, not tok/s alone.
+
+## Correction (2026-09-18, from the reference's source at `276fe70`)
+
+**"Layer L's MoE overlapped with layer L+1's attention" is wrong, and the reference says so explicitly.**
+Its own design docs rule the idea out — *"Cross-layer lookahead is not implemented because layer L+1 routing
+depends on layer L output"* (`docs/v4.1-expert-streaming-engine.md:106-107`) and *"Across layers it is
+impossible... At batch 1 there is no independent work to hide I/O behind"* (`docs/v4-core-design.md:207-210`,
+`docs/v4.4-decode-width-plan.md:114-121`). What actually overlaps is **intra-layer**: the shared expert is
+committed before the CPU blocks on the router readback (a measured 7.88 ms/token of GPU idle removed), and the
+*resident* (cache-hit) experts are encoded and committed before the miss reads are awaited — the "I/O hidden"
+fraction, 8.1/11.1/21.4/46.6% at 1/2/3/4 GB. Completion *checks* are pipelined one layer deep; the work is not.
+The earlier note here treated a plausible-sounding overlap as a design fact, and it was neither measured nor in
+the source. `D120` records what is.
+
+**Also worth correcting:** the `expertStride` comparison. The reference packs an expert's gate, up and down with
+their scales and biases **contiguously** into one 1,6875 MiB slab read by one `pread`, where this engine's
+container is section-major and needs six reads per expert. Any slot count read across from their curve is
+therefore an approximation, not a like-for-like figure — this engine's slab is 1.82 MB and its per-layer slot
+count for a given budget is smaller.
