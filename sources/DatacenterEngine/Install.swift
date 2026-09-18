@@ -332,10 +332,22 @@ public struct InstallFile: WeightSource {
     ///
     /// Locked, because the reader is called from the expert fan-out (`D101`) and the head's blocks (`D102`).
     final class SlabCache: @unchecked Sendable {
+        /// One entry: the bytes, and **when** they were last used (`D126`).
+        ///
+        /// The recency is a counter, not a position in a list. The first version kept an `order` array and did
+        /// `order.removeAll { $0 == key }` on **every** access — a linear scan over a `String` array on a path
+        /// this cache is asked 7,040 times a step (320 slabs x 22 generation steps in the profile), which is
+        /// O(n) work per lookup for a thing an LRU can do in O(1). It is the same defect shape as `D117`: a
+        /// phase whose cost scales with the *number of items* rather than with the bytes moved.
+        private struct Entry {
+            let payload: Data
+            var used: UInt64
+        }
+
         private let lock = NSLock()
         private let budget: Int
-        private var payloads: [String: Data] = [:]
-        private var order: [String] = []
+        private var payloads: [String: Entry] = [:]
+        private var clock: UInt64 = 0
         private var bytes = 0
         private var hits = 0
         private var misses = 0
@@ -362,37 +374,41 @@ public struct InstallFile: WeightSource {
         func value(for key: String) -> Data? {
             guard budget > 0 else { return nil }
             lock.lock(); defer { lock.unlock() }
-            guard let payload = payloads[key] else { misses += 1; return nil }
+            guard var entry = payloads[key] else { misses += 1; return nil }
             hits += 1
-            order.removeAll { $0 == key }
-            order.append(key)
-            return payload
+            clock += 1
+            entry.used = clock
+            payloads[key] = entry
+            return entry.payload
         }
 
         func store(_ payload: Data, named key: String) {
             guard budget > 0, payload.count <= budget else { return }
             lock.lock(); defer { lock.unlock() }
-            if payloads[key] == nil { bytes += payload.count }
-            payloads[key] = payload
-            order.removeAll { $0 == key }
-            order.append(key)
-            if Self.wired, let base = payload.withUnsafeBytes({ $0.baseAddress }),
+            let previous = payloads[key]
+            if previous == nil { bytes += payload.count }
+            clock += 1
+            payloads[key] = Entry(payload: payload, used: clock)
+            // Wire only what is newly held. Re-wiring on every re-store of the *same* key would inflate the
+            // wired count without locking anything new, and the count is what the unlock below is guarded by.
+            if previous == nil, Self.wired, let base = payload.withUnsafeBytes({ $0.baseAddress }),
                 mlock(base, payload.count) == 0
             {
                 wiredBytes += payload.count
             }
-            while bytes > budget, let victim = order.first {
-                order.removeFirst()
+            // Evict the least recently used. This scans only when the bank is over budget — once per miss
+            // rather than once per access — which is the whole point of the counter.
+            while bytes > budget, let victim = payloads.min(by: { $0.value.used < $1.value.used })?.key {
                 guard let evicted = payloads.removeValue(forKey: victim) else { continue }
-                bytes -= evicted.count
+                bytes -= evicted.payload.count
                 // Unwire **before** releasing the storage, and only what was actually wired: an `mlock` that
                 // failed (the wired limit is finite) must not be answered with a `munlock`, which would take
                 // the count negative and silently shrink the limit for everything after it.
-                if Self.wired, wiredBytes >= evicted.count,
-                    let base = evicted.withUnsafeBytes({ $0.baseAddress })
+                if Self.wired, wiredBytes >= evicted.payload.count,
+                    let base = evicted.payload.withUnsafeBytes({ $0.baseAddress })
                 {
-                    munlock(base, evicted.count)
-                    wiredBytes -= evicted.count
+                    munlock(base, evicted.payload.count)
+                    wiredBytes -= evicted.payload.count
                 }
             }
         }

@@ -3914,3 +3914,25 @@ at a fixed bank size with the byte counter held constant, which has not been run
 only that raising the bank from 512 MiB to 1024 MiB halves the bytes read and does not make the step faster.
 This is the third time in this session that a single-run comparison pointed the wrong way; the rule the record
 already states — alternate, and quote the median of several — is the one that keeps being skipped.
+
+## D126 — The slab bank was doing a linear scan per access
+
+`SlabCache` kept an `order: [String]` and did `order.removeAll { $0 == key }` followed by `order.append(key)` on
+**every** access — a linear scan of a `String` array, on a path asked **7,040 times a step** (320 slabs x 22
+generation steps in the profile) and holding up to ~106 entries at the 128 MiB default. An LRU does not need
+that: the recency is now a monotonic counter stored in the entry, so `value(for:)` is O(1) and the scan happens
+**only on eviction**, once per miss rather than once per access. The `mlock` bookkeeping is also restricted to
+newly-held keys, because re-wiring a re-stored key would inflate the wired count without locking anything new —
+and it is that count the unlock is guarded by.
+
+**This is a complexity fix, and it is not claimed as a speed win.** 7,040 lookups x ~106 entries is on the order
+of 10^6 string comparisons a step, which at any plausible rate is a few milliseconds — below this machine's
+run-to-run spread, so it cannot be demonstrated here. It is committed because the defect is provable by
+inspection and the fix is semantically identical: the same entries, the same policy, the same eviction order.
+266 tests pass and the trace digest is unchanged.
+
+**And the honest note on the timing.** The two runs taken after the change measured 0.730 and 0.735 s/step
+against 0.634-0.648 measured earlier, with `mix.read` — a phase this change cannot touch — rising from ~75 to
+123 ms. That is machine state, not this change, and it cannot be separated now that the previous code is gone.
+It is recorded because a later reader comparing those numbers would otherwise conclude the change was a
+regression, and neither reading is safe: the earlier ones and these are not a controlled pair.
