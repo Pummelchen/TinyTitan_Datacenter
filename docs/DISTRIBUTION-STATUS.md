@@ -189,3 +189,25 @@ sharded separately, which nothing here does.
 
 **So the ceiling is ~1.12x for expert sharding and ~1.21x with attention and the shared expert sharded as well,
 against the ~2.9x that 21 tok/s needs.** The route to anything better is dividing the *dense* work, not the experts.
+
+### The call site is smaller than the handover implied — checked at the lines
+
+Reading the phase-2 site directly removes two uncertainties the earlier note carried:
+
+* **`moeActs` is in scope there.** It is a property of the runner
+  (`RealForwardRunner.swift:270`, `// [topK * FmoE] FP16`, allocated at `:763`), and it is already passed as
+  `acts:` into the phase-1 encodes at `RealForwardRunner+Decode.swift:1528`, `:1552` and `:1787`. So the activation
+  the exchange needs is **already reachable at the call site** — no plumbing to thread it there.
+* **What is actually missing is one property.** There is **no** `shardParticipant` on the runner: grepping
+  `ShardExchangeParticipant` and `remotePartials` across `RealForwardRunner.swift` and
+  `RealForwardRunner+Decode.swift` returns nothing. So the work is: hold an optional participant, set it from the
+  options the CLI already parses, and call it at `:1787`.
+
+**One conversion to be careful about.** `moeActs` is **fp16** and the exchange carries **fp32** — `ShardExchange`
+frames floats and `remotePartials` returns `[Float]`. The readback therefore widens `topK * FmoE` fp16 values to
+fp32 before sending, and the reply's `[d][8]` buffer is already fp32 and goes straight to the kernel. **At the real
+shapes that is 8 KB of fp16 read back per layer**, which is small but is a GPU sync and must be counted in the
+exchange cost rather than assumed free — `D208`'s 3.2 ms/step was measured on raw frames and **excludes** it.
+
+**And the participant must be optional in the same way the ownership filter is** (`D164`): absent, not an identity,
+so the single-node path is untouched when no plan is given.
