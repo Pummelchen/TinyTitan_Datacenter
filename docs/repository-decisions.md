@@ -7759,3 +7759,48 @@ that comparison the route is unambiguously the right thing to build next.
      and the one that decides whether the target is met;
   2. **shard attention and the shared expert** - designed here, costed here, and worth 5.2 tok/s at four nodes;
   3. wire the two runner call sites and run four nodes, against the **20.56 tok/s** prediction.
+
+## D224 — The 40.1 ms non-GPU term has the shape of per-layer dispatch overhead, and 64% of the dispatches are on kernels that do not divide
+
+`D223` named the last unmeasured quantity: the **40.1 ms** that is neither GPU kernel time nor demand misses. It
+cannot be read directly, but the profile carries the **dispatch counts**, and they give it a shape.
+
+From `D221`'s profile, the decode kernel roles and their counts over 15 tokens (40 layers each):
+
+    attn_norm_qkv    600      shared_expert   600      attn_tail_router  600
+    moe_*            410/410/190                       head_logits        15
+    ---------------------------------------------------------------
+    2,820 dispatches / 15 tokens = 188 per token = 4.7 per layer
+
+`D222` measured the step at **137 ms** with the GPU busy **62 ms**, so the GPU is **idle 75 ms** of every token -
+**0.398 ms of idle per dispatch**. And `D222`'s non-GPU, non-miss term is **40.1 ms**, which is **188 x 0.213 ms**.
+The two agree in shape: the term behaves like a per-dispatch cost, and the engine issues 4.7 of them per layer.
+
+**Why this decides the last open question.** A per-layer term **does not divide across nodes** - every node runs all
+forty layers, and sharding experts changes which experts a layer reads, not how many layers there are or how many
+dispatches each one issues. But the dispatches are **not all on dividing kernels**:
+
+    attention 40 + shared expert 40 + router 40 + head 1  =  121 per token   do NOT divide
+    moe (410 + 410 + 190)/15                              =   67 per token   DO divide
+
+**So 64% of the non-GPU term does not divide**, and `D223`'s table brackets the answer between its first two rows:
+
+    non-GPU does NOT divide    12.70 tok/s
+    64% not dividing           ~14.5 tok/s      <- the arithmetic lands here
+    divides 2x                 17.04 tok/s
+    divides 4x                 20.56 tok/s
+
+**Which puts the four-node case at roughly 14-15 tok/s, not the 20.56 that `D223`'s best case offered** - and it
+means the target is **not** met by sharding experts and attention on this engine. The 21 tok/s that `D223` brought
+within 1.0 ms assumed every dispatch divided; two thirds of them do not.
+
+**What that leaves, stated plainly, because it is the end of the road this budget can see.** The remaining lever is
+to **issue fewer dispatches per layer** - `D114`'s change, which took 640 synchronous dispatches to 80 and was worth
+**1.27x** on this repository's other engine. 4.7 dispatches per layer for attention, shared expert and router, on
+forty layers, is where a third to a half of the 40.1 ms sits, and **it is per-layer work every node repeats**. It is
+also the one lever that helps the **single-node** number by exactly the same factor, which the sharding routes do
+not.
+
+**Marked as an inference.** The 40.1 = 188 x 0.213 agreement is shape-matching, not a measurement of dispatch cost,
+and it is recorded with its arithmetic so it can be falsified: **time a decode step with the kernel profile's
+dispatch counts halved** (a batched variant, `D114`'s shape) and see whether the step falls by half of 40.1 ms.
