@@ -6195,3 +6195,46 @@ session ended up using.
 21 fork commits carrying the distribution still have **no remote they may legitimately be pushed to**, and they
 are bundled to node4 and node3 as a stopgap. That is a decision for the operator and it is independent of the
 throughput question.
+
+## D187 — Aiming for 21 tok/s: MTP is not available on this install, and prefetch-ahead 2 is worse
+
+The operator's new target is **21 tok/s**, 3x the reference. Sharding is measured at ~1.0-1.1x (`D183`), so the
+lever has to be the other 87% of the 139.6 ms step: the ~70% host loop and the 17% replicated device work. Two
+candidates were tested and **both are closed**.
+
+### Multi-token prediction is not available for this model
+
+`TINYTITAN_MTP_VERIFY` (default `.pair`), `TINYTITAN_MTP_EXPERT_SLOTS` and `StreamingMTPDecoder` — "target-verified
+greedy native-MTP session" — exist in `sources/TinyTitan/Runtime/Generation/StreamingMTP.swift`, and `D182`'s
+diagnosis is that the host loop is what has to be amortised, which is exactly what MTP does. But it is driven by
+**`TinyTitanServer`, not `TinyTitanCLI`**, and it needs `--mtp-model`: a draft model that this install does not
+contain. The manifest was checked for `mtp`, `draft`, `nextn`, `next_n`, `speculat` and `eagle` and contains
+**zero** occurrences of any of them. So speculative decoding is not a lever here — it would need a draft head the
+35B-A3B install does not have, and producing one is a different project from the one this session has been doing.
+
+### Prefetch-ahead 2 is worse
+
+`TINYTITAN_PREFETCH_AHEAD` accepts only `1` (the default) or `2`, and 2 feeds the prefetch ring from the
+**two-layer-ahead** probe so each speculative read gets a whole extra layer to land in. Node3, the reference's
+install, 40 slots, 16 tokens, three runs each:
+
+| configuration | tok/s (three runs) |
+| --- | --- |
+| default | 6.145, 7.025, 7.304 |
+| `=1` | 6.872, 7.215, 6.711 |
+| **`=2`** | **6.466, 6.535, 6.457** |
+
+**2 is worse**, and the code says why before the measurement did: the second probe's top-1 accuracy is **85.6%
+against the first's 90.8%**, so the extra layer of slack is paid for with reads that miss. The knob is closed at
+its default.
+
+**The variance is worth recording too**: node3's load drifted from 0.94 to 1.82 across the nine runs, and the
+spread is larger than the effect being looked for. Any further tuning on this farm needs either a quiet window or
+many more repeats, and `D177` established that quiet is not something to count on.
+
+### What is left
+
+Neither lever touches the host loop, which is where 98 ms of the 139.6 ms step lives — about **2.45 ms per
+layer** of planning, encoding, dispatch and readback. Reaching 21 tok/s means **47.6 ms/step**, so the host loop
+has to fall by roughly 70 ms or overlap with device work it currently serialises behind. That is the work, and
+this round narrowed it rather than starting it.
