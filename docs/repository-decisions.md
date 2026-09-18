@@ -7419,3 +7419,45 @@ nothing**. What is left in the host is small and hidden.
 critical path is the **device**, and the lever is overlapping the device with the reads - `D202`'s 11.0 tok/s for
 disk+device and **20.2 for all three**, and 23.8 with reads at depth 8. The measurement in `D214` is the first
 direct evidence for the term `D202` derived, and it agrees with it.
+
+## D216 — The third term was never host CPU: the GPU is starved for ~68 ms of the step, and the read is why
+
+`D202` decomposed the step into "reads 49.4 + device 42.0 + host 41.3" by subtracting **kernel execution time**
+from the step and calling the remainder host. `D214` then profiled the decode thread and found it **83.2% in
+`waitUntilCompleted`**. Put those together and they do not describe a host term at all:
+
+    step                                    132.7 ms
+    decode thread in waitUntilCompleted     83.2%  =  110.4 ms
+      of which kernel time, D202                      42.0 ms
+      NOT kernel execution                            68.4 ms
+    the expert read, D202                             49.4 ms
+
+**The GPU is not executing for about 68 ms of every step.** `waitUntilCompleted` does not return when a kernel
+finishes - it returns when the **command buffer** finishes, and a command buffer that is waiting on the buffers its
+kernels will read finishes late without the GPU having done anything. 68.4 ms against a 49.4 ms read leaves 19.0 ms
+unexplained, and the read is by far the largest thing it can be waiting on.
+
+**So `D202`'s third term is not the host.** It is the **GPU's stall**, and it was attributed to the host because
+"host" was the name given to whatever the two measured terms did not explain. That is `D202`'s own method working
+exactly as designed and its label being wrong - the same failure as `D209`, arrived at from the other side.
+
+**What it changes, and what it does not.**
+
+  - **It does not change the total.** 132.7 ms is still 132.7 ms and the three terms still sum to it.
+  - **It changes what the target needs.** If the third term is host CPU, the route is to make the host faster, and
+    `D215` just measured the host's largest piece at **zero** effect. If it is GPU starvation waiting on a read,
+    the route is to **have the data resident before the kernel asks for it** - which is the read path, the cache and
+    the prefetch ring, and not the host at all.
+  - **It explains `D215`.** Work that runs on the host while the GPU is stalled is overlapped by construction, so
+    removing 4.9% of it is worth nothing. That is exactly what was measured.
+
+**And it does not by itself explain why deeper prefetch lost.** `D195` measured depth 8 as **28% worse** than depth
+1, which is the opposite of what "the GPU is starved" predicts. Either the ring's depth is not what limits it, or
+that measurement was confounded by the same windowed-average problem `D195` itself was written to correct. **That
+is the next thing to measure, and it is now the only open contradiction in this budget.**
+
+**Marked as an inference, not a measurement.** The 68.4 ms is arithmetic from two measurements of different things,
+exactly the shape that produced `D209`'s error - so it is recorded as a hypothesis with its arithmetic shown, and
+the direct test is named: **time a decode step with the experts already resident** (warm the cache so the miss path
+does not run) and see whether the 68 ms disappears. If it does, the read is on the critical path through the GPU's
+stall and the read path is the target. If it does not, the stall is something else and this record is wrong.
