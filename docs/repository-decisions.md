@@ -10576,3 +10576,45 @@ fastest Core ML unit measured here.** The route the operator described - ANE for
 Core ML on this machine by any formulation I have tried**, and the next step is not another probe of this kind: it
 is to look at how the sister project actually built its ANE model, because four attempts from first principles
 have produced nothing.
+
+## D300 — Why the ANE probes failed: the sister project serves a 4,096-token chunk, and my shapes were 8 to 32 times too small
+
+`D299` concluded that four probes from first principles had produced nothing and that the next step was to read
+how the sister project actually built its ANE path rather than probe further. **It is checked out locally**
+(`/tmp/TinyTitan`, branch `main`, `276fe70`) and it answers the question in its first two paragraphs.
+
+**From `benchmark/ane-prefill/README.md`, the mechanism and the constraint:**
+
+  * The switch is `TINYTITAN_PREFILL_ANE`, and what it moves is **the full-attention prefill block** - not the
+    whole forward pass.
+  * **"The ANE serves only a full 4,096-token chunk"**, run with `--prefill-chunk 4096`. **A shorter prompt
+    measures two GPU arms and reports "1.0x" as if it were a finding about the ANE**; the sweep says
+    `prompt_too_short` instead.
+  * **The first ANE run pays the Core ML compile - "~68 s against an 86 s prefill"** - and each arm runs a
+    discarded warm-up for exactly that reason.
+  * `on.used_ane` records whether every ANE arm ran **without the runtime's GPU-fallback line**, and
+    **"a speedup is never reported from an arm that fell back"**, because that arm's seconds are a GPU time and
+    "quoting a ratio from it is how a model that never touched the ANE comes to look tested".
+
+**Every one of my four probes violated the first constraint.** I measured `[1,128,2048]` and `[1,2048,1,128]` -
+128 and 512 tokens - against a design that **only engages at 4,096**. The 96 ms fixed cost I chased through
+`D297`, `D298` and `D299` is consistent with a per-prediction setup on a chunk that was never large enough to
+amortise it, and **the arithmetic I concluded was "free" and then "slow" was arithmetic on an input 8 to 32 times
+below the size the engine is meant to run.**
+
+**So the honest correction is to the premise of all four rounds, not to their numbers.** A 1x1 conv of 128 tokens
+is not a small version of the ANE's workload; it is **below the threshold at which the ANE is used at all.** The
+probes measured Core ML's dispatch behaviour on an ineligible shape, which is exactly what the sister project's
+README warns produces a meaningless ratio.
+
+**What this means for `docs/distribution-design.md` section 8b, and it is now testable.** The design intent - ANE
+prefills, GPU decodes, handed over - **has a stated operating point: a full 4,096-token chunk, with a one-time
+~68 s Core ML compile paid once per process**, not per call. That is compatible with the design, because prefill is
+the phase where a long chunk exists by definition. **The next measurement is therefore well-specified rather than
+a guess**: a 4,096-token chunk, a discarded warm-up for the compile, and `used_ane` checked, because the sister
+project's own rule is that no speedup may be quoted from an arm that fell back to the GPU.
+
+**And the second half of that rule is the one this session most needed.** I have now spent four rounds producing
+ratios from arms that - on the evidence of the sister project's design - **could not have touched the ANE at all**,
+and reported one of them as a positive before catching my own flaw. **`used_ane` is the instrument I was missing,
+and it existed upstream the whole time.**
