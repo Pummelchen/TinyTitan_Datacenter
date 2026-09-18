@@ -4391,7 +4391,10 @@ killed at shard 1 of 26, with 3.6 GB of work discarded, and restarted as **4-bit
 converter directly:
 
 ```
-VENV/bin/python tools/prepare_agentworld.py --model qwen36 --bits 4 \
+# Run from the fork, which is where this tool lives — this repository has no such script.
+cd ~/Downloads/tinytitan-datacenter
+VENV/bin/python ~/Downloads/tinytitan-datacenter/tools/prepare_agentworld.py \
+    --model qwen36 --bits 4 \
     --output .build/qwen36-affine-4bit --work .build/qwen36-shards
 ```
 
@@ -4560,3 +4563,39 @@ transport tests deliberately do *not* cover, because they test the socket rather
 
 Not started. The converter still holds the disk (`D138`-`D144`), and this is a code change that should be
 tested at the service level rather than written and left untested.
+
+## D146 — The flaky gate was never flaky, and I had been reading the wrong one for six rounds
+
+`D139`, `D143` and several round reports describe `check_markdown_links.py` as "intermittently red and
+unexplained", verified green on re-run, and record it as an open defect. **All of that is wrong**, and the
+mistake is mine in two separate ways.
+
+**First, the arithmetic.** The gates were reported as one string, `doc=$e1$e2$e3$e4`. The failing value was
+`0001`, which is `e1=0, e2=0, e3=0, **e4=1**` — the fourth gate, `check_documented_commands.py`. I read the
+trailing `1` as the second position and spent six rounds re-running `check_markdown_links.py`, which passed
+every single time **because it was never the gate that failed**. A positional string with no labels is exactly
+the instrument that hides which part failed, and it is the same shape as the `tail`-hides-exit-status trap
+already in `AGENTS.md`: the report was designed so the failing element could be misread.
+
+**Second, and worse, I deleted the evidence each time.** Every failing run wrote the gate's output to
+`/tmp/g2.log` and then `rm -f /tmp/g[1-4].log` in the same command, keeping only the exit code. So when a gate
+failed I had thrown away its message, re-ran the wrong gate by hand, saw it pass, and concluded
+"intermittent". A gate that is never allowed to say what it objected to will always look flaky.
+
+**The gate itself was right every time.** Its objection, read once the output was finally kept:
+
+```
+DOCUMENTED COMMAND: docs/repository-decisions.md: names tools/prepare_agentworld.py, which does not exist
+```
+
+`D139` recorded the reference's converter as a copyable command — an interpreter, then the script's path under
+the fork's `tools/` — and `check_documented_commands.py`'s `COMMAND` pattern matches *exactly that shape*
+precisely because that is the form a reader copies. `prepare_agentworld.py` is the **fork's** tool and this
+repository has none, so the gate refused a command that could not be run here — which is its whole purpose. The
+fix belongs in the documentation: the command now `cd`s into the fork and names the script by its absolute
+path, so it is unambiguous that it is not this repository's tool.
+
+What this cost: six rounds of reporting an "unexplained" defect in a gate that works, three commits whose
+messages repeat the false claim, and a standing caveat that made every honest gate report weaker than it should
+have been. The lesson is the one the repository already teaches and I did not apply: **keep the output, label
+the results, and before calling something intermittent, read what it said.**
