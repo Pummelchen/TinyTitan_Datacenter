@@ -4927,3 +4927,54 @@ one at a time.
 **Measured, not modelled.** These are `ping` round trips between two machines on this desk, not application
 latency; real request/response adds serialisation and processing on top, so 7.3 ms is a **lower bound** on what
 an exchange costs.
+
+## D156 — The decode service has now crossed a real LAN between two machines, and macOS local-network privacy blocks one direction
+
+The transport is no longer verified only in-process. With a binary built on **macbook-ab** — which turns out to
+run the **same pinned toolchain** (`swiftlang-6.4.0.34.1`, Xcode 27.0, arm64), so `swift build -c release`
+there completed in 111.58 s with no errors — a real command crossed the network:
+
+```
+# service bound to THIS node's LAN IP
+TinyTitanDecodeService --host 192.168.18.26 --port 45917
+
+# run on macbook-ab, over the LAN
+$ python3 lan_decode_probe.py 192.168.18.26 45917
+connected to 192.168.18.26:45917
+sent 16 byte(s): {"shutdown": {}}
+stream ended: EOFError: peer closed after 0 of 4 bytes
+OK: sent one frame over the LAN, 0 reply/replies
+```
+
+And the service **exited cleanly with an empty log** — so it did not merely receive bytes, it **decoded the
+frame, acted on the command, and closed**. That exercises `D142`'s TCP transport, `D147`'s `--host`/`--port`
+wiring, and `DecodeFrameCodec` across a real network hop, end to end, between two physical machines.
+
+**But the direction matters, and this is a hard operational constraint.** TCP over this LAN is **one-way**:
+
+| direction | result |
+| --- | --- |
+| macbook-ab → this node | **OPEN** (accepted from `192.168.18.73`) |
+| this node → macbook-ab | **BLOCKED** — every port, including 22 and 5900 |
+| this node → gateway `192.168.18.1:80/443` | **BLOCKED** |
+
+**Every** outbound `192.168.x.x` connection from this node fails with `EHOSTUNREACH`, while ICMP and UDP reach
+the same hosts and **internet TCP works** (`curl https://example.com` → 200, `1.1.1.1:443` connects). Neither
+machine's packet filter is involved: macbook-ab's `pf` is **Disabled** with the application firewall off and
+stealth mode off, and this node's application firewall is off too.
+
+That signature — internet fine, all local-network TCP refused, ICMP unaffected — is **macOS Local Network
+privacy**: the process tree running this session has internet access but has not been granted *local network*
+permission. It is a per-application consent, granted in System Settings → Privacy & Security → Local Network,
+and **only the operator can give it**. It also explains why this went unnoticed for so long: `ssh macbook-ab`
+resolves to the **Tailscale** name and works (20.9 ms), so every command I have run against that machine has
+gone over Tailscale, never the LAN.
+
+**What this means for the four-node mesh.** `D155` measured the direct LAN at 7.3 ms against Tailscale's
+20.9 ms, so the LAN is the path worth using — but a mesh needs **each node to initiate to the others**, and this
+node currently cannot initiate to any local address. Granting Local Network permission to this session's
+application is therefore a prerequisite for any multi-node run from here, and it is not something I can do.
+
+**Worked around, not fixed**, for the test above: roles were inverted so the service ran on the node that
+cannot initiate and the client ran on the node that can. That is enough for a two-machine probe and is **not**
+enough for a mesh.
