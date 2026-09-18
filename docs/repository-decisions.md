@@ -8350,3 +8350,46 @@ indistinguishable from the zero it returns.**
 **This is the cleanest instance in the session of the rule `D233` and `D237` built**, and it is worth stating once
 more because it cost four records: **a counter is two things - a number and a condition under which the number means
 anything - and the condition has to be printed beside the number.** The trace now prints both.
+
+## D239 — Reading a QUARTER of the experts does not change the step at all: the read is not on the critical path
+
+`D236` withdrew `D234` and `D235` on the strength of the cache sweep, which shows the step falling monotonically as
+the cache grows. That inference was wrong, and there was a direct way to test it that does not need four nodes, an
+exchange or a second machine: **set the ownership filter and read a quarter of the experts.**
+
+`ModelExpertIO.setOwnedExpertFilter` is applied at the top of `makeExpertCachePlan` and is on the real forward path.
+It is now reachable from the CLI: `--shard-plan <file> --shard-node <n>` loads a `ShardPlan` and restricts this
+node's routed reads to the experts it owns. **No exchange is wired, so the output is garbage and the binary says so
+on stderr** - the timing is the measurement, the tokens are not.
+
+Node3, the reference install, 40 slots, 48 tokens, three alternating pairs, one binary, one flag apart:
+
+| pair | load | full read | 1/4 read | ratio |
+| --- | --- | --- | --- | --- |
+| 1 | 1.66 | 7.80 | 7.79 | **1.00x** |
+| 2 | 1.62 | 7.48 | 7.43 | **0.99x** |
+| 3 | 1.59 | 7.79 | 7.78 | **1.00x** |
+
+**Reading 64 of 256 experts instead of all 256 changes the step by nothing** - 128.2 -> 128.3 ms, 133.7 -> 134.5,
+128.4 -> 128.5. Three pairs, no effect, and the spread within each pair is smaller than the spread between pairs.
+
+**So `D234` and `D235` were right and `D236` was wrong to withdraw them.** The read is **not** on the critical path,
+and sharding the expert reads buys a node **nothing**. The lesson `D236` drew - "when a counter disagrees with a
+curve, the curve usually wins" - is the opposite of what this measurement shows: **a curve and a counter can both be
+measuring something other than the thing they are named for.** The sweep changes the **cache size**, and the cache
+size changes the miss cost, the residency churn and the GPU-side memory pressure; the ownership filter changes **only
+which experts are read**, and holding the cache at 40 slots while reading a quarter of the experts leaves the step
+untouched.
+
+**What the sweep was actually measuring is now an open question and it is a smaller one.** It is not read volume -
+that is what this record varies and it does not matter. The candidates are the miss count, the number of cache
+evictions, the staging/finalization work a miss triggers, and the GPU memory pressure a larger cache creates. **Each
+is testable and none is tested.**
+
+**And the answer to the goal changes with it.** If reading a quarter of the experts buys nothing on one node, then
+four nodes dividing the experts buy nothing either, and the reachable speedup collapses to whatever the **GPU** work
+divides - which `D221` measured at **27.0 ms of a 137.0 ms step, 20%**. That is `D235`'s arithmetic arriving at
+`D235`'s conclusion, **this time on a direct measurement of the read rather than on a counter's silent zero.**
+
+**The build is real and stays.** The ownership filter is wired, warns on stderr, and is inert unless
+`--shard-plan` and `--shard-node` are both given - so every existing measurement and every default run is unaffected.
