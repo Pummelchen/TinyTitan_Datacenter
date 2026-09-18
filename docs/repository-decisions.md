@@ -4377,3 +4377,31 @@ with `HF_HOME` pointed at this repository's 67 GB cache, `HF_HUB_OFFLINE=1` so n
   because the next person to run this will hit the same refusal.
 
 The next measurement is the fork's own single-node number on this model, against the reference's 7 tok/s.
+
+## D139 — Two traps in installing the reference, both caught before they cost anything
+
+`D138` left the install running. It was stopped and restarted correctly, and the two reasons are worth
+keeping because both are silent failures rather than errors.
+
+**1. `tools/install_models.sh qwen36` converts BOTH widths, which does not fit.** Its own table records
+`qwen36|qwen3.6_35B_A3B_4Bit|4|...|qwen36-8bit` — a 4-bit install whose "both-widths directory" is
+`qwen36-8bit` — and the converter is invoked with **`--bits 4 8`**. A 4-bit install is ~20 GB and an 8-bit one
+is roughly twice that, against **28 GB** free, so the run would have filled the disk rather than failed. It was
+killed at shard 1 of 26, with 3.6 GB of work discarded, and restarted as **4-bit only** by calling the
+converter directly:
+
+```
+VENV/bin/python tools/prepare_agentworld.py --model qwen36 --bits 4 \
+    --output .build/qwen36-affine-4bit --work .build/qwen36-shards
+```
+
+**2. Running a tool directly bypasses `TINYTITAN_PYTHON` and uses its shebang.** The first direct attempt died
+with `missing dependency: No module named 'ml_dtypes'` and named the interpreter it had picked —
+`/opt/homebrew/opt/python@3.13/bin/python3.13`. `TINYTITAN_PYTHON` is read by the *installer script*, not by
+the tool, so the tool fell back to its own shebang. Invoking the venv interpreter explicitly is what works, and
+that is the form recorded above.
+
+Both are recorded because the same two shapes will recur for every other model key: the installer's default is
+"both widths" whatever the key looks like, and any tool run outside the installer needs its interpreter given
+to it. Neither produces a useful error first — one silently spends disk, the other names a Python that is not
+the one you set.
