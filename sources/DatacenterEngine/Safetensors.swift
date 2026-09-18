@@ -41,8 +41,41 @@ public struct SafetensorsFile {
     /// A reference box rather than a `lazy var`, because `WeightSource` conformance is
     /// non-mutating and a struct's lazy properties can only be touched from a mutating context.
     private final class StreamHandle {
-        var file: UncachedFile?
-        var failed = false
+        private let lock = NSLock()
+        private var stored: UncachedFile?
+        private var failed = false
+
+        /// Open on first use — **once, even when several workers ask together**, which is the whole of
+        /// `DC-124`.
+        ///
+        /// This used to be a bare `var file`. `rowsStreaming` is called from the reader's worker threads
+        /// (`D94`'s row-parallel unpack, `D99`'s element-wise map, `D101`'s expert fan-out), so two of them
+        /// could see `nil` at the same time, each open a descriptor, and the **racing assignments released one
+        /// `UncachedFile` twice**. The Swift runtime reports exactly that as "deallocated with non-zero retain
+        /// count … a dangling reference" and then aborts — an intermittent failure whose correlation was
+        /// perfect and whose cause was invisible: it appeared in **every failing run and no passing one**, and
+        /// only ever on a **checkpoint** path, while every install run was clean. That last part is the tell:
+        /// `InstallFile` holds its handle in a `let`, so it has no such race. The loser of the race here drops
+        /// its ordinary local reference, which is safe; what is not safe is a second release through the shared
+        /// slot.
+        func handle(_ open: () throws -> UncachedFile) -> UncachedFile? {
+            lock.lock()
+            if let stored { lock.unlock(); return stored }
+            if failed { lock.unlock(); return nil }
+            lock.unlock()
+            do {
+                let file = try open()
+                lock.lock()
+                if let stored { lock.unlock(); return stored }
+                stored = file
+                lock.unlock()
+                return file
+            } catch {
+                // Remembered, so a missing or unreadable file does not retry on every row read.
+                lock.lock(); failed = true; lock.unlock()
+                return nil
+            }
+        }
     }
 
     private let stream = StreamHandle()
@@ -162,17 +195,7 @@ public struct SafetensorsFile {
     }
 
     private func streamingHandle() -> UncachedFile? {
-        if let file = stream.file { return file }
-        if stream.failed { return nil }
-        do {
-            let file = try UncachedFile(url: url)
-            stream.file = file
-            return file
-        } catch {
-            // Remembered, so a missing or unreadable file does not retry on every row read.
-            stream.failed = true
-            return nil
-        }
+        stream.handle { try UncachedFile(url: url) }
     }
 
     /// Decode `elementCount` elements of `dtype` from the front of `raw`. The single decoder all

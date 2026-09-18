@@ -189,6 +189,15 @@ public final class ExpertSlotCache: ExpertWeightProvider {
     /// The generation-wide totals live on the bank and reach `metrics.json` through `Generation.experts`.
     public private(set) var metrics = ExpertProviderMetrics()
 
+    /// The counters are written from the preload's threads as well as the loop's (`D101`), so the writes are
+    /// guarded. Reads are not, for the same reason `InstallFile.ReadState` gives: the metrics are asked for
+    /// between forwards, when no worker is running.
+    private let metricsLock = NSLock()
+
+    private func addElementsRead(_ count: Int) {
+        metricsLock.lock(); metrics.elementsRead += count; metricsLock.unlock()
+    }
+
     public init(upstream: any ExpertWeightProvider, bank: ExpertBank?, layer: Int) {
         self.upstream = upstream
         self.bank = bank
@@ -257,11 +266,11 @@ public final class ExpertSlotCache: ExpertWeightProvider {
         let up = try bank.gateUp(layer: layer, expert: expert) {
             try upstream.gateUp(expert: expert, shape: shape)
         }
-        metrics.elementsRead += up.elementsLoaded
+        addElementsRead(up.elementsLoaded)
         let downOutcome = try bank.down(layer: layer, expert: expert) {
             try upstream.down(expert: expert, shape: shape)
         }
-        metrics.elementsRead += downOutcome.elementsLoaded
+        addElementsRead(downOutcome.elementsLoaded)
     }
 
     private func count(_ outcome: ExpertBank.Outcome) {

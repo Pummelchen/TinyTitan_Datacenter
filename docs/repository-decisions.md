@@ -2887,3 +2887,42 @@ operator re-scoped the work.
 so no thread ever owns a partial group, `x`-major blocking where each thread keeps a private accumulator, or
 accepting the four-wide grouping as part of the contract and asserting it. The third is a contract change and
 would need the reference re-derived, so it is the last resort; the first two are `DC-122`.
+
+## D103 — `DC-124` was a double release in the checkpoint reader's streaming handle, and the discriminator found it
+
+`DC-124` had been an unexplained intermittent abort for two rounds. It is now found, fixed, and closed on a
+failure rate — with the honest caveat that a rate is a measurement and not a test, which is why `DC-125` exists.
+
+**The bug.** `Safetensors.StreamHandle.file` was a bare `var`, the "open on first use" cache behind
+`rowsStreaming`. It is read *and written* from the reader's worker threads — `D94`'s row-parallel unpack, `D99`'s
+element-wise map, `D101`'s expert fan-out — so two workers can see `nil` at the same moment, each open a
+descriptor, and the **racing assignments release one `UncachedFile` twice**. The Swift runtime reports precisely
+that as "deallocated with non-zero retain count 2 … may have created a strong reference to self which outlived
+deinit, resulting in a dangling reference", and the process aborts with `-6`.
+
+**What found it was the discriminator, not the message.** The line looked like teardown noise for two rounds,
+and it was actually the fatal error itself — it appeared in **every failing run and no passing one**. What
+narrowed it to this cache was the pattern of *which* runs failed: **every failure was on a checkpoint path**
+(`test_run_m1_gate` and `test_sharded_checkpoint`) while **every install run was clean**, including all of this
+session's A/B measurements and the trace CLI. That is the signature of the one difference between the two
+readers: `InstallFile` holds its handle in a `let`, and this one cached it in a mutable slot with no lock.
+Two rounds of looking at the message got nowhere; one look at *who fails* named the file.
+
+**The fix** is a lock in `StreamHandle` and a double-checked open, with the read itself outside it so concurrent
+`pread`s still overlap. The loser of a race drops its ordinary local reference, which is safe; what was unsafe
+was a second release through the shared slot.
+
+**The evidence, and its limits.** The reproduction is
+`python3 -m unittest tools.test_run_m1_gate tools.test_sharded_checkpoint`, which failed **3 of 4** times before
+and **0 of 5** times after, with the retain-count line appearing **zero** times in the five. Against a 75% prior,
+five clean runs by luck is about 0.1%, which is why this is treated as fixed rather than as quieter. But a race
+that needs timing pressure has no deterministic reproduction, so what is asserted is a rate, and a rate is not a
+test: `DC-125` is the row for the stress test that will fail loudly if the lock is ever removed, and until it
+exists this decision rests on the rate alone. The regression is also recorded as a trap for the next reader:
+`ExpertSlotCache.metrics` had the same shape — fan-out writes with no lock — and was fixed in the same round
+before it could produce its own version of this.
+
+**What it cost the objective.** Nothing measurable, and it is worth saying plainly: the *speed* work of this
+round is one guarded counter. What the round bought is a gate that can be trusted — the Python suite was failing
+75% of the time for a reason that had nothing to do with any measurement in this repository, and every claim
+made this session was made on runs that happened to be in the clean 25%.
