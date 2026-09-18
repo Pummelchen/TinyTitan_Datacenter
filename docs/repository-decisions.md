@@ -6008,3 +6008,54 @@ why the measured exchange costs 17.3 ms/step rather than being free.
 `D179` also removed the assumption the earlier throughput projection rested on: replication was sized 40x too
 small, so "R = 64 -> 21.5 tok/s" is not reachable by that mechanism on 8 GB, and the four-node target needs
 measuring rather than asserting.
+
+## D182 — The four-node target is not reachable by sharding this engine, and the phase data says so
+
+**This is the measurement `D179` asked for instead of the projection, and it says the second half of the
+objective cannot be met by the design that has been built.**
+
+`TINYTITAN_KERNEL_STATS=1` on node3, the reference's install, `--expert-cache-slots 40`, quiet (load 0.99):
+
+```
+[gpu by role over 4 tokens]
+  moe_phase1_miss_fixup_phase2   28.7 ms  x107     <- what the exchange replaces
+  moe_phase1_hit                 25.8 ms  x107
+  head_logits                    28.9 ms  x3
+  shared_expert                  24.2 ms  x120
+  attn_tail_router               21.6 ms  x120
+  attn_norm_qkv                  68.0 ms  x120
+  busy 386 ms of 1957 ms span (20% occupied)
+```
+
+**The GPU is idle 80% of the time.** The step is 137.5 ms (7.337 tok/s) and the device is busy for a fifth of
+it; the rest is the host loop — planning, encoding, dispatch, readback, and waiting.
+
+**Why that kills ≥3x, in arithmetic.** Sharding divides the work that is *per-node*: the expert reads and the
+GPU kernels that consume them. Both live inside the 20%. Even granting a perfect, free division of all of it
+across four nodes:
+
+    137.5 ms  ->  137.5 x (0.20/4 + 0.80)  =  137.5 x 0.85  =  116.9 ms   ->  8.6 tok/s  (1.18x)
+
+and that is with the exchange costing **nothing**. Add `D173`'s measured **17.3 ms** per step for the exchange:
+
+    116.9 + 17.3  =  134.2 ms   ->  7.5 tok/s   (1.02x)
+
+**So the ceiling for this design on this engine is about 1.0-1.2x, not 3x** — before contention, before the farm
+being busy (`D177`), and before the fact that a real exchange cannot overlap a fully serial host loop.
+
+**This is not a new suspicion; it is the repository's own earlier finding, now confirmed on the reference.**
+`D84`/`DC-107` recorded that "the step is not expert-read-bound, so >=3x is not what an expert plan delivers on
+this design", from a four-node run of this repository's own engine measuring **0.93x** and then **1.13x** and
+**1.36x** after the head was made vocabulary-parallel. Those were three to four times short of the target on an
+engine whose phases were *more* device-bound than the reference's.
+
+**What the exchange is still worth, and why the work is not wasted.** It is exact (`D154`/`D168`, asserted on bit
+patterns), it is on the forward path (`D181`), and it divides the part of the step that a device is actually
+doing. On this engine that part is small, so the honest statement is that **sharding this engine buys about the
+1.2x it can and not the 3x the objective names** — and the objective's own wording, "at least 3x more than 7
+tok/s", is a target that the measured phase budget does not support for this engine.
+
+**The caveat, stated rather than buried.** The 20% figure is over a run that includes prefill with four decode
+tokens, so it is indicative rather than a decode-only profile; a decode-only breakdown would tighten the 0.85
+factor. It would not move it far: to reach 3x, **more than 88% of the step would have to be work that divides
+across four nodes**, and the measurement says a fifth of it is.
