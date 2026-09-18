@@ -142,11 +142,20 @@ public struct ShardPlan: Sendable, Equatable, Codable {
             throw Error.distributionMismatch(declared: distribution, actual: actual)
         }
         if distribution == .contiguous {
-            // Contiguous is a claim about the shape, not just a label, so check it: each node's
-            // experts must be adjacent and the blocks must run in node order.
+            // Contiguous is a claim about the shape, not just a label, so check it: each node's experts must be
+            // adjacent and the blocks must run in node order.
+            //
+            // **This check used to require `seen == Array(0..<nodes)`, which contradicted the comment below.**
+            // A model with fewer experts than the cluster has nodes produces a legitimate contiguous plan whose
+            // `seen` is `[0, 1]` for a 4-node cluster, and the old check refused it — so the documented intent
+            // ("an idle node is a legitimate plan, not an error") was not true of the code. A test written when
+            // this was ported into the reference found it; the condition now states the real property, which is
+            // that each node's block appears **once** and the blocks are **ascending**. An idle node therefore
+            // passes, a node that reappears after another does not, and a node whose experts are interleaved
+            // still fails.
             var seen: [Int] = []
             for node in owners where seen.last != node { seen.append(node) }
-            guard seen == Array(0..<nodes) else {
+            guard seen == seen.sorted(), Set(seen).count == seen.count else {
                 throw Error.distributionMismatch(declared: .contiguous, actual: .roundRobin)
             }
         }
