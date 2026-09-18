@@ -7923,3 +7923,48 @@ supplies it.
 47.4 ms - **11.9 ms** - and every other per-layer term is unchanged. The read is the term that divides and it is
 also the term that is exposed, which is the same conclusion `D217` reached from the cache sweep, now with the
 engine's own timer behind it instead of a fit.
+
+## D228 — A calibrated four-node model from the layer trace, and the 30.6 ms of every token that is not in a layer at all
+
+`D226` and `D227` decomposed the layer body with the engine's own timer. Summing 40 of them and checking against the
+measured single-node step calibrates the model and exposes a term nobody has looked at:
+
+    modelled body, 1 node      103.2 ms      (40 x 2650 us, D226)
+    measured step, 1 node      137.0 ms
+    => out-of-body term         30.6 ms      head, sampling, embedding
+
+**30.6 ms of every decode token is not inside any layer.** The head is 9.6 ms of it (`D222`, already
+vocabulary-parallel by `D93`), leaving **about 21 ms per token** of sampling, embedding and between-layer setup -
+a fifth of the single-node step, and a term no decision in this document has ever named.
+
+**The four-node projection, calibrated against the measured single node rather than extrapolated:**
+
+| attention sharded | read overlapped | step | tok/s |
+| --- | --- | --- | --- |
+| no | no | 69.8 ms | 14.33 |
+| no | yes | 57.9 ms | 17.27 |
+| yes | no | 61.2 ms | 16.35 |
+| **yes** | **yes** | **51.5 ms** | **19.42** |
+
+against the **47.6 ms** that 21 tok/s needs.
+
+**So the honest answer to the goal is: 19.4 tok/s with both changes built, 8% short of 21** - and the shortfall is
+now in a specific place. The out-of-body 30.6 ms divides only in its head component (9.6 -> 2.4), so **28.2 ms of
+every token is paid identically by all four nodes**, and the two sharding changes together recover 22.9 ms of body
+time. The arithmetic does not close, and the term that stops it closing is the one nobody has measured.
+
+**What this says to build, in order of value per unit of work:**
+
+  1. **the 21 ms out-of-body term.** It is not sharding, not the cache and not the prefetch; it is per-token setup on
+     a single node, it is **5% of the target step's entire budget**, and it helps the single-node number by exactly
+     as much as the four-node one. `TINYTITAN_LAYER_TRACE` already brackets it - it is `step - 40 x body - exchange` -
+     so the instrument to attack it exists.
+  2. **overlap the read** (47.4 ms exposed, `D227`): worth 17.27 - 14.33 = **2.9 tok/s** at four nodes and nothing
+     on one node, and it is the change `D202` computed as 7.5 -> 20.2.
+  3. **shard attention and the shared expert**: worth 16.35 - 14.33 = **2.0 tok/s** at four nodes on its own, and
+     more in combination.
+
+**And a caution this model carries.** It reproduces the single node only because `D226`'s body and the measured step
+were used to calibrate it; the four columns are the model's output, not measurements, and `D217`-`D225` are a record
+of how confidently such columns can be wrong. **They are recorded as a projection with its arithmetic shown, to be
+falsified by the four-node run - not as a result.**
