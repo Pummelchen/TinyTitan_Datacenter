@@ -5102,3 +5102,52 @@ between the stages because by then it has done its job and macbook-ab's copy is 
 **Only 4-bit is built.** `--bits 4` rather than the installer's `--bits 4 8`, because the 8-bit snapshot would
 double the intermediate for a width this objective does not use, and the whole reason for building on
 macbook-ab is that space there is finite too.
+
+## D160 — The shard plan is fully specified and ready to port, and its 4-node form is 64 experts each
+
+`D152` established that the reference has **no shard concept anywhere** and that the plan-as-data design is this
+repository's contribution. Reading it back out of `sources/DatacenterEngine/ShardPlan.swift` gives the exact
+artifact to port:
+
+```swift
+public struct ShardPlan: Sendable, Equatable, Codable {
+    static let schema = 1
+    let family: String            // "qwen3_5_moe" — so a plan cannot be applied to a model it was not made for
+    let experts: Int              // 256
+    let nodes: Int                // 4
+    let distribution: ShardDistribution   // .contiguous | .roundRobin
+    let owners: [Int]             // expert id -> owning node, length == experts
+    let schema: Int
+    // + canonicalDigest
+}
+```
+
+and a real 4-node plan file is already on this node:
+
+```json
+{"distribution":"contiguous","experts":256,"family":"qwen3_5_moe","nodes":4,
+ "owners":[0 x64, 1 x64, 2 x64, 3 x64],"schema":1}
+```
+
+**Three properties are worth carrying over intact, because each was chosen against a specific failure:**
+
+1. **`owners` is a flat array indexed by expert id**, not a per-node list of ids. The doc comment says why and
+   it is the right reason: *"an expert cannot be owned twice and cannot be quietly unowned"*. The obvious
+   alternative — one list per node — makes both mistakes **representable**, and leaves a validator to catch them
+   after the fact. Structural correctness beats validation.
+2. **The plan is data, not code**, because it is what every node must agree on before a run, and an agreement
+   inside a compiled binary cannot be inspected, diffed or frozen.
+3. **`canonicalDigest` over the canonical JSON**, compared at bring-up, so two nodes that disagree **refuse to
+   start** rather than producing a wrong answer that looks like a numerics problem. The digest changes if any
+   owner moves.
+
+**How it lands on the reference's structure.** `D153` found the seam is `executeExpertCachePlan` — a plan
+executor, not a `pread` — and `D154` found the reduction is a fixed **k=8 slot-ordered** kernel that zero-pads
+unused slots. So for a 4-node contiguous plan each node owns **64 of 256 experts**, produces a **full k=8
+contribution array with zeros in the slots it did not own**, and the arrays are summed in slot order — which is
+`D158`'s once-per-step exchange, derived independently from latency. The three findings compose into one design
+without a conflict between them.
+
+**Not started.** This is the port's specification, recorded while the source copy runs. What it does not yet
+answer is where the plan is *read* on the reference's side — a CLI flag, a config field or an environment
+variable — which is a small question that belongs with the code that consumes it rather than with the design.
