@@ -5261,3 +5261,48 @@ answer at the first token — the exact failure mode `D154`'s reduction and `D15
 avoid.
 
 **Verified:** `swift test` — 8 targets, **1,576 tests, 0 failure markers**. Fork commit `9bb9b30`.
+
+## D164 — `ExpertCachePlan.misses` is where ownership filters in, and it is one field
+
+`D153` said the shard seam is the plan executor rather than the `pread`. Reading the plan's own type makes that
+concrete, and it is smaller than expected.
+
+```swift
+public struct ExpertCachePlan: Sendable, Equatable {
+    public let layer: Int
+    public let experts: [Int]              // the routed experts this plan is for
+    public let assignedSlots: [Int]        // slot each expert occupies
+    public let assignedGenerations: [UInt64]  // slot incarnation, validated at use
+    public let misses: [Int]               // <-- not resident: these are what gets FETCHED
+    public let hits: Int                   // how many were already resident
+}
+```
+
+`planExpertsCached(experts:layer:avoidingSlots:prefetched:)` builds it, and `executeExpertCachePlan` consumes
+it; `loadExpertsCached` is literally `executeExpertCachePlan(planExpertsCached(experts:))`. So the whole read is
+**decide misses, then fetch misses** — and `misses` is the single field that says what this node intends to read
+from disk.
+
+**That is the hook.** A sharded engine does not need to change the fetch, the slots, the generations, the
+eviction policy or the read-ahead advice. It needs the **routed expert list to be filtered by ownership before
+planning**, so that:
+
+- experts this node owns go through `planExpertsCached` exactly as today — hits and misses unchanged;
+- experts a peer owns never enter the plan at all, so they are never a local read;
+- and their contributions arrive from the owner by the `D154` route instead.
+
+**Why filtering before the plan rather than inside the fetch.** An expert owned by a peer is not a slow read to
+be optimised; it is work that belongs to another machine. Marking it as a "miss" and then intercepting the fetch
+would leave it occupying a **cache slot** — the sizing is `assignedSlots` per the routed set, so a peer-owned
+expert would evict a resident one this node actually needs. Filtering first keeps the slot arithmetic honest and
+is why `D122`'s finding that cache size is a local optimum survives the change unmodified.
+
+**A second, useful detail from the same read.** `makeExpertCachePlan` returns `nil` when `experts.count >
+slotCount`, and both entry points are built to handle it: `planExpertsCached` turns `nil` into a recoverable
+`expertCacheUnplaceable` and `planExpertsCachedIfPossible` returns `nil`, which the prefill scheduler reads as
+"no plan available". The comment records that a trap here once aborted the process on `--expert-cache-slots 8`
+against a top-10 model. **A sharded node has a strictly smaller routed set than an unsharded one**, so ownership
+makes this failure *less* likely, not more — the one direction in which sharding is unambiguously safer.
+
+**Not implemented.** This is the change to make, named at the field. It needs the engine to hold a `ShardPlan`
+and to route non-owned contributions, which is the next piece of work.
