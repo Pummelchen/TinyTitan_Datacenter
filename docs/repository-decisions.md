@@ -3730,3 +3730,55 @@ result at least as much as a code result, and the reference's own 4 GB row on 8 
 9.1 GB free — it needs a rebuild with the disk watchdog); fuse the top-k into two kernels over a persistent
 argument buffer. The first is cheap and testable; the third is the largest single win and the largest risk to
 bit-exactness, which their own trace contract guards and this engine's digest would have to.
+
+## D121 — The plan the reference's source implies, and the operator's decisions on it
+
+`D120` states the three structural differences. The operator has since confirmed the framing that makes them
+worth doing: **7 tok/s was measured by TinyTitan on node3, a machine of exactly this specification.** The wall
+this engine hit is therefore a property of *this engine*, not of the hardware or the device — `D119`'s "the page
+cache retains nothing" is a statement about our access pattern and our footprint, not about what an 8 GB M2 can
+do. The project's purpose is four identical machines as one cluster well past 7 tok/s; the single-node number is
+the reference point that has to be reached first.
+
+### Decisions taken
+
+- **The head may be requantised to int4.** This trades the trace digest for ~731 MB of residency and was
+  explicitly authorised. It is *not* a silent change: the digest is an asserted invariant (`I3`) and the record
+  must name the new one, with the old one kept as the "before" for the M1 gate.
+  **The constraint to resolve first:** `tools/quant_policy.json` records `head.lm = "bf16"` and its own `why`
+  says *"the head is tied to the embedding"* — both are the same 248320x2048 tensor in this checkpoint. A plan
+  that quantises the head alone must either keep the embedding at bf16 (accepting ~1 GB + ~286 MB, which is
+  still 730 MB better than two bf16 copies) or quantise the embedding too (which changes the prompt path as well
+  as the head). This is a design question, not a flag, and it is the first thing to settle.
+- **The install may be rebuilt**, freeing space first. The numbers as they stand: `.build/hf-cache` is **67 GB**
+  (the source checkpoint — the rebuild *needs* it, so it must not be freed), `.build/m1-install` is **20 GB**
+  (rebuildable from the checkpoint), and free space is **9.1 GB** against a ~22 GB requirement. So the old
+  install has to go before the new one is built, which leaves the engine unusable until the rebuild finishes —
+  a heavy job that runs under the disk and memory watchdogs (`D58`, `D44`), not a background afterthought.
+- **`macbook-ab` as backup**: it resolves over SSH but refuses key auth (`Permission denied (publickey,
+  password, keyboard-interactive)`), so nothing can be copied there yet. A `ttdc/` folder under its Downloads
+  is the intended destination once there is a key or a password to reach it.
+
+### The work, in the order the evidence supports
+
+1. **Re-key and wire the expert bank; bypass the page cache for expert reads.** Cheapest and independent of the
+   rebuild. Size as `slotsPerLayer x layers x slabStride` from one budget, reserve per layer rather than
+   evicting across all forty, `mlock` for decode, and open the expert fds `F_NOCACHE` so the read path stops
+   growing the page cache. `D113` measured the *symptom* (a partial cache thrashing) and `D119` measured the
+   *cause* (the page cache retaining nothing); this is the fix both were pointing at. Ship it with the hit rate,
+   never before it: the reference records `F_NOCACHE` costing 15-30% when the hit rate is low.
+2. **Make an expert one `pread`.** Requires the install re-layout (expert stacks section-major -> expert-major,
+   gate+up+down contiguous), so it rides on the rebuild above. A layer goes from 48 reads to 8, from a pool the
+   reference measures at ~3.2 GB/s on four concurrent expert-sized reads against this node's 1.65-1.82 GB/s.
+3. **Fuse the top-k into two kernels.** Largest win (`mix.read` + `mix.down` are 126 ms of 626) and the largest
+   risk: the accumulation order must stay bit-identical to `Ops.orderedMatmul`, which is what the trace digest
+   is for. Do it last, with the digest gate green before and after.
+4. **Head to int4, with a fused norm+GEMV+argmax** as the reference does — no vocab-sized logits materialised.
+
+### What is not yet established
+
+The reference's 79.8% hit rate is for a 48-slot-per-layer bank of **1.6875 MiB** slabs; this engine's slabs are
+1.82 MB and its container splits an expert into six reads, so the slot counts and the hit rate for a given
+budget are **not** like-for-like and must be measured here rather than read across. And its 3.2 GB/s device
+figure is its own hardware's: the same-spec claim is about node3, and the read rate measured *here* is
+1.65-1.82 GB/s, so the achievable per-step floor may differ from node3's even on identical hardware.
