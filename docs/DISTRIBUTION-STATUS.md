@@ -506,6 +506,11 @@ let plan   = try model.planRoutedExperts(layer: layer, experts: experts)   // Mo
 let blobs  = try model.routedExpertBuffers(for: plan)                      // :165, sync -> [TensorView]
 let offsets = try model.routedExpertOffsets(layer: layer)                  // MoEExpertOffsets
 
+let argBuf = moe.makeRoutedArgumentBuffer(
+    routedBlobs: blobs.map { $0.buffer },
+    topK: UInt32(experts.count),
+    routedBufferOffsets: blobs.map { Int($0.offset) })   // MoE.swift:330 - the OFFSETS are a separate
+                                                         // argument, and the decode path passes them (":1572")
 // write `activation` into the fp16 activation buffer, widened.
 
 // ONE EXPERT AT A TIME, because phase 2 REDUCES and has no per-expert output:
