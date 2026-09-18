@@ -6442,3 +6442,60 @@ Four nodes divide it to ~25 ms; that alone gives about **10-12 tok/s (1.4-1.7x)*
 thing to fix. That last one is the most promising and the least explored: 350 KB reads at 3,300 IOPS is not a
 sequential pattern, and `D110` is the precedent for what a change of access shape is worth - reading each
 int4 row as a `uint4` instead of a byte at a time was **3.6-4x**.
+
+## D192 — The decode reads at 1.1 GB/s where the device does 1.65, and that gap is worth more than sharding
+
+`D191` read `iostat` while decoding, which on a shared farm (`D177`) does not by itself say whose I/O it was.
+Measured against an idle baseline on the same node, same command, minutes apart:
+
+| state | disk0 |
+| --- | --- |
+| idle, three samples | 12.86, **0.12, 0.36 MB/s** |
+| decoding, two samples | **1171.06, 1125.87 MB/s** |
+| decode result | 8.82 s / 64 tokens = 137.8 ms, **7.256 tok/s** |
+
+**The ~1.1 GB/s is the decode's own expert reads**, and the attribution is now closed rather than assumed.
+
+### The headroom, which is the find
+
+The step reads **101.0 MiB/token = 106 MB**, and at the measured 1.1 GB/s that is **~96 ms of a 137.8 ms step**.
+The device's own measured rates are higher, and both are from this repository:
+
+* **1.65 GB/s** cold sequential (`D115`), and
+* **1.82 GB/s** for the preload's cold reads, **20 GB/s** warm, also `D115`.
+
+At the preload's own cold rate the same 106 MB takes **58 ms**, and the step becomes
+
+    137.8 - 96 + 58 = 99.8 ms  ->  10.0 tok/s  (1.38x)     on ONE node
+
+**A 1.38x on one node, from making the demand reads as fast as the preload's reads already are** — which is more
+than the entire four-node sharding case was ever measured to be. And the two compose: divide the volume by four
+*and* read it at 1.82 GB/s,
+
+    106/4 = 26.5 MB at 1.82 GB/s = 14.6 ms + ~40 ms of device and host = ~55 ms  ->  ~18 tok/s  (2.5x)
+
+which is most of the way to 21 and the first arithmetic in this session that gets near it.
+
+### Why the demand reads are slower, and what to look at
+
+`iostat` reports the shape: **~3,300 IOPS at 315-400 KB per transfer** while decoding, against a preload that
+`D115` measured at 1.82 GB/s. Expert-sized reads are **1,769,472 B** each, so ~350 KB per transfer means the
+demand path is issuing **smaller reads than the experts it wants** — roughly a fifth of an expert apiece — and
+paying 3,300 syscalls a second for it. The preload reads whole experts, which is why it is faster.
+
+**That is the thing to confirm next**: whether the miss path slices each expert into several `pread`s where the
+preload issues one, and if so whether one read per expert recovers the gap. `D110` is the precedent for what a
+change of access *shape* is worth on this codebase - reading each int4 row as a `uint4` instead of one byte at a
+time was **3.6-4x** - and `D113` is the precedent for the opposite error, where fanning a preload over eight
+threads gave eight threads six **sequential** reads each and had to be re-cut per (expert, projection).
+
+### Where this leaves the target
+
+| lever | measured or derived | value |
+| --- | --- | --- |
+| make the demand reads as fast as the preload's | measured rates, derived composition | **1.38x on one node** |
+| divide the volume across four nodes | `D173` exchange 17.3 ms, `D188` | **~1.4-1.7x** |
+| both together | derived | **~2.5x, ~18 tok/s** |
+
+The first is a single-node change with a measured target to hit (1.82 GB/s, not 1.1), it needs no distribution,
+and it is the only lever this session has found that moves the dominant term without spending memory.
