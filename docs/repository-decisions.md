@@ -8509,3 +8509,42 @@ explanations eliminated by measurement, one candidate standing, and no way to is
 into swap, 9.02 tok/s is still the measured floor, and the exchange still costs 3.2 ms a step. What it changes is
 that **`D218`, `D219` and `D220` describe a proxy and their prose should be read that way** - which `D240` said, and
 this narrows to a single unchecked alternative.
+
+## D243 — The slot count is the lever and the candidate set is not: the two curves are identical
+
+`D242` left one candidate standing - the allocation - and said there was no knob to isolate it. There is one
+experiment, and it needs nothing new: **sweep the slot count with the candidate set pinned at 64 by the ownership
+filter**, so the number of experts the planner can choose from is held fixed while the number of slots varies. If
+the effect persists the slot count is doing it; if it vanishes the candidate set was.
+
+Node3, the reference install, 48 tokens, one binary, the filter the only difference within each row:
+
+| slots | 256 candidates | 64 candidates |
+| --- | --- | --- |
+| 8 | 4.38 tok/s (228.4 ms) | 4.31 tok/s (232.2 ms) |
+| 16 | 5.54 (180.6) | 5.52 (181.2) |
+| 24 | 6.48 (154.2) | 6.48 (154.4) |
+| 40 | 7.80 (128.3) | 7.72 (129.5) |
+
+**The two curves lie on top of each other at every point.** Quartering the candidate set changes the step by under
+2% at every slot count, while the slot count changes it by **1.78x** across the same range. So:
+
+  - **the slot count is the lever.** 8 -> 40 slots is 228.4 -> 128.3 ms, monotone, and `D218`'s ceiling at 40 and its
+    collapse at 64 stand unchanged;
+  - **the candidate set is not.** This is the same null result as `D239` from the other direction - there the filter
+    was varied at fixed slots, here it is held while slots vary - and the two together make it a property of the
+    system rather than of one experiment;
+  - **and therefore neither is the miss count**, because miss count is a function of both and both have now been
+    varied independently with the step following only one of them.
+
+**What that leaves is the reservation itself** - how many slots a layer's streamer allocates, fences and recycles -
+which is GPU-visible state and not bytes, not hits, and not planning. `D114` is the precedent for what that class of
+cost looks like: batching 640 synchronous dispatches into 80 removed the *waits* and not the work, was worth
+**1.27x**, and the batch size was the variable that mattered. **`D242`'s conclusion is now measured rather than
+inferred**, and the mechanism it names - slot allocation and recycling - is the only thing left in the running.
+
+**And the practical consequence is worth stating, because it is not nothing.** The single node's fastest measured
+configuration is 40 slots at **7.72-7.80 tok/s**, and the whole span from 8 to 40 is available as a knob with a
+**1.78x** range. That range is real, it is measured, and the engine's default already sits at its top - so the
+remaining question is why 40 is the top, and `D218` answered that from the other side: 64 swaps and halves the
+throughput. **The knob is spent on one node, and the mechanism by which it worked is the allocation.**
