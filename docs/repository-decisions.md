@@ -3658,3 +3658,31 @@ decoded fp32, packed slabs, dense payload — costs more in memory pressure than
 The default stays **0**. Recorded because a default that was right at 5.4 s/step is not automatically right at
 0.63 s/step, and the only way to know is to re-measure it; the answer happened to be the same, and now it is
 the same *with a measurement at the current operating point* rather than by inheritance.
+
+## D119 — The reference's cache shape was reproduced on this node, and it is three times worse
+
+TinyTitan's published per-token traffic is ~1.5-1.8 GB of **dense** weights plus only ~0.17 GB of experts,
+which is the shape of a design that streams the dense weights through the kernel's page cache every token and
+spends its wired memory on the **expert** cache — the inverse of this engine, which holds the dense 995 MB and
+the head 970 MB in anonymous memory and leaves the experts on disk. That inversion is the most plausible
+explanation for 141 ms against 626 ms, so it was tested directly: `SHARD_DENSE_CACHE_MB=0` (dense read through
+the page cache rather than held) combined with a large slab cache, which is exactly the reference's shape.
+
+| configuration | step | `load` | `attn.core` | `head` | reads/step |
+| --- | --- | --- | --- | --- | --- |
+| dense 2048, slab 128 (**current default**) | **0.700 s** | 55 ms | 130 ms | 51 ms | 0.83 GB |
+| dense 0, slab 2048 | 1.974 s | **850 ms** | 345 ms | 247 ms | 1.64 GB |
+| dense 0, slab 3072 | 2.245 s | 859 ms | 351 ms | 281 ms | 1.60 GB |
+| `D118`'s layer cache, for reference | 0.639 s | 20 ms | 138 ms | 50 ms | — |
+
+**It is three times worse, and `load` is where it shows**: with the dense payload no longer held, every step
+re-reads ~1.6 GB of packed weights and the *kernel's* page cache does not retain them — the effective read rate
+is **0.83 GB/s**, below even the device's own cold sequential 1.65 GB/s, because the dense and expert streams
+now evict each other. The hypothesis is falsified on this node, not merely unhelpful.
+
+This matters more than a failed experiment usually would. It says the wall is **not** "we chose the wrong cache
+to keep": on this machine the unified buffer cache gives us essentially **no cross-step reuse at all** for a
+1.75 GB working set, which is precisely the mechanism the reference's design depends on. An engine can only
+choose between anonymous memory (which the process controls and which costs pressure) and file pages (which it
+does not control and which this kernel does not keep). Both have now been measured, from every direction, and
+neither holds the working set.
