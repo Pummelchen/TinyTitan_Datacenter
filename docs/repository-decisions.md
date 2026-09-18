@@ -7686,3 +7686,31 @@ not separate. **The ceiling was defended for the wrong reason and survives for t
 `attn_norm_qkv` at 338.1 ms is the largest single kernel; if the GQA heads were split across nodes the way the head
 was made vocabulary-parallel in `D93`, the term that bounds the result would divide. **That is a second kind of
 sharding this repository has never built**, and it is now the only route to 21 tok/s this budget can see.
+
+## D222 — The replicated fraction is stable to 0.2 points across three runs, so D221's bound is not a single sample
+
+`D221` rested its whole conclusion - that the four-node case is bounded at 15.4 tok/s - on **one** kernel profile.
+That is exactly the shape of evidence this session has had to withdraw before (`D217`'s plateau was two runs with
+overlapping ranges), so the profile was repeated three times on node3, the reference install, 40 slots, 15 tokens:
+
+| run | tok/s | replicated | routed | head | GPU | replicated share |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 7.248 | 34.9 ms | 17.9 ms | 8.8 ms | 61.7 ms | **56.6%** |
+| 2 | 7.304 | 35.1 ms | 18.0 ms | 9.0 ms | 62.1 ms | **56.4%** |
+| 3 | 7.315 | 35.4 ms | 18.3 ms | 9.0 ms | 62.8 ms | **56.4%** |
+
+**The fraction is stable to 0.2 points and the absolute figures to under 2%**, which is much tighter than this
+farm's usual run-to-run spread (`D187`) - and it is tight because the kernel profile measures the **GPU's own
+timestamps** rather than wall-clock around a step that is 55% idle.
+
+**That last point is worth keeping.** The GPU per token is **61.7-62.8 ms** against a **~137 ms** step, so the
+device is **about 45% occupied during decode** - the "31% occupied" line in `D221` was over a span that included
+the 1.45 s prefill. The engine spends more than half of every decode step with the GPU doing nothing, which is
+consistent with `D214`'s 83% `waitUntilCompleted` and with the miss model of `D220`: the wait is the device
+waiting on data it has not been given, and the 43% overlap already achieved is what keeps the idle share from
+being worse.
+
+**So `D221` stands as measured, not as sampled**, and the bound it puts on the four-node case - **10.5 to
+15.4 tok/s, with 15.4 the best case** - is the number a four-node run should be compared against. The route it
+named is unchanged and unbuilt: **shard attention and the shared expert as well as the experts**, since those
+three kernels are 56.4% of the work and the plan divides none of them.
