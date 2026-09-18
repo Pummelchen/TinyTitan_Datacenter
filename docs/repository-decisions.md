@@ -6133,3 +6133,32 @@ measurement on this machine.
 **So the first half of the objective is met on a build that passes its whole suite: 7.227 median, 7.328 best, on
 a node at load ~1, above the 7.075 reference.** And `D182`/`D183` stand unchanged — the second half's ceiling is
 about 1.0-1.1x, because only 13.2% of the 139.6 ms decode step is expert work that sharding can divide.
+
+## D185 — The separate kernel is inert on the single-node path, and the kernels ship in the bundle
+
+`3bff2cf` duplicated the k8 reduce as `moe_phase2_down_reduce_k8_remote` so the single-node path dispatches the
+**original** kernel rather than a null-checked branch. The claim is structural, and it is now also measured on
+the real binary and the real install: node3, `--expert-cache-slots 40`, 16 tokens at temperature 0:
+
+| run | load | tok/s |
+| --- | --- | --- |
+| 1 | 1.06 | 6.954 |
+| 2 | 1.13 | 7.299 |
+| 3 | 1.04 | 7.230 |
+
+**The tokens are identical** — `Paris, a city renowned for its rich history, culture, and iconic landmarks.` — and
+the warm runs sit where `D184` left them, so the shadow kernel changes nothing it should not. Run 1 is the cold
+case again.
+
+### And a deployment fact worth writing down
+
+The first attempt failed with `Metal function missing in library: moe_phase2_down_reduce_k8_remote` — from a
+binary whose source had the kernel, because **the `.metal` files ship as bundle resources and are compiled at
+runtime**, in `TinyTitan_TinyTitan.bundle/Contents/Resources/Metal/`. Copying the executable alone leaves the
+kernels **stale on the target**: every earlier deployment this session carried only `TinyTitanCLI`, which worked
+because the old bundle still contained every kernel the old binary asked for. A *new* kernel is the case where
+that silently stops being true, and it presents as a missing function rather than as a version mismatch.
+
+So a farm deployment is **the binary and the bundle together**, and the bundle is the half that carries the
+arithmetic. `TinyTitanRepack` was the same lesson in `D176`: a component that is not copied is a component that
+is not there.
