@@ -276,10 +276,35 @@ public enum MetalBf16Matmul {
         float accumulator = 0.0f;
         for (uint base = 0; base < k; base += K_TILE) {
             uint span = min((uint)K_TILE, k - base);
-            for (uint r = 0; r < TILE; ++r) {
-                if (group.x * TILE + r < columns && lane.x < span) {
-                    uint bits = uint(w[(group.x * TILE + r) * k + base + lane.x]);
-                    tile[r][lane.x] = as_type<float>(bits << 16);
+            // **Four bf16 per lane per load** (`D117`). The scalar form issued one warp-wide load of 64 bytes
+            // for **each** of the tile's 32 rows — 32 memory instructions for 2 KB, which is the same
+            // instruction-bound shape `D110` found in the int4 kernel (there it was one byte per load). Eight
+            // lanes now cover a 32-wide row with `ushort4`, so 32 lanes cover four rows at once and the tile
+            // takes **eight** loads instead of thirty-two. The tile's *contents* are identical element for
+            // element, so the accumulation below — ascending `k`, `fma(x, w, 0)` — is untouched and the
+            // result is bit-identical; only the number of instructions that fill it changes.
+            //
+            // `ushort4` needs 8-byte alignment, which holds: `k` is a multiple of 4 in every shape this runs
+            // on, `base` is a multiple of `K_TILE`, and `c` is a multiple of 4. A partial `span` takes the
+            // scalar path rather than reading past the row.
+            if (span == K_TILE) {
+                for (uint pass = 0; pass < TILE / 4; ++pass) {
+                    uint r = pass * 4 + lane.x / 8;
+                    uint c = (lane.x % 8) * 4;
+                    if (group.x * TILE + r < columns) {
+                        ushort4 packed = *((device const ushort4 *)(w + (group.x * TILE + r) * k + base + c));
+                        tile[r][c] = as_type<float>(uint(packed.x) << 16);
+                        tile[r][c + 1] = as_type<float>(uint(packed.y) << 16);
+                        tile[r][c + 2] = as_type<float>(uint(packed.z) << 16);
+                        tile[r][c + 3] = as_type<float>(uint(packed.w) << 16);
+                    }
+                }
+            } else {
+                for (uint r = 0; r < TILE; ++r) {
+                    if (group.x * TILE + r < columns && lane.x < span) {
+                        uint bits = uint(w[(group.x * TILE + r) * k + base + lane.x]);
+                        tile[r][lane.x] = as_type<float>(bits << 16);
+                    }
                 }
             }
             threadgroup_barrier(mem_flags::mem_threadgroup);

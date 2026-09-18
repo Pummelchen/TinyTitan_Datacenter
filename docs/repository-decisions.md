@@ -3602,3 +3602,37 @@ re-scoped the work. The four measured phases are `mix.gather` **247** (the exper
 rate), `attn.core` **119**, `head` **83**, `mix.read` **81**, `mix.down` **52**, `load` **51**. The read is
 still the floor and still the thing residency would fix, and `D115` measured from four sides that this node
 cannot afford the cache that would hold it.
+
+## D117 — The bf16 tile was loaded one instruction per row, which is D110 in a different kernel
+
+The head's kernel fills a 32x32 threadgroup tile from `w[row * k + base + lane.x]` — one warp-wide load of
+64 bytes for **each** of the tile's 32 rows, so **32 memory instructions for 2 KB**. `head` measured 83 ms for
+1.017 GB of bf16, which is **12 GB/s** on hardware whose memory does ~100: the kernel was issuing
+instructions, not moving bytes. This is the `D110` defect again — there it was one `uchar` per lane, here it is
+one `ushort` per lane — and the fix has the same shape: **four bf16 per lane per load**. Eight lanes cover a
+32-wide row with `ushort4`, so 32 lanes cover four rows at once and the tile takes **eight** loads instead of
+thirty-two.
+
+| | `head` | step | tok/s |
+| --- | --- | --- | --- |
+| `D116` | 82 ms | 0.65-0.67 s | 1.51-1.55 |
+| vectorised | **48 ms** | **0.628 s** | **1.591** |
+
+Three runs, digest `ed5e0328c087e4db…` in all: 0.683, 0.612, 0.628 s/step, 266 Swift tests, 0 failures.
+
+**The tile's contents are identical element for element**, so the accumulation below it — ascending `k`,
+`fma(x, w, 0)` — is untouched and the answer is bit-identical by construction rather than by test. Only the
+number of instructions that fill the tile changes. `ushort4` needs 8-byte alignment, which holds for every
+shape this runs on (`k` is a multiple of 4, `base` a multiple of `K_TILE`, `c` a multiple of 4, and the mapped
+head's block stride is 4096 bytes); a partial `span` takes the scalar path rather than reading past the row.
+
+**That the same defect was in two kernels is the part worth keeping.** `D110` found it in the int4 kernel and
+fixed it there; the bf16 kernel was written with a deliberately coalesced load — the comment says so, and it
+is true at the *warp* level — and still spent 8x the memory bandwidth's worth of time issuing them. Coalescing
+says how many bytes a warp moves per instruction, not how many bytes it moves per byte of work. A kernel can
+be perfectly coalesced and still instruction-bound, and the way to see it is to compare the phase's measured
+bytes-per-second against what the hardware can do, which is what finally pointed here.
+
+**Round total.** 1.476 -> **1.591 tok/s** across `D116` and `D117`, step 0.678 -> 0.628 s. The phases are now
+`mix.gather` **243**, `attn.core` **120**, `mix.read` **84**, `load` **55**, `head` **48**, `mix.down` **43**.
+The read remains the floor and the remaining 4.4x to 7 tok/s is still not in the arithmetic.

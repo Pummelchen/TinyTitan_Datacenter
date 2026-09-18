@@ -230,6 +230,13 @@ s**, about **1.5 tok/s**. Two asymmetries are load-bearing: an **expert's row ra
 (those bytes come from the evictable slab cache, so a mapping would dangle — `key` is set only by
 `packedTensor`), and the **key is content-addressed** (`name#sha256-prefix`), because a name is unique within
 one install and says nothing across two — `D115`'s bug one level out.
+**Then the bf16 tile turned out to be loaded one instruction per row (`D117`)** — `D110` in a different
+kernel. The head fills a 32x32 tile with one warp-wide 64-byte load **per row**, 32 instructions for 2 KB, and
+`head` measured 12 GB/s on hardware whose memory does ~100. Four bf16 per lane per load with `ushort4`: eight
+lanes cover a row, 32 lanes cover four rows, **eight** loads instead of thirty-two. `head` **82 -> 48 ms**,
+step **0.628 s = 1.591 tok/s**. The tile's contents are identical element for element, so the answer is
+bit-identical by construction. The lesson is that a load can be *perfectly coalesced at the warp level and
+still instruction-bound*, and the way to see it is bytes-per-second against what the hardware can do.
 
 ## Scope of this checkout
 
