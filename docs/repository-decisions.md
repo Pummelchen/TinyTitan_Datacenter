@@ -9637,3 +9637,38 @@ cost.
 **And none of it reaches 21 tok/s**, for the reason `D272` gives: the step outside the routed MoE is 117.6 ms of
 137.0 and is replicated on every node by construction. **The honest summary of this round is that a change I
 expected to be worth 4.9x was worth 1.11x, and the measurement is what says so.**
+
+## D275 — Where the serving batch actually goes: one command buffer per REQUEST, not per expert
+
+`D274` named "batch a layer's peer requests into one command buffer" as the next lever, on the evidence that a
+request costs ~1.7 ms of which the wire is 0.079. Reading the two sides locates it more sharply, and one half of the
+suggestion turns out to be already done:
+
+    ShardExchangeParticipant.remotePartials   for (index, expert) in experts.enumerated()   <- ONE round for the list
+    RealForwardRunner+ShardServe              cb.commit()  ...  await cb.completed()          <- once PER EXPERT
+
+**The requester already batches.** It sends one round of frames for the whole `experts` array - and the comment at
+that site says so: "is one frame either way, and a node routing eight experts to four peers would otherwise pay four
+times the latency for the same bytes (`D173`)". **So there is nothing to batch on the requesting side.**
+
+**The server does not.** `remoteExpertValues` loops the experts of a single request, and for each one it builds an
+argument buffer, encodes two dispatches, commits a command buffer and **awaits it**. Eight experts means eight
+commits and eight blocking waits, and **the experts are independent** - which is precisely the situation `D114`
+found single-node: "at these shapes the kernel is microseconds of a ~0.3 ms call - **the wait was the cost**", fixed
+there by encoding a layer's experts into one command buffer and waiting once.
+
+**So the change is one loop, not a protocol.** Encode all `experts.count` requests into **one** command buffer and
+await once, which needs the argument buffers to stay alive until the commit (they are locals today) and `remoteActs`
+to be as many slots as the request has experts rather than one. **No frame changes, no `ShardPlan` change, and the
+one-expert `MoE` from `D273` stays** - the slots are still one expert wide each, there are simply several of them in
+flight.
+
+**What it is worth, bounded honestly.** `D114` took the same shape from 640 dispatches to 80 and moved a phase
+179 -> 84 ms, about 2.1x on the phase and 1.27x on the step. Here the serving node's 533 ms of request cost over 40
+layers is the phase, so the same ratio would put a serving node near **2.5-3 tok/s** and the requesting node near
+single-node - **which is the exchange made roughly free, and `D272` says what that buys: 122.5 ms, 8.2 tok/s.**
+Still not 21, and worth having, because it would turn a 0.85x distribution into a ~1.0x one and make the measured
+number honest about the design rather than about the dispatch pattern.
+
+**Recorded rather than built** because the change spans both the scratch sizing and the loop, and a build that fails
+there should not be attempted without room to verify it.
