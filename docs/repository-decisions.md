@@ -9736,3 +9736,41 @@ this batch, and `D268`'s zeroing. **The instrument is a profile of one request o
 **And the ceiling is `D272`'s, unchanged and now three rounds old:** the exchange made free leaves 122.5 ms of a
 137.0 ms step, 8.2 tok/s, against the 47.6 the target needs. **Nothing in these two rounds has moved that**, and they
 were not expected to.
+
+## D278 — The serving cost is inside `remoteExpertValues`, at ~3 ms a request, and the nodes swap roles
+
+`D277` asked for the 1.5 ms per request to be measured rather than guessed at, and named the instrument: time the
+compute alone, so what is left is attributable. With the compute timed and logged every 64 requests:
+
+    node1  served 1792 requests, 2993 us each in compute   ->  completed at 5.623 tok/s
+    node3  served 1856 requests, 2958 us each in compute
+    node2                                           1.580 tok/s  (the slow one this run)
+
+**So the cost is inside `remoteExpertValues`, not around it.** The frame, the parse and the readback are the part
+`D208` measured at 0.079 ms; **the compute alone is 2.93-2.99 ms per request**, which is two orders of magnitude
+more. The four candidates `D277` eliminated were eliminated correctly, and this names the fifth.
+
+**And the request count is smaller than `D271` assumed.** 1792 requests over 48 tokens is **37 requests a token**,
+not 320 - because a request carries a whole layer's share of experts from one peer, which is the batching the
+requester already did. So the serving node spends **37 x 2.95 ms = 109 ms a token** on compute, against a token time
+of **8.54 s / 48 = 178 ms**: **the serving work is 61% of that node's token**, and it is why it ran at 5.62 rather
+than 7.6.
+
+**Where 2.95 ms goes, and it is not the arithmetic.** A request is now **two dispatches and one wait** - the batch
+built in `D277` - for one expert at `topK == 1`, and the single-node path does the same work inside a per-layer
+command buffer that costs about **0.5 ms for eight experts**. So the serving path is **roughly six times the local
+cost per command buffer**, for less work in it. The difference is not the kernel: it is that this node is
+**generating at the same time**, so its GPU queue is shared between its own forward pass and the peer's requests, and
+every serve wait is inflated by whatever is in flight beside it.
+
+**That is a different problem from the one this session has been attacking, and it is the real one.** `D221` put the
+routed MoE at 19.4 ms of a 137.0 ms step, so the *capacity* to answer peers exists. What this measures is the
+**latency** of answering when the answering node is busy - and latency, not bandwidth, was also what `D84` and
+`D92` found on this cluster years of records ago: "the exchange is 15.0% of the step ... 1.63 ms per term, which is
+latency rather than bandwidth".
+
+**So the honest next step is not another change to the serve path.** It is to measure a node that serves **without
+generating** - `--shard-serve` alone, as `D257`'s design already allows - and see whether a request then costs 0.5 ms
+rather than 2.95. **If it does, the serving penalty is contention and the answer is scheduling; if it does not, it is
+the command-buffer round trip and the answer is fewer, larger requests.** Either way it is one measurement, and the
+last four rounds have been four changes made before taking it.
