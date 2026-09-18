@@ -8433,3 +8433,41 @@ than per miss.
 **candidate set the planner sees** - which the ownership filter already does, and which produced no effect - against
 varying the **cache allocation** while holding the candidate set. If the second moves the step and the first does
 not, the sweep was measuring the allocation and the whole family of decisions needs its wording corrected.
+
+## D241 — What D239 does and does not show: it kills the read, not the device
+
+`D239` measured a node reading 64 of 256 experts against one reading all 256 and found **no difference** - 1.00x,
+0.99x, 1.00x across three pairs. Before that conclusion is used, one thing needs checking: **does the ownership
+filter reduce the work the GPU does, or only the bytes it reads?**
+
+It reduces only the bytes. `setOwnedExpertFilter` sets `streamer.ownedExpertFilter`, which is applied at the top of
+`makeExpertCachePlan` - it changes **which experts are planned into slots**, and therefore which are fetched. The
+phase-1 kernels still run over all eight routed slots of the layer; the non-owned ones simply have no data behind
+them. **The dispatch count is unchanged, the kernel times are unchanged, and only the read disappears.**
+
+**So `D239` establishes one thing and not another:**
+
+  - **Established: the expert read is not on the critical path.** Removing three quarters of it changes the step by
+    nothing, which is a direct measurement and much stronger than any inference from the cache sweep. `D236`'s
+    withdrawal of `D234`/`D235` was wrong, and `D240`'s conclusion that the sweep measures neither read volume nor
+    miss count stands.
+  - **Not established: that the device work does not divide.** A **real** sharded node does not run its peers'
+    expert kernels at all - it receives their contributions as a `[d][8]` partial - so its MoE kernel time falls with
+    the number of experts it owns. The filter cannot show that, because it leaves the kernels running over eight
+    slots with zeros in three quarters of them.
+
+**So the ceiling is still set by the device, and `D235`'s arithmetic is the right one** - expert sharding divides
+the **routed MoE's 19.4 ms** of a 137.0 ms step, giving about **1.12x**, and attention sharding adds the 22.5 ms of
+`attn_norm_qkv` for about **1.21x**. What `D239` removes from that arithmetic is the **read term**, which earlier
+projections had included and which the filter has now shown to be worth zero.
+
+**Why the distinction matters for what to build.** If the read had been the lever, the four-node plan would work as
+designed and the ~1.14x would have been a floor. Since the lever is the **device**, the plan works only to the extent
+that it reduces kernels a node executes - which it does for the routed MoE and does not for attention, the shared
+expert or the router. **The next build is therefore still attention and shared-expert sharding, and `D239` has not
+weakened that case; it has removed a competing one.**
+
+**One caveat left open and worth stating.** Whether the absent expert data costs the GPU anything - a kernel reading
+zeros may still take its full time, or may be slower for want of prefetch - is not measured. `D239`'s null result is
+consistent with both "the read is free" and "the read costs something and the GPU absorbs it", and those two would
+differ for a real sharded node. **The four-node run settles it; nothing on one node can.**
