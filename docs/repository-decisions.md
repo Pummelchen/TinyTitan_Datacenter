@@ -4889,3 +4889,41 @@ single-node rather than merely close to it. That is an inference from the kernel
 zero-padding comment, not a measurement, and it is labelled as one.
 
 **Transfer:** 12.5 GB of 67 (~17%) at ~35 MB/s.
+
+## D155 — The measured LAN round trip is 7.3 ms, which bounds what a sharded engine can afford per step
+
+Before running anything across two machines, the link itself was measured, and the number changes the design.
+
+| path | address | RTT (min/avg/max) |
+| --- | --- | --- |
+| direct LAN (`en0`, same subnet) | this node `192.168.18.26` ↔ macbook-ab `192.168.18.73` | **5.304 / 7.269 / 9.317 ms** |
+| Tailscale | `macbook-ab.tail1c3b90.ts.net` | 18.440 / 20.905 / 23.370 ms |
+
+**7.3 ms is very high for a LAN.** A wired gigabit LAN is well under 1 ms; this is the signature of **Wi-Fi**, and
+it is the link the distribution would actually run on. The Tailscale path is ~3x worse and is not the one to
+use — the direct LAN address is both faster and available, which is worth knowing before a design assumes
+`ssh <hostname>` reachability is the same thing as a usable data path.
+
+**Why it bounds the design.** The objective needs **≥21 tok/s across four nodes**, which is **≤47.6 ms per
+step**; the single-node reference is 7.075 tok/s at 143 ms/step. At 7.3 ms RTT, a distributed engine can afford
+roughly **six synchronous round trips per step** — and the model has **40 layers**. So:
+
+- **A per-layer exchange is not viable.** Forty layers at one round trip each is ~292 ms of pure latency per
+  token, which alone is below 3.4 tok/s — worse than the single-node number it is supposed to beat.
+- **The exchange has to be amortised over many layers or the whole step**: one exchange per step, or one per
+  group large enough that 7.3 ms is a small fraction of 47.6 ms.
+- This is the same conclusion `D92` reached on the older engine by a different route — receive was 99.6% of the
+  exchange and the cluster step measured the network — but here it is a **property of the link**, measurable
+  before any code is written.
+
+**Consequence for the shard plan.** `D153`'s plan executor can still decide ownership locally, but the transport
+shape cannot be "fetch each non-resident expert from its owner": 320 experts per step at one round trip each is
+unthinkable at 7.3 ms. The viable shapes are ones where **each node computes all its owned experts for a whole
+step and the contributions cross the wire once** — which is exactly the full k=8 slot-ordered array `D154`
+already argued for on bit-exactness grounds. The two constraints agree, which is a good sign rather than a
+coincidence: both push toward exchanging whole-step results in a fixed slot order rather than fetching experts
+one at a time.
+
+**Measured, not modelled.** These are `ping` round trips between two machines on this desk, not application
+latency; real request/response adds serialisation and processing on top, so 7.3 ms is a **lower bound** on what
+an exchange costs.
