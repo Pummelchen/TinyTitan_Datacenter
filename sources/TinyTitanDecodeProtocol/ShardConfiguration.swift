@@ -72,6 +72,55 @@ public struct ShardConfiguration: Sendable, Equatable {
             + "replicated=\(plan.replicated.count) digest=\(digest)"
     }
 
+    /// Parse peer addresses from a command-line value like `"1=192.168.18.27:9100,2=192.168.18.25:9100"`.
+    ///
+    /// Kept as a pure function rather than inline in the argument parser so the malformed cases are testable:
+    /// a peer address that is silently dropped is a node that silently never contributes, which is the same
+    /// wrong-answer failure `init` refuses - and it would be invisible if parsing were the only thing that ran.
+    ///
+    /// Every failure names the offending token, because a formatter mistake in a four-node launch is otherwise
+    /// four identical errors.
+    public enum PeerSpecError: Swift.Error, Equatable, CustomStringConvertible {
+        case malformedEntry(String)
+        case badIndex(String)
+        case badPort(String)
+        case emptyHost(String)
+        case duplicateIndex(Int)
+
+        public var description: String {
+            switch self {
+            case let .malformedEntry(e): return "peer entry \(e) is not <index>=<host>:<port>"
+            case let .badIndex(i): return "peer index \(i) is not an integer"
+            case let .badPort(p): return "peer port \(p) is not in 1...65535"
+            case let .emptyHost(e): return "peer entry \(e) has an empty host"
+            case let .duplicateIndex(i): return "peer index \(i) is given more than once"
+            }
+        }
+    }
+
+    public static func parsePeerSpec(_ spec: String) throws -> [Int: PeerAddress] {
+        var out: [Int: PeerAddress] = [:]
+        for raw in spec.split(separator: ",") {
+            let entry = raw.trimmingCharacters(in: .whitespaces)
+            if entry.isEmpty { continue }
+            let halves = entry.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard halves.count == 2 else { throw PeerSpecError.malformedEntry(entry) }
+            guard let index = Int(halves[0]) else { throw PeerSpecError.badIndex(String(halves[0])) }
+            guard out[index] == nil else { throw PeerSpecError.duplicateIndex(index) }
+            // rsplit on the last colon so an IPv6 literal or a bracketed host is not split in the wrong place.
+            let address = String(halves[1])
+            guard let colon = address.lastIndex(of: ":") else {
+                throw PeerSpecError.malformedEntry(entry)
+            }
+            let host = String(address[address.startIndex..<colon])
+            let portText = String(address[address.index(after: colon)...])
+            guard !host.isEmpty else { throw PeerSpecError.emptyHost(entry) }
+            guard let port = UInt16(portText), port > 0 else { throw PeerSpecError.badPort(portText) }
+            out[index] = PeerAddress(host: host, port: port)
+        }
+        return out
+    }
+
     /// Build the runtime pieces for this configuration.
     public func makeTransport() -> ShardPeerSet {
         ShardPeerSet(plan: plan, node: node,
