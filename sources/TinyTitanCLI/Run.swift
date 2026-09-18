@@ -282,6 +282,25 @@ public func run(args: Args,
                 "[shard] node \(node) of \(plan.nodes), peers \(configuration.peerIndices) connected; "
                 + "expert contributions are being exchanged.\n").utf8))
         }
+
+        // The serving half: answer peers that ask this node for the experts it owns. Runs on a background queue
+        // because `serve` blocks, and `D197` is this repository's record of what a blocking accept inside a
+        // cooperative-pool task does to the task that has to connect to it. The Compute is `remoteExpertValues`,
+        // which is synchronous and shares this node's expert cache because it uses the same entry points the
+        // request path does.
+        if let servePort = args.shardServePort {
+            let server = ShardExchangeServer(port: UInt16(servePort)) { layer, experts, activation in
+                try runner.remoteExpertValues(layer: layer, experts: experts,
+                                              activation: activation, dims: activation.count)
+            }
+            DispatchQueue.global().async {
+                do { try server.serve(connections: Int.max) } catch {
+                    FileHandle.standardError.write(Data("[shard] serve stopped: \(error)\n".utf8))
+                }
+            }
+            FileHandle.standardError.write(Data((
+                "[shard] serving peer expert requests on port \(servePort).\n").utf8))
+        }
         let scratch = try RawCompletionScratch(context: context,
                                                vocab: model.config.vocabSize,
                                                logitSoftcap: Float(model.config.finalLogitSoftcap))

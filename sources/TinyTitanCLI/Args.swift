@@ -27,6 +27,8 @@ public struct Args: Equatable, Sendable {
     public var shardPlanPath: String?
     public var shardNode: Int?
     public var shardPeersSpec: String?
+    /// Port to serve peer expert requests on. Without it a node generates but does not answer.
+    public var shardServePort: Int?
     public var stops: [String]
     public var quiet: Bool
     public var concise: Bool
@@ -58,6 +60,7 @@ public struct Args: Equatable, Sendable {
                 shardPlanPath: String? = nil,
                 shardNode: Int? = nil,
                 shardPeersSpec: String? = nil,
+                shardServePort: Int? = nil,
                 stops: [String] = [],
                 quiet: Bool = false,
                 concise: Bool = false,
@@ -89,6 +92,7 @@ public struct Args: Equatable, Sendable {
         self.shardPlanPath = shardPlanPath
         self.shardNode = shardNode
         self.shardPeersSpec = shardPeersSpec
+        self.shardServePort = shardServePort
         self.stops = stops
         self.quiet = quiet
         self.concise = concise
@@ -210,6 +214,7 @@ extension Args {
         var shardPlanPath: String?
         var shardNode: Int?
         var shardPeersSpec: String?
+        var shardServePort: Int?
         var stops: [String] = []
         var quiet = false
         var concise = false
@@ -255,6 +260,12 @@ extension Args {
                 shardNode = parsed
             case "--shard-peers":
                 shardPeersSpec = try takeValue(argv, &index, flag: flag)
+            case "--shard-serve":
+                let value = try takeValue(argv, &index, flag: flag)
+                guard let parsed = Int(value), (1...65535).contains(parsed) else {
+                    throw ArgsError.invalidValue(flag: flag, value: value)
+                }
+                shardServePort = parsed
             case "--model":
                 model = try takeValue(argv, &index, flag: flag)
             case "--prompt":
@@ -400,6 +411,7 @@ extension Args {
                     shardPlanPath: shardPlanPath,
                     shardNode: shardNode,
                     shardPeersSpec: shardPeersSpec,
+                    shardServePort: shardServePort,
                     stops: stops,
                     quiet: quiet,
                     concise: concise,
