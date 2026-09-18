@@ -49,8 +49,7 @@ struct ShardExchangeIntegrationTests {
     // needs (DC-132), so the test belongs with that change rather than before it. `assemblyPreservesSlots`
     // below already asserts the arithmetic half without a socket, which is why disabling this loses less than
     // it looks like it does.
-    @Test("a routed set is split, exchanged over a socket, and reassembled in slot order",
-          .disabled("needs a ShardExchangeParticipant driving the node side, and a peer that reads until EOF rather than a fixed count - see the note above and DC-132"))
+    @Test("a routed set is split, exchanged over a socket, and reassembled in slot order")
     func routedSetRoundTripsThroughAPeer() async throws {
         let plan = Self.plan()
         let node = 0
@@ -67,32 +66,67 @@ struct ShardExchangeIntegrationTests {
         // no test reported a start, because the hang was in the test's own concurrency, not in the code under
         // test. `DispatchQueue.global()` gives the blocking call a real thread and the continuation carries
         // its result back into the async world.
-        let server = Task {
-            try await withCheckedThrowingContinuation { continuation in
-                DispatchQueue.global().async {
-                    do {
-                        continuation.resume(returning: try DecodeTCPSocket.listenAndAccept(
-                            host: "127.0.0.1", port: Self.port))
-                    } catch {
-                        continuation.resume(throwing: error)
+        // Only node 3's expert 200 crosses. ONE peer, so ONE request — the body this replaces expected two
+        // and blocked on the second `receive()` forever, which is why the suite could not run whole.
+        let expectedRequests = replicating.remoteSlots(amongRouted: Self.routed, by: node).count
+
+        // The accept MUST NOT run on a cooperative-pool thread. `listenAndAccept` blocks until a peer
+        // arrives, and a `Task` that blocks holds one of the pool's threads for the whole wait — so the
+        // `connect` below, which needs a thread from the same pool, never gets one. `DispatchQueue.global()`
+        // gives the blocking call a real thread.
+        let server = Task { () -> Void in
+            let accepted: (input: FileHandle, output: FileHandle) =
+                try await withCheckedThrowingContinuation { continuation in
+                    DispatchQueue.global().async {
+                        do {
+                            continuation.resume(returning: try DecodeTCPSocket.listenAndAccept(
+                                host: "127.0.0.1", port: Self.port))
+                        } catch {
+                            continuation.resume(throwing: error)
+                        }
                     }
                 }
-            }
+            // The PEER role, which the previous body never ran on the peer's own handle.
+            try await Self.run(node: accepted, requests: expectedRequests)
         }
+
+        // The NODE role, which the previous body never drove at all.
+        let activation = [Float](repeating: 0.5, count: Self.dimensions)
         var last: Error = POSIXError(.ECONNREFUSED)
-        var accepted: (input: FileHandle, output: FileHandle)?
+        var rows: [[Float]] = []
         for _ in 0..<100 {
             do {
                 let client = try DecodeTCPSocket.connect(host: "127.0.0.1", port: Self.port)
-                accepted = try await server.value
-                try await Self.run(node: client)
+                let channel = ShardPeerChannel(input: client.input, output: client.output)
+                let participant = ShardExchangeParticipant(
+                    plan: replicating, node: node, transport: ChannelTransport(channel: channel))
+                rows = try participant.contributions(
+                    layer: 0, experts: Self.routed, slots: Array(0..<Self.routed.count),
+                    activation: activation, dims: Self.dimensions)
+                try await server.value
                 break
             } catch {
                 last = error
                 try await Task.sleep(nanoseconds: 20_000_000)
             }
         }
-        guard accepted != nil else { throw last }
+        guard !rows.isEmpty else { throw last }
+
+        // The peer's contribution lands on ITS slot and nowhere else — the whole point of the exercise.
+        #expect(Array(rows[3]) == Self.compute(layer: 0, expert: 200, dimensions: Self.dimensions))
+        for slot in [0, 1, 2, 4, 5, 6, 7] {
+            #expect(Array(rows[slot]) == [Float](repeating: 0, count: Self.dimensions))
+        }
+    }
+
+    /// The node side's transport: the exchange frames over the peer channel, which is a Unix socket or TCP
+    /// without the participant knowing which.
+    private struct ChannelTransport: ShardTransport {
+        let channel: ShardPeerChannel
+        func exchange(_ request: ShardExchange.Request) throws -> ShardExchange.Reply {
+            try channel.send(try ShardExchange.encode(request))
+            return try ShardExchange.decodeReply(from: try channel.receive())
+        }
     }
 
     /// The peer side: read each request, compute every requested expert, reply in the order asked.
@@ -100,9 +134,10 @@ struct ShardExchangeIntegrationTests {
     /// Keeping the reply in the requested order is the peer's half of the slot contract — it does not need to
     /// know the slots, only to answer in sequence, which is why `ShardExchange.Reply` carries them back anyway:
     /// the receiver must not have to trust that the order was preserved.
-    private static func run(node handles: (input: FileHandle, output: FileHandle)) async throws {
+    private static func run(node handles: (input: FileHandle, output: FileHandle),
+                            requests: Int) async throws {
         let channel = ShardPeerChannel(input: handles.input, output: handles.output)
-        for _ in 0..<2 {
+        for _ in 0..<requests {
             let request = try ShardExchange.decodeRequest(from: try channel.receive())
             let values = request.experts.flatMap { expert in
                 compute(layer: request.layer, expert: expert, dimensions: request.activation.count)
