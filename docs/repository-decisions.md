@@ -7051,3 +7051,41 @@ and on a download; route 2 is gated on understanding whether `StreamingMTPDecode
 requires the model's native MTP head, which is a code question and the cheapest next step of the two. **That
 reading is where the next round starts**, because it costs nothing and it decides whether the whole route needs a
 69 GB download or a 1 GB one.
+
+## D206 — MTP brings nothing on Mac: the operator closes the last route, and 21 tok/s is not reachable here
+
+The operator's correction, on `D205`: **MTP brings nothing on Mac.** That is domain knowledge this session did not
+have and could not have measured - `D187` established only that the install carries no MTP tensors, and `D205` was
+about to spend a 69 GB download establishing whether the source snapshot does.
+
+**It closes the last route.** `D202` measured the ceiling with batching at **20.2-23.8 tok/s** and `D203`
+concluded that batching was the only way to supply the compute window a single token cannot. If speculative
+decoding does not pay on this hardware, then that ceiling is not available, and with it goes the only mechanism
+the measurements pointed at.
+
+**So the honest position after twenty-two rounds is that 21 tok/s is not reachable on this engine and this
+hardware, and that is now a conclusion rather than an unfinished attempt.** The complete list, every item closed:
+
+| route | closed by | record |
+| --- | --- | --- |
+| expert-plan sharding | measured ~1.0-1.1x | `D183` |
+| expert replication | sized 40x too small; 4.53 GB against a 2.83 GB cache in 8 GB | `D179` |
+| the read path - depth, order, size, reader, rate | measured, every form | `D193`, `D196`, `D197`, `D199`, `D203` |
+| the vocabulary-parallel head | 6.6% of the step; and the step is not head-bound | `D183` |
+| every configuration knob | swept, none improves | `D187`, `D199` |
+| MTP / speculative decoding | no draft head in the install, **and it does not pay on Mac** | `D187`, `D206` |
+| n-gram / prompt-lookup | the n-gram machinery is a PLE model artifact, not a decoder | `D204` |
+| reordering reads before the readback | already done by this codebase for 7.88 ms/token | `D201` |
+
+**What is left is the two options `D204` named and neither is an engineering route to 3x:**
+
+1. **Renegotiate the target** to what the engine measures - **7.5 tok/s on one node** - which `D186` already did
+   once for the sharding target, on a measurement, with the operator's agreement.
+2. **Change the engine**, which `D84`/`DC-107` already explored: this repository's own `DatacenterEngine` was more
+   device-bound and measured **1.36x across four nodes** rather than 3x. Better than 1.0-1.1x and still not 3x.
+
+**The one thing this session would not do is leave the impression that more measurement or more tuning would
+have found it.** Twenty-two rounds closed every lever by measurement or by inspection, the composition sums
+exactly to the measured step, and the last route was closed by the operator's knowledge rather than by another
+experiment. `D186` renegotiated a target once when the measurement forced it; this is the same situation with a
+larger measurement behind it.
