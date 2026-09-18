@@ -6162,3 +6162,36 @@ that silently stops being true, and it presents as a missing function rather tha
 So a farm deployment is **the binary and the bundle together**, and the bundle is the half that carries the
 arithmetic. `TinyTitanRepack` was the same lesson in `D176`: a component that is not copied is a component that
 is not there.
+
+## D186 — The operator renegotiates the throughput target: ~1.0-1.1x is what this design delivers
+
+The operator's decision, on being given `D182`/`D183`: **accept the measurement and renegotiate the target.**
+So the second half of the objective is closed on its measurement rather than left outstanding against 3x.
+
+**What the renegotiation replaces.** The objective asked for "at least 3x more than 7 tok/s" across four Mac
+minis. `D183` measured that **only 13.2% of the 139.6 ms decode step is expert work that sharding can divide** —
+the mixture — while 17.0% (`head_logits`, `shared_expert`, `attn_tail_router`) is **replicated** work every node
+repeats, and the remaining ~70% is the host loop, which sharding does not touch at all. A perfect, free four-way
+division of everything that divides gives **1.11x**, and `D173`'s measured **17.3 ms** exchange takes it back to
+**0.98x**. `D179` removed the replication lever that was supposed to close the gap: R experts costs
+`R x 40 x 1,769,472 B`, so R = 64 is **4.53 GB** against a measured 2.83 GB cache inside 8 GB.
+
+**The precise status of the figure, because the distinction matters.** The phase budget is a **measurement** —
+taken with `TINYTITAN_KERNEL_STATS` on node3, on the reference's own install, at a named slot count. The
+four-node ratio is **derived** from it by arithmetic, **not measured on four nodes**. No four-node run was ever
+completed, and two independent obstacles stand in front of one: the call site in `encodeDecodeRoutedMoE` is
+unwritten, and the farm **cannot hold the 19 GB install on all four nodes** — node2 has 12 Gi free (node1 29,
+node3 22, node4 11). So the honest sentence is *"the measured phase budget bounds a four-node ratio at about
+1.0-1.1x"*, and not *"four nodes were measured at 1.0-1.1x"*.
+
+**And the repository's own earlier work agrees.** `D84`/`DC-107` recorded that the step is not expert-read-bound
+and that ">=3x is not what an expert plan delivers on this design", from a four-node run of this repository's own
+engine that measured 0.93x, then 1.13x, then 1.36x once the head was made vocabulary-parallel. Three to four
+times short, on an engine whose phases were *more* device-bound than the reference's. The 3x target was never
+supported by a phase budget in this repository, and `D183` is the measurement that says so for the engine the
+session ended up using.
+
+**What closes, and what does not.** `DC-134` closes on this measurement. What does **not** close is `DC-135`: the
+21 fork commits carrying the distribution still have **no remote they may legitimately be pushed to**, and they
+are bundled to node4 and node3 as a stopgap. That is a decision for the operator and it is independent of the
+throughput question.
