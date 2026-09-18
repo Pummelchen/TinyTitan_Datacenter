@@ -9704,3 +9704,35 @@ if it were done carelessly, and it would present as wrong values rather than as 
 **And the ceiling on it is `D272`'s, unchanged**: making the exchange free leaves 122.5 ms of a 137.0 ms step, or
 8.2 tok/s, against the 47.6 the target needs. **This change is worth making to measure the design honestly - a 0.85x
 distribution becoming a ~1.0x one - and it is not a route to 21.**
+
+## D277 — The batch is worth another 9%: the serving cost is neither the slot width nor the dispatch count
+
+`D276` specified the batch and it is built. Measured against the two rounds before it:
+
+| | `D271` (eight slots, commit per expert) | `D274` (one slot) | now (one slot, one commit) |
+| --- | --- | --- | --- |
+| serving node | 1.358, 1.374, 1.363 | 1.499, 1.517 | **1.634, 1.649** |
+| requesting node | 6.605, 6.581, 6.392 | 6.643, 6.507 | **6.627, 6.485** |
+
+**Zero NaN, loads 1.05-2.15.** So the two changes together are worth **1.36 -> 1.64, about 20%**, and the requesting
+node has not moved at all in either.
+
+**And the batch was predicted at 2.1x on the phase and 1.27x on the step** - on `D114`'s ratio, where the same
+restructure took 640 dispatches to 80 and moved its phase 179 -> 84 ms. **It gave 9%.** That is the second
+prediction in a row that a lever "obviously worth most of it" was worth a tenth of it, after `D273`'s eight-times
+slot width measuring 11%.
+
+**So the serving node's cost is not the dispatches.** Four things have now been eliminated from it: the eight-slot
+width (11%), the commit-and-wait count (9%), the expert read (`D239`: worth zero) and the cache placement (`D262`,
+fixed, no throughput change). **What is left is the per-request round trip** - the frame, its parse, the shared-memory
+readback and the reply - at **320 requests a token** across 40 layers and 8 experts. **1.64 tok/s is 610 ms a token
+against a single node's 130**, so **1.5 ms per request**, and `D208` measured the wire itself at **0.079 ms**. The
+remaining 1.4 ms is on the node, per request, and no change yet tried has touched it.
+
+**The next thing to measure rather than change is that 1.5 ms.** It is one number, it is now the whole of the serving
+penalty, and this session has three times built a fix for a component it had not measured - `D273`'s slot width,
+this batch, and `D268`'s zeroing. **The instrument is a profile of one request on one node**, not another change.
+
+**And the ceiling is `D272`'s, unchanged and now three rounds old:** the exchange made free leaves 122.5 ms of a
+137.0 ms step, 8.2 tok/s, against the 47.6 the target needs. **Nothing in these two rounds has moved that**, and they
+were not expected to.
