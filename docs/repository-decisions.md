@@ -7349,3 +7349,40 @@ overlapped - is **not decided**, because the one profile that was taken measured
 a profile of the **cooperative-pool threads that run the `Task`**, which is where `encodeDecodeRoutedMoE` and the
 expert scheduler are actually executing. **`D211` said the instrument had to be widened; `D212` and this record say
 it also has to be aimed**, and two rounds have now been spent on a semaphore that was working correctly.
+
+## D214 — The decode thread is GPU-wait-bound, and the largest addressable host cost is the F_NOCACHE advisory
+
+`D211`-`D213` spent three rounds failing to attribute the 41.3 ms host remainder, twice because they profiled the
+wrong thread. The right thread is the one running the `Task`, and its tree is unambiguous:
+
+    489  closure #1 in drive(_:)  ->  run  ->  runRawCompletion  ->  produce
+      484  RealForwardRunner.produce
+            343  produceToken  ->  -[_MTLCommandBuffer waitUntilCompleted]
+             64  produceToken  ->  -[_MTLCommandBuffer waitUntilCompleted]
+             57  produceToken  ->  encodeDecodeRoutedMoE
+                   25  Model.adviseRoutedExperts  ->  adviseExpertCachePlanMisses
+                         24  PreadExpertStreamer.adviseRanges  ->  fcntl
+
+**407 of 489 samples - 83% - are the host blocked in `waitUntilCompleted`.** The decode thread is not computing
+and it is not waiting on a semaphore of ours: **it is waiting for the GPU**, which is the device term `D202`
+already counted at 42.0 ms. So the host's *own* CPU work is the remaining **~17%**, and `D209`'s reading of it as
+CPU was right.
+
+**And the largest single piece of that 17% is `fcntl`.** `Model.adviseRoutedExperts` ->
+`adviseExpertCachePlanMisses` -> `adviseRanges` -> `fcntl` is **24 of the 57 encoding samples, 4.9% of the whole
+decode thread**, and it is the per-expert **`F_NOCACHE` advisory** being issued one expert at a time. That is a
+syscall per expert per layer - up to 8 x 40 = 320 a token - for a residency hint whose effect `D195`-`D203`
+established is a duty-cycle question rather than a rate one.
+
+**What this decides.** The question `D213` left open - CPU to reduce, or a wait to overlap - resolves to **both,
+in that order of size**:
+
+  - **the wait is the GPU**, and it is already the critical path at 83% of the decode thread. Overlapping *it*
+    means overlapping the device, which `D202` computed at 11.0 tok/s for disk+device and 20.2 for all three.
+  - **the CPU is small**, so `D209`'s "2.5x reduction in host work" was the wrong frame: cutting host CPU cannot
+    reach 47.6 ms because the host CPU is not what is in the way.
+
+**The concrete, bounded item is the `fcntl` batch.** One advisory per expert becomes one per layer - the ranges
+are already computed together by `adviseRanges`, and `F_RDADVISE`/`F_NOCACHE` take a range, so the loop is issuing
+N syscalls where 1 to 4 would do. It is **4.9% of the decode thread**, it is entirely host-side, it touches no
+arithmetic, and it is the kind of change `D94` and `D114` both were: remove work that is not the work.
