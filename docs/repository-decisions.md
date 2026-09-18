@@ -3686,3 +3686,47 @@ to keep": on this machine the unified buffer cache gives us essentially **no cro
 choose between anonymous memory (which the process controls and which costs pressure) and file pages (which it
 does not control and which this kernel does not keep). Both have now been measured, from every direction, and
 neither holds the working set.
+
+## D120 — What the reference actually does, read from its source (and the three things this engine does differently)
+
+A read of TinyTitan's single-node decode path at `276fe70` (read-only, Apache-2.0), prompted by the operator's
+point that it already reaches the target on one machine. Its design is not the shape this engine assumed, and
+the differences are separable and testable. Nothing here is copied code; it is a study.
+
+**1. Residency is a wired, per-layer, fixed-slot cache, and expert reads deliberately bypass the page cache.**
+One reader per layer with its own slots; the budget is `slotsPerLayer x layers x expertStride`, snapped to a
+small set of counts; slots are `posix_memalign(2 MiB)` + **`mlock`**; eviction is LFU with an LRU tie-break; every
+expert fd is opened **`F_NOCACHE`** so the page cache never grows, and the code says why — the page-cache path is
+15-30% faster and is rejected because it *borrows memory it never declares*. This engine's bank is a 128 MiB
+**global** LRU (effectively per-layer only because each layer's tensor has its own name) feeding a read path that
+*does* populate the page cache. That is three separable differences — per-layer reservation, wiring, and cache
+bypass — and `D113`/`D115`/`D119` measured the *consequences* of getting them wrong without naming the cause.
+
+**2. An expert is one slab, read with one `pread`.** Their packed-expert container holds gate, up and down with
+their scales and biases **contiguously** — 1,769,472 B = 1.6875 MiB for this model — so a layer's eight experts
+cost **eight** reads, from a 4-thread pool that sustains ~3.2 GB/s. This engine's container is section-major, so
+one expert costs **six** reads (two projections x codes/scales/zeros) and a layer costs 48. Their doc records the
+alternative's cost: 0.62 GB/s fetching one at a time.
+
+**3. The whole top-k is one kernel, not eight dispatches.** `moe_phase1_gate_up_act` and `moe_phase2_down_reduce`
+run over a **persistent argument buffer** holding all eight experts, with the dequantisation inside the kernel and
+gate+SiLU and down+reduce fused — **2 dispatches per layer against this engine's 16** (eight per batch, two
+batches), which `D114` already showed is where the time was.
+
+**And one inversion this engine got right by accident.** Their dense weights are `mmap(PROT_READ, MAP_PRIVATE)` +
+`mlock` over the file, wrapped in a single `bytesNoCopy` buffer — resident, never re-read from disk, and
+file-backed rather than anonymous. `D119` tested the *page-cache streaming* variant of that and found it 3x
+worse, which is consistent: the reference's pages are **pinned**, not left to the kernel's LRU. The two designs
+are not the same and only one of them was tested here.
+
+**Where the ceiling actually is.** The reference's own device sustains ~3.2 GB/s on four concurrent
+expert-sized reads; this node's measured cold rate is 1.65-1.82 GB/s. Its published 8 GB-adjacent curve is
+**8.73 / 8.94 / 9.91 / 18.91 tok/s at 1.05 / 2.11 / 4.22 / 8.44 GB** cache — all on a 24 GiB machine, where the
+*same* 1 GB cache gives 8.73 tok/s against the 8 GiB node's 5.164. So the operator's target number is a memory
+result at least as much as a code result, and the reference's own 4 GB row on 8 GiB is the documented collapse.
+
+**The three changes this implies, in order:** reserve the expert bank per layer and wire it; make an expert one
+`pread` by re-laying-out the expert stacks (an install-format change, and the 21.7 GB install does not fit in the
+9.1 GB free — it needs a rebuild with the disk watchdog); fuse the top-k into two kernels over a persistent
+argument buffer. The first is cheap and testable; the third is the largest single win and the largest risk to
+bit-exactness, which their own trace contract guards and this engine's digest would have to.
