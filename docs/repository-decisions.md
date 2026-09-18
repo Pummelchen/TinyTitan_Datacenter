@@ -4094,3 +4094,32 @@ must become `int4-affine` as one shared tensor, the install must be rebuilt (chu
 `macbook-ab` in place), and the greedy token agreement against this bf16-head run must then be measured —
 because the reference has no fidelity figure for an int4 head to inherit (`D127`), so that measurement is the
 only evidence the step is safe.
+
+## D131 — The embedding path is already safe for int4, and the rebuild must not happen twice
+
+Two findings that change the order of the remaining chain.
+
+**The prompt path needs no code change for an int4 embedding.** `ModelCache.swift:250` reads
+`source.rows(named: embeddingName, range: token..<(token + 1))` — a **single-row gather**, never a whole-tensor
+dequantise — and `InstallFile.rows` routes to `float32(name:rows:)`, which decodes a row range (so an int4 row
+becomes 2048 floats from 1 KB of packed bytes rather than 4 KB of bf16). So the embedding is unlike the head:
+the head needed a kernel branch (`D130`) because it was guarded on `dtype == "bf16"`, and the embedding needs
+nothing at all. That removes the last structural risk I knew of from the policy change.
+
+**And the install must be rebuilt exactly once, not twice.** The chain has two changes that both require a
+rebuild: the int4 head and embedding (`D127`), and re-laying-out the expert stacks expert-major so an expert is
+**one** `pread` instead of six (`D128`, `D123` stage 1). A rebuild is ~22 GB of output, needs the current install
+deleted first, and takes tens of minutes under the watchdogs. Doing it once for the head and again for the
+layout would waste that twice and leave the engine unusable for two windows instead of one.
+
+So the correct order is: **write the expert re-layout first**, then set the policy, then rebuild **once**
+producing both. The re-layout is the piece not yet written, and it is the only change that attacks the read
+directly — the reference measures ~3.2 GB/s on four concurrent expert-sized reads against this node's
+1.65-1.82, and it reads **one 1.6875 MiB slab per expert** where this container needs six section reads.
+
+What the rebuild must carry, in one pass: `quant.head.lm` and `quant.token.embedding` to `int4-affine`; the
+expert stacks laid out expert-major (gate+up+down plus scaled/biases contiguous per expert) so a slab is one
+read; and the manifest fields the reader needs to know which layout it is looking at, because a container whose
+sections moved must say so rather than be inferred. The reader then needs `packedRows` to return one contiguous
+range per expert, which is a change to `InstallFile.int4RowsPayload` and its offsets — and every one of those
+must be verified against the 21.7 GB install this engine already reads before any of it is trusted.
