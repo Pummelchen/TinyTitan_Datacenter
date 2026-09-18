@@ -14,6 +14,10 @@ import Foundation
 /// **Sendability.** The channel table is written once by `connect()` and read-only afterwards, and the decode
 /// loop drives one step at a time from one task, which is the same contract `PreadExpertStreamer` and
 /// `StreamingMTPDecoder` carry with `@unchecked Sendable`.
+///
+/// unchecked-invariant: the connections dictionary is written only by `connect()`, which runs once before any
+/// request; every later access is a read of an already-published entry, and the per-peer `ShardPeerChannel`s are
+/// each used by one task at a time because the decode loop drives one layer at a time from one task.
 public final class ShardPeerSet: ShardTransport, @unchecked Sendable {
     public enum Error: Swift.Error, Equatable {
         /// A request was routed to a peer this node has no connection to. Named rather than defaulted, because
