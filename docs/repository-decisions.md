@@ -4474,3 +4474,37 @@ port, and keeping them separate is what leaves that behaviour untouched.
 Not yet done: a `boundPort` accessor exists for a caller that passes port 0, but there are **no tests yet**, and
 the next step is a loopback round-trip, a partial frame and a mid-frame disconnect, in the fork's own test
 style. Then the shard plan (`D20`) and the four-node measurement.
+
+## D143 — The LAN transport is implemented and tested, and the tests failed three times before they passed
+
+`DecodeTCPSocket` in the fork now has its three tests, and they pass:
+
+```
+swift test --filter DecodeTCPSocketTests
+✔ a message round-trips over loopback            passed after 0.007 seconds
+✔ a partial frame arrives in pieces and still reassembles   passed after 0.051 seconds
+✔ a peer that disappears mid-frame surfaces as a closed handle, not a signal  passed after 0.028 seconds
+✔ Suite "Decode TCP socket" passed
+```
+
+`swift build -c release` is clean, 0 errors and 0 warnings.
+
+**They failed three times first, for three different reasons, and none of them was the transport.** Each is
+worth keeping because each is a trap that will recur:
+
+1. **All three tests bound the same fixed port.** swift-testing runs tests **in parallel** by default, and
+   `SO_REUSEADDR` permits *rebinding a port in `TIME_WAIT`*, not two *simultaneous* listeners. Two tests died
+   with `EADDRINUSE` and the third connected to a **different test's listener** and died on `EPIPE` — a
+   signature that looks exactly like a broken transport and was a broken fixture. The suite is now
+   `.serialized`.
+2. **`FileHandle.synchronize()` is `fsync`, and `fsync` on a socket returns `EINVAL`.** That surfaced as
+   `NSCocoaErrorDomain 512 / POSIX 22` on every test, reported at the `@Test` line because swift-testing
+   reports the *declaration* when the body throws — which is why the first two diagnoses pointed at `connect`.
+   A socket write reaches the kernel immediately; there is nothing to flush. The call was in the test.
+3. **`sin_len` on `sockaddr_in` was added while diagnosing (2) and was not what fixed it.** It is kept as the
+   BSD convention and labelled in the source as *not* a proven requirement, so it is not later read as one.
+
+The tests earn their keep by covering the three things a LAN transport must get right rather than the happy
+path: a message round-trips; a **partial** frame reassembles (a single `read` may return short, so a test that
+reads once tests the loopback's buffering rather than the transport); and a peer that vanishes **mid-frame**
+ends the stream instead of hanging or raising `SIGPIPE` — which is why the transport sets `SO_NOSIGPIPE`.
