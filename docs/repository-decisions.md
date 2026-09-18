@@ -10214,3 +10214,60 @@ that section 3 called "an assumption today and the first thing to measure" is **
 realistic figure is capacity-bound at **53% per-layer** and **30% pooled**. **Design A is unaffected** - it
 partitions by layer, so its per-stage cache *is* per-layer by construction, which is exactly why it reads 0.533
 rather than 0.302. **That is now a measured point in its favour rather than an argument.**
+
+## D291 — Test 2 and Test 4 measured: the cache hits 68%, the stream is 100 ms, and the COMPUTE binds
+
+`D290` reached a conclusion it should not have, and checking one flag against its own help text corrects it.
+
+    Args.swift:173   --expert-cache-slots <n>  Routed-expert cache slots PER LAYER
+
+**The engine already partitions its cache per layer.** `--expert-cache-slots 40` is **40 slots for each of the 40
+layers** - 1,600 slots, 1,600 x 1,769,472 B = **2.83 GB**, which is exactly the reference's 3 GB configuration. So
+**`D290`'s claim that the engine has "one shared bank" and is "leaving 40% of its achievable hits on the floor" is
+withdrawn.** The pooled-versus-per-layer statistic it rested on was a real measurement of the *routing*, and it was
+never a measurement of the engine's cache. **The routing result stands - routing is near-uniform and the affinity
+idea is not justified - and this part of its conclusion does not.**
+
+**Test 2, simulated with an LRU over the 878,400 recorded picks, one continuous sequence:**
+
+| slots per layer | total | total bytes | measured hit rate |
+| --- | --- | --- | --- |
+| 8 | 320 | 0.57 GB | 0.261 |
+| 16 | 640 | 1.13 GB | 0.470 |
+| 32 | 1,280 | 2.26 GB | 0.630 |
+| **40** | **1,600** | **2.83 GB** | **0.681** |
+| 64 | 2,560 | 4.53 GB | 0.786 |
+
+**So `D286` section 3's "roughly a 70% hit rate, and it is an assumption today" is now a measurement: 68.1% at the
+configuration the engine and the reference both ship.** The assumption was right, and it was right for the reason
+the reference's cache curve implied rather than for the reason the affinity idea hoped.
+
+**Test 4 falls out of the same trace, and it is the round's real result.** Applying the `D286` law with 566 MB of
+active expert bytes a token and 1.8 GB/s of local SSD:
+
+    at 40 slots/layer:   miss 180.4 MB  ->  100.2 ms of streaming
+    the measured step:                        ~130 ms of compute
+
+**The stream is 100 ms and the compute is 130 ms, so the compute binds - and the law then predicts 130 ms a token,
+7.7 tok/s, against a measured 7.377-7.974.** The law, the cache model and the trace agree with the machine to
+within 4%. **This is the first time in this session that a model built from measurements has reproduced the
+measured throughput**, and it was built from a trace rather than from the engine.
+
+**And it answers the question the designs turn on.** Streaming is **already hidden behind compute** at the shipping
+configuration - not perfectly, but enough that it is not the binding constraint. **Divide the compute across four
+stages and the arithmetic follows the compute down:**
+
+    compute per stage   130 / 4  =  32.5 ms
+    stream per stage    (1 - 0.681) x 566 / 4 = 45.1 MB  ->  25.1 ms
+    wire                12 KB    ->  0.1 ms
+    stage time          max(32.5, 25.1, 0.1)  =  32.5 ms   ->  30.8 tok/s
+
+**31 tok/s, against a target of 21** - and that is Design A's projection reproduced from a routing trace, a cache
+simulation and one measured SSD rate rather than from an estimate. **The binding constraint after scaling is
+compute, which is what a layer pipeline divides.**
+
+**What remains unmeasured, and honestly.** The cache simulation assumes an LRU with a perfect history and no
+prefetch; the engine's policy is LFU with a wired bank, and `D243` measured that slot count is a 1.78x lever, so
+the real curve is *lower* than this one at small capacities and converges at large ones. **The 68% is therefore an
+upper bound on the hit rate and the 100 ms a lower bound on the stream** - which does not change the conclusion,
+because the compute binds either way.
