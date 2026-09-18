@@ -7804,3 +7804,38 @@ not.
 **Marked as an inference.** The 40.1 = 188 x 0.213 agreement is shape-matching, not a measurement of dispatch cost,
 and it is recorded with its arithmetic so it can be falsified: **time a decode step with the kernel profile's
 dispatch counts halved** (a batched variant, `D114`'s shape) and see whether the step falls by half of 40.1 ms.
+
+## D225 — The dispatch-overhead inference is falsified: more command buffers is faster, not slower
+
+`D224` inferred that the 40.1 ms non-GPU term is per-layer dispatch overhead, and named its falsification: change
+the dispatch or command-buffer count and see whether the step moves with it. `TINYTITAN_KERNEL_SPLIT` gives every
+kernel of a chain its own command buffer instead of one per chain - **more** command buffers for the same kernels,
+and therefore more encoding - so if the overhead were command-buffer or encoding cost, the split would be markedly
+slower. Node3, the reference install, 40 slots, 32 tokens, three alternating pairs:
+
+| pair | load | default | split |
+| --- | --- | --- | --- |
+| 1 | 0.96 | 7.416 | **7.529** |
+| 2 | 1.32 | 7.441 | **7.574** |
+| 3 | 1.55 | 7.429 | **7.528** |
+
+**The split is faster in all three pairs, by about 1.4%, consistently.** So the 40.1 ms is **not** command-buffer
+overhead and **not** host encoding cost - the change that adds both makes the step *shorter*. `D224`'s shape-match
+between "188 dispatches x 0.213 ms" and 40.1 ms was a coincidence of two numbers that fit, which is the same trap
+`D209` fell into and `D212`/`D213` had to unwind.
+
+**What survives and what does not.** The arithmetic in `D224` stands: there are **188 dispatches a token**, the GPU
+is **idle 75 ms** of it, and **121 of the 188 are on kernels that do not divide** - that last count is from the
+profile's own role list and is not an inference. What does not survive is the *explanation* of the 40.1 ms as
+dispatch cost. The term is real, measured, and per-layer; **what it is made of is again unknown**, and the honest
+position is that this session has now twice attributed it to something a measurement then ruled out.
+
+**The small consistent gain is worth keeping on its own.** 1.4% for a profiling flag is not a reason to change a
+default - the flag exists to time kernels and its benefit may be an artefact of how the chain commits - but it is
+recorded rather than discarded, because "consistently 1.4% across three pairs" is a real effect at a load range
+where this farm usually shows several percent of spread.
+
+**Where that leaves the target.** The four-node case is **~14.5 tok/s** on the dispatch-count arithmetic of `D224`,
+and the explanation for why the per-layer term is 40.1 ms is open again. **This is the third round in which the
+answer has narrowed and then reopened**, and it is worth saying plainly: the measurements are sound and repeatable,
+and the *mechanism* of the largest remaining term has resisted three attempts to name it.
