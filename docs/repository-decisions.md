@@ -6499,3 +6499,54 @@ threads gave eight threads six **sequential** reads each and had to be re-cut pe
 
 The first is a single-node change with a measured target to hit (1.82 GB/s, not 1.1), it needs no distribution,
 and it is the only lever this session has found that moves the dominant term without spending memory.
+
+## D193 — The read path has a measured 3.44 GB/s ceiling and is running at ~0.82, and the gap is not the reader
+
+`D192` proposed that the demand path might slice experts into smaller reads than the preload issues. **It does
+not.** `PreadExpertStreamer` reads whole experts — `count: Int(layout.expertStride)`, one `pread` per miss — so
+the hypothesis is wrong and is withdrawn.
+
+**What the repository's own measurements say the ceiling is.** `ParallelExpertReader`'s header records the pool's
+design and explicitly declines to replace the serial path, because at decode's batch size the pool is no faster:
+
+    batch 1   pool 3.41 GB/s   serial 3.44
+    batch 4   pool 5.36        serial 3.80
+    batch 8   pool 5.95        serial 3.69
+
+**A plain serial `pread` measures 3.44 GB/s at batch 1**, and the pool knee is four readers at 3.92 GB/s. The
+decode is using the serial path — `ExpertIOBackend` defaults to `.pread` — which is the right choice at this
+batch size and is not the thing to change.
+
+**And the decode is not achieving it.** Measured on node3, the reference's install, 40 slots:
+
+    expert misses          64 per step (8 routed x 20% miss x 40 layers) x 1,769,472 B = 113 MB
+    step                   137.8 ms
+    expert read rate       113 MB / 0.1378 s = 820 MB/s
+    whole-disk rate        1,050-1,171 MB/s  (iostat, against an idle baseline of 0.12-12.9 MB/s)
+
+**So the demand reads run at ~820 MB/s against a measured ceiling of 3,440 MB/s** — a factor of four — and the
+disk as a whole is doing ~1.1 GB/s, i.e. roughly **280 MB/s more than the expert misses account for**, which is
+unattributed.
+
+### What this does and does not establish
+
+* **It does not** establish that the streamer's access pattern is wrong. Its reads are whole experts, its batch
+  size is where serial beats pooled, and the code's own numbers say the present configuration is the right one.
+* **It does** establish that the **step is not bound by the read ceiling** — 113 MB at 3.44 GB/s is **33 ms**,
+  not 96 — so the 137.8 ms step is mostly spent **waiting on something other than the bytes**, and `D191`'s
+  composition (96 ms of read inside a 137.8 ms step) is a statement about the achieved rate, not about the work.
+* **And it leaves ~280 MB/s of disk I/O per step unexplained**, which is the next thing to attribute: if it is
+  the dense weights or KV being re-read per step rather than held, it is a residency question and not a read-path
+  one, and it would be a second term worth removing.
+
+### Where the target stands
+
+    137.8 ms = 33 ms of unavoidable read at the device's measured ceiling
+             + ~280 MB/s of unattributed I/O
+             + ~42 ms of device work
+             + the rest, waiting
+
+**21 tok/s needs 47.6 ms.** At the measured read ceiling the bytes cost 33 ms of that on one node and **8 ms**
+across four, so the read stops being the obstacle the moment it runs at the rate the repository has already
+measured — and the obstacle becomes whatever the remaining ~100 ms of waiting is. That is the question the next
+round has to answer, and it needs the unattributed 280 MB/s identified first.
