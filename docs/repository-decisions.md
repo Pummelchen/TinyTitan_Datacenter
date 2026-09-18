@@ -9383,3 +9383,33 @@ are wrong, which points at the one-hot or the slot mapping.
 
 **That is a better next experiment than the equality check `D265` named**, because it distinguishes the two families
 of cause with a change that is correct on its own merits. The comparison remains the decisive one; this one is free.
+
+## D268 — The zeroing experiment answered: the values are written and wrong, and node3 completed at 7.279
+
+`D267` proposed zeroing the serve scratch buffers with a specific purpose: it is correct on its own merits, and it
+separates two families of cause. If the NaN became a finite wrong number the kernel was not writing; if it survived,
+the values were written and were wrong. **It survived.**
+
+    node1  Paris  error: sampler row had no finite logit ... NaN
+    node2  Error Domain=NSPOSIXErrorDomain Code=61 "Connection refused"
+    node3  [shard] node 2 of 3, peers [0, 1] connected; expert contributions are being exchanged.
+           [stop=maxTokens prefill=5tok/1.56s new=48tok decode=6.59s tok/s=7.279]
+
+**So the early return is not the mechanism.** The kernel writes `acts`, the peer computes something, and that
+something is a NaN. The candidate list is now the arithmetic: **the eight-slot one-hot** (`f` derived rather than
+checked, the same expert in all eight slots with `[1,0,0,0,0,0,0,0]`), **the slot mapping** (a right value for the
+wrong expert, which would be finite - so less likely given a NaN), and **the activation the peer is fed**.
+
+**And node3 is a clean, connected, correct-looking run at 7.279 tok/s** - which is inside node3's own single-node
+band of 7.377-7.974, and the first distributed run whose number sits in that band rather than below it. **It is not
+the measurement either**: node1 produced NaN, so node1's contributions to node3 were wrong, and a run whose peers
+return wrong values is not measuring the exchange's speed. But it is the closest yet, and it says the pipeline is
+sound end to end when the values are.
+
+**What to compare, and it is now narrow.** `remoteExpertValues` returns one row of `dims` per expert. The requester's
+`remotePartials` transposes that to `[d * 8 + slot]` and the kernel adds it to the phase-2 partial for that slot.
+**Two things must agree and neither is checked anywhere:** that the peer's row order matches the requested expert
+order, and that `f` is the expert's intermediate width rather than something derived. A single test that asks for
+one expert and compares the reply against that expert computed locally would settle both, and **it is the only
+comparison in this whole exchange that nothing has performed** - every other seam has a test, and this one has two
+nodes and a NaN.
