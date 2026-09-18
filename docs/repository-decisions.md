@@ -10422,3 +10422,34 @@ a measured no with the mechanism stated.**
 **Design A is unaffected, and for the third time by the same reason**: it partitions by layer, so a layer's whole
 expert set is on one node by construction. **It needs no expert placement, no affinity graph and no co-occurrence
 structure - which is now a measured advantage rather than an argument.**
+
+## D296 — The Core ML toolchain runs, and a naive matmul does NOT reach the ANE: 1.1 TFLOPS on both units
+
+`D293` left three unmeasured things and the first was whether the ANE beats the GPU on this model's prefill shapes.
+The cheapest honest step is a feasibility probe before any conversion of the model, and it produced a negative
+result that is worth more than a hopeful one.
+
+**The toolchain is present and works.** `coremltools` imports in the repository's own `.venv` (with a torch-version
+warning that does not block), and `coremlcompiler` is in the Xcode toolchain. A MIL program was built for a
+prefill-shaped matmul - `[1,128,2048] x [2048,2560]`, the attention QKV projection over 128 tokens, **1.34 GFLOP**
+- converted to fp16, and run twenty times per configuration:
+
+    ALL (ANE-eligible)    median 1.27 ms    -> 1,054.8 GFLOP/s
+    CPU_ONLY (control)    median 1.20 ms    -> 1,116.9 GFLOP/s
+
+**`ALL` is slower than `CPU_ONLY`, so the Neural Engine is not being used at all.** The arithmetic says the same
+thing independently: 1.1 TFLOPS is about **7% of the M2's ~15.8 TOPS Neural Engine**, and the traffic is only
+8.75 GB/s against a ~100 GB/s memory system - so the op is compute-bound at a rate no ANE would produce. **Core ML
+accepted a `matmul` and computed it somewhere that is not the ANE.**
+
+**This is a real result and it sets the requirement for the next attempt.** An ANE is not reachable by writing a
+matrix multiply and asking for `ComputeUnit.ALL`; it wants a shape it was built for - convolution-formulated
+matmuls, and in practice a whole converted network rather than one op at a time. **The sister project's success
+with the ANE for prefill therefore says something about how it built the model, not merely that the hardware is
+there** - and reproducing that means converting a real layer, not a representative op.
+
+**What is now established, and what is not.** Established: the Core ML path exists here, converts this model's
+prefill shape, and runs. **Not established: that the ANE helps at all.** No number in this record, and none in
+`docs/distribution-design.md` section 8b, may be read as an ANE benefit - **there is no measured ANE benefit, and
+this is the measurement that says so.** The remaining two questions from `D293` - what the handover costs and what
+INT8 does to the trace digest - are untouched and still open.

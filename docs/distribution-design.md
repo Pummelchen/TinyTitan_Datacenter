@@ -248,6 +248,8 @@ ANE's higher INT8 throughput is worth having.
    `coremltools==9.1.dev1`, so the toolchain exists.
 2. **What does the handover cost?** A phase change means the weights must be laid out for whichever
    engine runs next, and that is a real cost that has not been measured.
+**Measurement 1 has been attempted and it is a NEGATIVE (`D296`).** A prefill-shaped MIL matmul - `[1,128,2048] x [2048,2560]`, 1.34 GFLOP - converted to fp16 and run twenty times gives **1.27 ms on `ComputeUnit.ALL` and 1.20 ms on `CPU_ONLY`**: the ANE-eligible path is *slower*, so the Neural Engine was not used. 1.1 TFLOPS is ~7% of the M2's ~15.8 TOPS, and the traffic is only 8.75 GB/s, so the op is compute-bound at a rate no ANE produces. **The toolchain works and converts this shape; the ANE is not reachable by writing a matmul and asking for `ALL`.** It wants a shape it was built for, and in practice a whole converted network - which is what the sister project must have done. **No ANE benefit has been measured.**
+
 3. **What does INT8 do to the trace digest?** Prefill output feeds decode, so ANE prefill changes
    numerics. The gates assert bit-identity (`I3`); that is a gate to renegotiate **with the
    measurement that forces it**, not to work around.
