@@ -4447,3 +4447,30 @@ process's name is the thing that will decide it.
 Recorded because the earlier prediction was stated with more confidence than the evidence carried, in the same
 direction as the other over-readings this session: a two-point trajectory (8.5 GB, 8.4 GB) was read as growth
 when the third point (5.5 GB) showed it was noise around a bounded value.
+
+## D142 — The LAN transport is written, and the seam was 76 lines
+
+The distributed engine's first component now exists. `DecodeTCPSocket` is a **LAN peer of
+`DecodeUnixSocket`** in the fork, and it builds clean (`swift build -c release`, **0 errors, 0 warnings**).
+
+**The seam was far smaller than I had assumed, and my delegation was badly specified because of it.**
+`DecodeUnixSocket.swift` is **76 lines** with exactly two public functions:
+`connect(path:)` and `listenAndAccept(path:)`, both returning a `(input: FileHandle, output: FileHandle)` pair.
+That pair *is* the abstraction — framing, requests, events, queues and the outbox all sit downstream of it and
+none of them change. A TCP transport is a mirror of that file with the address family changed.
+
+I sent an agent to "read those files first and follow the conventions" and pointed it at a **72,000-line** tree.
+It spent five checks reading and wrote nothing, and I stopped it. The task was mine to do: the correct brief
+would have named `DecodeUnixSocket.swift` and said "mirror this file". That is a delegation failure on my part,
+not a failure of the agent, and it cost several rounds.
+
+**What the transport does differently, and why:** literal IPv4 rather than a name, so a service cannot resolve
+to a different address on a later run; `SO_REUSEADDR` so a restart can rebind a port still in `TIME_WAIT`;
+`SO_NOSIGPIPE` so a peer that vanishes mid-frame surfaces as `EPIPE` rather than a signal that kills the
+process — which is the LAN equivalent of the Unix path's care about a socket in a uid-private directory. The
+Unix path was deliberately **not** generalised: `unlink`-before-bind and `chmod 0600` have no analogue on a TCP
+port, and keeping them separate is what leaves that behaviour untouched.
+
+Not yet done: a `boundPort` accessor exists for a caller that passes port 0, but there are **no tests yet**, and
+the next step is a loopback round-trip, a partial frame and a mid-frame disconnect, in the fork's own test
+style. Then the shard plan (`D20`) and the four-node measurement.
