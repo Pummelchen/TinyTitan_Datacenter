@@ -190,6 +190,15 @@ caching the same slabs in clean, evictable pages: three alternated pairs put **1
 (1.595 s), because `preloadPacked` declines with no cache and the fan-out disappears. Default 128 MiB. The
 step is **0.984 s, 1.016 tok/s**, peak RSS **2.57-2.67 GB**; 63% of it is now the expert path, and one command
 buffer per layer instead of one wait per expert is the next lever.
+**Then the preload's own fan-out, and a warning about the payload cache (`D113`).** A slab is three
+`pread`s, so fanning the preload over eight experts gave eight threads six **sequential** reads each: one task
+per (expert, projection) is the same bytes with twice the requests in flight, and five runs moved the median
+**0.984 -> 0.919 s** (**1.016 -> 1.089 tok/s**). The warning is the other measurement: a *partial* payload cache
+is catastrophic — 256 MiB gives **2.34 s/step** and 1024 gives **2.58**, because the LRU holds part of the dense
+payload and not the head, so both re-read every step. Zero is better than either (1.359 s) because it streams
+uniformly. **2048 MiB is near-minimal and load-bearing** — 1965 MiB of content against a 2048 ceiling — not a
+knob. What remains is ~260 ms of device reads the page cache cannot hold and ~340 ms of 640 synchronous
+dispatches.
 
 ## Scope of this checkout
 

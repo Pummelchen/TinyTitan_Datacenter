@@ -3413,3 +3413,49 @@ The step is now 63% expert path:
 
 The next lever is the dispatch count: one command buffer per layer instead of one wait per expert is the
 structure the sister project uses, and the kernel can now support it.
+
+## D113 — The preload was fanning out over half the work, and a partial payload cache is catastrophic
+
+Two measurements this round, one a win and one a warning that protects a default.
+
+**One preload task per (expert, projection), not per expert.** A slab is **three `pread`s** — codes, scales,
+zeros — so fanning over eight experts gave eight threads each issuing **six sequential reads**. The fan-out is
+the only concurrency the device sees, and the layer was asking for sixteen slabs while offering eight
+workers. Sixteen tasks of three reads each is the same bytes with twice the requests in flight. Five runs,
+digest `ed5e0328c087e4db…` in all:
+
+| arm | per-step | median |
+| --- | --- | --- |
+| `D112` (8 tasks) | 0.997, 0.984, 0.957 | 0.984 s |
+| one task per (expert, projection) | 0.949, 0.894, 0.965, 0.919, 0.868 | **0.919 s** |
+
+**1.016 → 1.089 tok/s**, and `mix.gather`'s median moved 274 → 260 ms. The spread across five runs is ±5%,
+which is why the arm is five runs rather than three — the farm is shared and the medians are the only thing
+that separates the arms at this size.
+
+**And the payload cache cannot be sized partially.** The idea was to shrink the anonymous payload cache and
+let the kernel's page cache hold the same bytes in clean, evictable pages, freeing memory for the expert slabs.
+It does not work, and the way it fails is worth recording. One run each, same command and binary:
+
+| `SHARD_DENSE_CACHE_MB` | step | peak RSS | `head` | `load` |
+| --- | --- | --- | --- | --- |
+| **0** (no cache) | 1.359 s | 1.71 GB | 273 ms | 242 ms |
+| 256 | **2.341 s** | 2.00 GB | 711 ms | 624 ms |
+| 1024 | **2.579 s** | 2.32 GB | 797 ms | 740 ms |
+| **2048** (default) | **0.950 s** | 2.64 GB | 113 ms | 53 ms |
+
+Zero is *better than 256 or 1024* — and the reason is the whole finding. At 256 MiB the LRU holds **part** of
+the dense payload and **not** the head, so both are re-read from the device on every step: the budget is
+large enough to fill and small enough to evict, which is the worst of both. At zero nothing is held and
+everything streams, uniformly. At 2048 the dense payload (995 MiB) **and** the head (970 MiB) both fit at
+once, which is the only configuration in which either is ever reused. **2048 is therefore near-minimal and
+load-bearing, not a tuning knob**: 1965 MiB of content against a 2048 MiB ceiling, and anything below it
+converts two resident streams into two device streams. `PayloadCache` evicts one key at a time rather than by
+working set, so a budget between the two content sizes has no good behaviour to fall back on.
+
+**Result.** Five runs: median **0.919 s/step, 1.089 tok/s**, from 0.230 when the operator re-scoped the work.
+266 Swift tests, 0 failures. The expert path is still ~65% of the step: `mix.gather` 260 ms of device reads
+that the page cache is not holding (it is being squeezed by the 2.6 GB of anonymous payload we need), and
+`mix.read` + `mix.down` ~340 ms of **640 synchronous fused dispatches**. One command buffer per layer instead
+of one wait per expert is the next change, and the kernel is now fast enough for batching to be the whole
+question rather than a rounding error on top of a slow kernel.

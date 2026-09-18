@@ -158,10 +158,14 @@ public struct StackedExpertProvider: ExpertWeightProvider {
             source.packedCacheBudget > 0, !experts.isEmpty
         else { return }
         nonisolated(unsafe) let target = self
-        DispatchQueue.concurrentPerform(iterations: experts.count) { index in
-            let range = experts[index]..<(experts[index] + 1)
-            _ = try? target.source.packedRows(named: target.gateUpName, range: range)
-            _ = try? target.source.packedRows(named: target.downName, range: range)
+        // **One task per (expert, projection), not per expert** (`D113`). A slab is three `pread`s — codes,
+        // scales, zeros — so fanning over eight experts gave eight threads each issuing six *sequential*
+        // reads; the fan-out is the only concurrency the device sees, and it was half what the layer asked
+        // for. Sixteen tasks of three reads each is the same bytes with twice the requests in flight.
+        let names = [gateUpName, downName]
+        DispatchQueue.concurrentPerform(iterations: experts.count * names.count) { index in
+            let range = experts[index / names.count]..<(experts[index / names.count] + 1)
+            _ = try? target.source.packedRows(named: names[index % names.count], range: range)
         }
     }
 
