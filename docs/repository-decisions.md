@@ -9934,3 +9934,37 @@ change removed, and this session reached for that last rather than first, three 
 and measures 0.85x; the serving cost is 2.95 ms a request and 61% of a serving node's token; and the ceiling for
 this design is 8.2 tok/s against a target of 21. **What remains unknown is only whether that serving cost is
 contention or the command-buffer round trip** - and that one question is still waiting on a flag that does not work.
+
+## D284 — The flag's plumbing is correct, and the missing lines are two different absences
+
+`D283` concluded that `--shard-serve-only` "suppresses the entire run" and that the defect must be in the flag's own
+plumbing. Reading it settles half of that and corrects the other half:
+
+    Args.swift:36   public var shardServeOnly: Bool                    <- field
+    Args.swift:69   shardServeOnly: Bool = false,                     <- init parameter
+    Args.swift:102  self.shardServeOnly = shardServeOnly              <- assignment
+    Args.swift:225  var shardServeOnly = false                        <- parse local
+    Args.swift:277  case "--shard-serve-only": shardServeOnly = true  <- parse case
+    Args.swift:425  shardServeOnly: shardServeOnly,                   <- construction
+
+**All six sites are present and correct**, and `--shard-serve-only` is a distinct exact string from `--shard-serve`,
+so no prefix match can be swallowing it. **The plumbing is not the defect.**
+
+**And the absent shard lines have a benign explanation that removes half of `D283`'s conclusion.** This line -
+`[shard] node 2 of 3 reads 85 of 256 experts; peer contributions ARE exchanged` - is printed by the **requesting**
+half of the exchange, which sits **after** the serve block. A serve-only node returns before it **by design**: it
+does not request anything, so it should not announce what it reads. **Their absence is the feature working**, not
+the run being suppressed. `D283` read a correct absence as a fault, which is exactly the failure mode it was
+written about - silence being indistinguishable from both success and failure - turned on my own reasoning.
+
+**What remains genuinely unexplained is narrower and it is one line.** The `[shard] serving peer expert requests on
+port 9150` write was moved above the branch in `D281` and is deployed, so a node that reaches the serve block
+**must** print it. In the flag-on run it did not print, and `lsof` showed no listener at 10, 20 or 30 seconds. **So
+the run does not reach the serve block** - and the shard lines no longer explain that, because there are none before
+it to suppress.
+
+**Three candidates, and they are testable in one command each**: the model load is slower than 30 s on a cold
+install and the block is simply not reached yet; `servePort` is nil because `--shard-serve 9150` is consumed
+elsewhere in that argument order; or the process exits before the block on a path that returns `exitCode: 0`
+invisibly. **The cheapest discriminator is to put a write immediately before the serve block** - one line, and its
+presence or absence separates "not reached" from "reached silently" without another full run.
