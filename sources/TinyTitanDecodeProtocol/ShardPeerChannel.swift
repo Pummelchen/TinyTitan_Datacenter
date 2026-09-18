@@ -38,6 +38,21 @@ public struct ShardPeerChannel: Sendable {
         self.output = output
     }
 
+    /// Release both ends of the connection.
+    ///
+    /// `input` and `output` may wrap the **same** file descriptor - a socket pair handed back as two handles
+    /// does - so each descriptor is closed once. Closing the same fd twice would release an unrelated descriptor
+    /// that had since been allocated to something else, which is a bug that appears far from its cause.
+    public func close() {
+        var closed = Set<Int32>()
+        for handle in [input, output] {
+            let fd = handle.fileDescriptor
+            guard fd >= 0, !closed.contains(fd) else { continue }
+            closed.insert(fd)
+            try? handle.close()
+        }
+    }
+
     public func send(_ frame: Data) throws {
         guard frame.count <= Self.maximumFrameBytes else { throw Error.frameTooLarge(frame.count) }
         var length = UInt32(frame.count).littleEndian
