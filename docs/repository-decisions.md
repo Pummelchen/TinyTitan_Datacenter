@@ -5220,3 +5220,44 @@ reach it, which is a good reason to leave it out.
 `PreadExpertStreamer.planExpertsCached` decides what to fetch and `executeExpertCachePlan` fetches it — so the
 plan has to reach that decision, and the contribution exchange has to be built to `D154`/`D158`'s shape (full
 k=8 arrays, summed in slot order, once per step). This commit is the data contract; the consumer is next.
+
+## D163 — Porting the plan found a defect in it: the check contradicted its own documented intent
+
+Writing tests for the freshly ported `ShardPlan` (`D162`) found a contradiction **immediately**, and it is the
+kind a test exists for.
+
+`validate()` documents, a few lines below the shape check:
+
+> *"There is deliberately no 'node owns nothing' check. A missing node always fails the contiguous-shape check
+> above first, and when a model has fewer experts than the cluster has nodes an idle node is a legitimate plan,
+> not an error."*
+
+**But the check above it required `seen == Array(0..<nodes)`** — every node had to appear — so a 2-expert,
+4-node contiguous plan (owners `[0, 1]`) was **refused**. The documented intent was not true of the code, and the
+promise that "an idle node is legitimate" could never hold. The check now states the property that actually
+matters: each node's block appears **once** and the blocks are **ascending**. An idle node passes; a node that
+reappears after another still fails; interleaved experts still fail.
+
+**Why this is worth a decision record rather than a silent fix.** The original records that a "node owns nothing"
+check *existed until a test could not reach it* — so the author was already thinking about this case and had
+removed a check that was wrong. The shape comparison was the same mistake in a different form, and it survived
+because nothing exercised a model with fewer experts than nodes. **A documented intent that no test reaches is a
+comment, not a property.**
+
+**Six tests now pin the plan's contract**, each aimed at a way it fails silently rather than loudly:
+
+| test | what it protects |
+| --- | --- |
+| contiguous 4-node, 256 experts | every node gets exactly 64, adjacent and in node order |
+| one owner moved | **the digest changes** — otherwise two nodes could disagree about expert 200 and both pass bring-up |
+| JSON round trip | the digest survives the wire, so a transported plan is not mistaken for a disagreement |
+| incomplete owner list | refused, rather than a node running with an expert nobody produces |
+| family/experts mismatch | a plan cannot be applied to a model it was not made for |
+| an idle node | **legitimate** — pinned so the removed check is not added back |
+
+These carry more weight than ordinary unit tests because the plan is **data that must be identical on every
+node**: a plan that digests differently for the same content would not fail at bring-up, it would fail as a wrong
+answer at the first token — the exact failure mode `D154`'s reduction and `D158`'s exchange budget are built to
+avoid.
+
+**Verified:** `swift test` — 8 targets, **1,576 tests, 0 failure markers**. Fork commit `9bb9b30`.
