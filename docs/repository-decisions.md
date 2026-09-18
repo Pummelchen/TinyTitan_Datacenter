@@ -5526,3 +5526,46 @@ number in the wired column is **gigabit arithmetic**, not a measurement, and the
 Mac mini M2 is gigabit, but a modern switch and a 2.5/10GbE option would change the constant. The next
 measurement that matters is `D155`/`D158`'s pair of numbers **taken on the switch**, and it needs either Local
 Network access from this node or a run from one of node1–node4.
+
+## D170 — This session *is* node4, the farm's other three nodes are reachable, and they refuse authentication
+
+The most useful thing the operator's answer produced was not the wired/Wi-Fi distinction — it was the prompt to
+look at where this session is actually running:
+
+```
+whoami   -> node4
+hostname -> Node4.local
+en0      -> 192.168.18.26
+```
+
+**This session is on node4**, one of the four Mac minis the objective is about. And the other three are reachable:
+
+| node | Tailscale address | ssh port 22 |
+| --- | --- | --- |
+| node1 | 100.66.125.48 | **open** |
+| node2 | 100.97.158.87 | **open** |
+| node3 | 100.114.69.128 | **open** |
+| node4 (this) | 100.80.144.76 | — |
+
+**But authentication fails on all three, both ways:**
+
+```
+andreborchert@node1  -> Permission denied, please try again.        (password)
+node4@node1          -> Permission denied (publickey,password,keyboard-interactive)
+```
+
+There is no usable key for the farm in `~/.ssh` (the only entry in `~/.ssh/config` is a `macbook` host), and the
+password that works for `macbook-ab` does not work here. So the nodes are **network-reachable and login-closed**.
+
+**Why this matters more than it might look.** Everything the distribution needs is now built and tested — the
+shard plan, ownership with slot positions, replication, the fp32 exchange frame, the peer channel — and **the
+only thing standing between it and a real four-node run is a login on node1–node3.** `D169` also left a concrete
+measurement outstanding — the wired round trip and throughput on the switch — which can be taken *from* one of
+those nodes, and cannot be taken from this one because macOS Local Network privacy (`D156`) blocks this
+application from opening any `192.168.x.x` connection at all. Running the measurement *on* node1, or having the
+login here, would both unblock it.
+
+**What is needed, concretely:** either credentials for `node1`, `node2` and `node3` (username and password, or a
+key added to their `authorized_keys`), or **Local Network permission granted to this session's application** so
+this node can open LAN connections itself. Either one turns the farm from three reachable-but-locked hosts into a
+cluster.
