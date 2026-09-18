@@ -3782,3 +3782,64 @@ The reference's 79.8% hit rate is for a 48-slot-per-layer bank of **1.6875 MiB**
 budget are **not** like-for-like and must be measured here rather than read across. And its 3.2 GB/s device
 figure is its own hardware's: the same-spec claim is about node3, and the read rate measured *here* is
 1.65-1.82 GB/s, so the achievable per-step floor may differ from node3's even on identical hardware.
+
+## D122 — Wiring the expert bank is the ingredient that was missing
+
+Every earlier attempt to hold more expert weights regressed phases that never touched the cache (`D115`,
+`D118`, `D119`), and the reference's source says why in one word this engine had never tried: it `mlock`s
+every slot. Anonymous pages the kernel may compress or swap are not a cache, they are a suggestion — and the
+kernel takes them back exactly when the cache was supposed to be earning its keep. `SlabCache.store` now
+`mlock`s each payload and `munlock`s it on eviction, with `SHARD_SLAB_WIRED=0` to compare on one binary.
+
+| arm (3 alternated pairs, one binary) | per-step | median |
+| --- | --- | --- |
+| `SHARD_SLAB_WIRED=0` | 0.657, 0.694, 0.686 | 0.686 s |
+| **wired** (default) | 0.662, 0.648, 0.646 | **0.648 s** |
+
+**+5.7%**, digest `ed5e0328c087e4db…` unchanged — 1.457 -> 1.543 tok/s. The `munlock` is guarded by the bytes
+that actually wired, because `mlock` has a finite limit and fails best-effort: answering a failed lock with an
+unlock would take the count negative and silently shrink the limit for everything after it.
+
+This is also the first evidence that the reference's *recipe* transfers even though its published *shape* did
+not: `D119` falsified the page-cache-streaming variant, and this confirms the mechanism that variant was
+missing.
+
+## D123 — Strategy: port the streaming runtime and distribute it, rather than grind this one to 7
+
+The operator redirected the work, and the case is strong. This engine's single-node structure is at
+**1.543 tok/s** against a reference that does **7** on a machine of identical specification, and the source
+study (`D120`) says the gap is three structural decisions, not a long tail of tuning. Meanwhile this
+repository already owns the half the reference does not have: a **shard plan as data**, a **wire protocol**, a
+**four-node mesh** and **vocabulary-parallel head sharding**, all demonstrated bit-identical to the single-node
+forward. So the plan is not to keep grinding — it is to **take the reference's single-node streaming runtime
+and put this repository's distribution on top of it**, targeting ~4x its single-node number across the four
+identical Mac minis.
+
+The operator has authorised taking code from TinyTitan (Apache-2.0) into this MIT repository. That permission
+is not free and `D100` already wrote down the price: a root `NOTICE`, the licence text, a mark on every file
+that was modified, and `tools/check_provenance.py` flipped from *forbidding* attribution to *requiring* it —
+**in the same commit as the first code taken, not after it**. Everything below is "read it and write our own"
+until that scaffolding lands; the scaffolding is stage 0 and it is blocking.
+
+**Stages, each one measured before the next.** The number each stage is judged against is node3's 7 tok/s on
+one node, and then 4x it across four.
+
+- **Stage 0 — attribution.** `NOTICE`, the Apache-2.0 text, `THIRD_PARTY_NOTICES.md`, the provenance gate
+  inverted, and the licence header discipline written into `AGENTS.md`. Blocking; nothing is taken before it.
+- **Stage 1 — single-node parity.** Port the expert streaming runtime: a **per-layer** slot bank sized
+  `slotsPerLayer x layers x stride` from one budget, **wired** once (`D122` measured +5.7% for the mechanism
+  alone, on a 128 MiB bank), expert fds opened **`F_NOCACHE`** so the read path stops growing the page cache,
+  and reading **the whole expert in one `pread`** — which needs the install re-laid-out expert-major
+  (gate+up+down contiguous) and therefore the rebuild.
+- **Stage 2 — the MoE in two kernels.** `phase1 gate_up+act` and `phase2 down+reduce` over a persistent
+  argument buffer holding all eight slabs: 2 dispatches per layer against this engine's 16. Bit-exactness is
+  the risk and the trace digest is the gate — the reference guards the same thing with a byte-identical trace
+  contract, so the discipline is already in both trees.
+- **Stage 3 — the head.** int4 with a fused norm+GEMV+argmax, no vocab-sized logits. This changes the digest,
+  which the operator has authorised; the new digest is recorded and the old one kept as the M1 "before".
+- **Stage 4 — distribution.** This is the payoff and it is this repository's existing machinery: shard the
+  experts across four nodes with the plan-as-data (`D20`), carry the contributions over the wire protocol
+  (`D18`), reduce with the existing contract (`D17`), and shard the head vocabulary-parallel (`D93`). The
+  reference solved one node; this repository solved four; the combination is the product the project is for.
+- **Stage 5 — measure.** The M3 gate's `--quiet-load` rule is the instrument (`D38`), and the target is
+  **~28 tok/s aggregate** — 4x the reference's single-node 7 — with bit-identity intact on every node.

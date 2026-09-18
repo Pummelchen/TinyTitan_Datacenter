@@ -339,6 +339,20 @@ public struct InstallFile: WeightSource {
         private var bytes = 0
         private var hits = 0
         private var misses = 0
+        private var wiredBytes = 0
+
+        /// Whether the bank is **wired** (`D122`), on by default; `SHARD_SLAB_WIRED=0` turns it off so the two
+        /// are compared on one binary.
+        ///
+        /// This is the one ingredient of the reference's residency recipe this engine had never tried. Its
+        /// reader `mlock`s every slot, and the reason is visible in this engine's own measurements: a bigger
+        /// cache kept regressing phases that never touch it (`D115`, `D118`, `D119`), which is what a *wired*
+        /// versus *reclaimable* difference looks like from the outside. Anonymous pages that the kernel may
+        /// compress or swap are not a cache, they are a suggestion — and under pressure the kernel takes them
+        /// back exactly when the cache was supposed to be earning its keep.
+        static var wired: Bool {
+            ProcessInfo.processInfo.environment["SHARD_SLAB_WIRED"] != "0"
+        }
 
         init(budget: Int) { self.budget = budget }
 
@@ -362,9 +376,24 @@ public struct InstallFile: WeightSource {
             payloads[key] = payload
             order.removeAll { $0 == key }
             order.append(key)
+            if Self.wired, let base = payload.withUnsafeBytes({ $0.baseAddress }),
+                mlock(base, payload.count) == 0
+            {
+                wiredBytes += payload.count
+            }
             while bytes > budget, let victim = order.first {
                 order.removeFirst()
-                bytes -= payloads.removeValue(forKey: victim)?.count ?? 0
+                guard let evicted = payloads.removeValue(forKey: victim) else { continue }
+                bytes -= evicted.count
+                // Unwire **before** releasing the storage, and only what was actually wired: an `mlock` that
+                // failed (the wired limit is finite) must not be answered with a `munlock`, which would take
+                // the count negative and silently shrink the limit for everything after it.
+                if Self.wired, wiredBytes >= evicted.count,
+                    let base = evicted.withUnsafeBytes({ $0.baseAddress })
+                {
+                    munlock(base, evicted.count)
+                    wiredBytes -= evicted.count
+                }
             }
         }
 

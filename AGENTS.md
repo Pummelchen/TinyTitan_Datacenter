@@ -230,6 +230,18 @@ s**, about **1.5 tok/s**. Two asymmetries are load-bearing: an **expert's row ra
 (those bytes come from the evictable slab cache, so a mapping would dangle — `key` is set only by
 `packedTensor`), and the **key is content-addressed** (`name#sha256-prefix`), because a name is unique within
 one install and says nothing across two — `D115`'s bug one level out.
+**Then the expert bank was wired, and the strategy changed (`D122`, `D123`).** `mlock`ing the slab bank is the
+one ingredient of the reference's residency recipe this engine had never tried; three alternated pairs put it at
+**0.648 s against 0.686** (+5.7%, 1.543 tok/s), the first time a larger expert cache did *not* regress phases
+that never touch it. That completed the diagnosis: `D119` falsified the reference's page-cache-streaming
+*variant*, and `D122` confirmed the *mechanism* it was missing. On the operator's direction the work then pivots
+from grinding this engine to 7 tok/s to **porting the reference's single-node streaming runtime and putting this
+repository's distribution on top of it** — the reference solved one node, this repository solved four, and the
+target is ~4x its single-node number across four identical Mac minis. Taking its code is authorised and costs
+attribution: `NOTICE`, the Apache-2.0 text, marks on modified files and an inverted provenance gate, **in the
+same commit as the first code taken**. That scaffolding is stage 0 and it is blocking; the stages after it are
+per-layer wired slot bank + `F_NOCACHE` + one `pread` per expert (needs the install re-laid-out), the MoE in two
+kernels, an int4 fused head, then the four-node distribution and a measured ~28 tok/s.
 **Then the bf16 tile turned out to be loaded one instruction per row (`D117`)** — `D110` in a different
 kernel. The head fills a 32x32 tile with one warp-wide 64-byte load **per row**, 32 instructions for 2 KB, and
 `head` measured 12 GB/s on hardware whose memory does ~100. Four bf16 per lane per load with `ushort4`: eight
