@@ -554,8 +554,22 @@ public struct InstallFile: WeightSource {
     /// Refused rather than clamped, for the reason `bankBudgetBytes` gives: a budget nobody could hold is a node
     /// that swaps, and a silent clamp hides the typo that caused it.
     static func slabCacheBudget(environment: [String: String]) -> Int {
-        guard let raw = environment["SHARD_SLAB_CACHE_MB"], let megabytes = Int(raw) else { return 0 }
-        guard megabytes >= 0, megabytes <= 1 << 20 else { return 0 }
+        // **256 MiB by default** (`D110`). It was zero until the packed expert path existed to use it: a hit
+        // skips the three `pread`s and, with the fused kernel, the fp32 slab as well. 256 is not arbitrary —
+        // the swap sweep measured 256, 512, 768 and 1024 MiB and the step got *worse* above 256 (1.465, 1.467,
+        // 1.483, 1.667 s), because the resident bytes cost more in memory pressure than the reads they save.
+        // That is `D106`'s verdict on a cache this node cannot afford, and it is why the default is the
+        // smallest size that pays rather than the largest that fits.
+        // **The unit is bytes**, and the first version of this line returned the bare literal `256` — a
+        // 256-**byte** budget, which refused every 1.2 MB slab. The default then looked like a cache that
+        // never held anything while the env-var path, which multiplies, worked: `slab_cache_bytes_held` was 0
+        // and the step was 2.52 s instead of 1.47. It is written as the multiplication for that reason.
+        //
+        // **Absent and invalid are different answers.** An unset knob takes the measured default; a knob that
+        // is set to something unparseable or out of range is **refused** as zero, because a silent fallback
+        // hides the typo that caused it — the same rule the bank's budget and every other budget here follow.
+        guard let raw = environment["SHARD_SLAB_CACHE_MB"] else { return 256 * 1_048_576 }
+        guard let megabytes = Int(raw), megabytes >= 0, megabytes <= 1 << 20 else { return 0 }
         return megabytes * 1_048_576
     }
 

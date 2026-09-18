@@ -162,6 +162,16 @@ fp32**, its head is **int4 at 286 MB**, and its 141 ms is ~60 ms GPU + **~55 ms 
 readback and the miss reads** + ~26 ms encode, with per-layer slot caches and layer L's MoE overlapped with
 layer L+1's attention. The measured order here is **batch the experts per layer into one dispatch**, then
 **residency sized from one budget**, then the overlap.
+**Then the int4 kernel turned out to be loading one byte at a time (`D110`).** The fused expert kernel
+measured **4.4 GB/s** on hardware whose memory does ~100: lane *l* and lane *l+1* walked rows 1 KB apart and
+every element was a separate `uchar` load, so each fetch used one byte of a cache line. Reading each row as a
+**`uint4` (32 codes)** made it **3.6-4x faster** (32768x2048: 8.734 -> 2.196 ms), and the grid caught a trap
+on the way — `#pragma unroll` let `.relaxed` **reassociate** the accumulator chain and moved one output by
+1 ULP, so the unroll is gone and the pipeline is `.safe` (which still contracts `a*b+c`, per `D61`). The
+packed slab cache was then swept and **smaller is better**: 256 MiB 1.465 s, 512 1.467, 768 1.483, 1024 1.667
+— `D106`'s memory verdict a third time. Five alternated pairs put the fused path at **1.465 s against the
+split path's 1.539**, digest unchanged, at lower peak RSS. Both defaults are now the measured ones. The step
+is **1.465 s, 0.682 tok/s**, 266 tests green.
 
 ## Scope of this checkout
 

@@ -3245,3 +3245,74 @@ with per-layer slot caches (48 of 256 experts per layer at 3 GiB) and layer L's 
 buffer while layer L+1's attention runs. The measured order of attack here is therefore: **batch the experts
 per layer into one dispatch** (the fused kernel is already bit-exact and the per-slab overhead is what eats
 it), **residency sized from one budget** with a packed slab cache, and only then the overlap.
+
+## D110 — The int4 kernel was loading one byte at a time; fixing that made the packed expert path win
+
+`D109` left the fused expert path as a wash and named the reason: the per-slab dispatch and copy cost what
+the kernel saves. This round measured the kernel itself, and the answer was not dispatch at all.
+
+**The probe, in release, one shape per call:** a bf16 dispatch with 32 KB of weights takes **0.858 ms**, so a
+synchronous command buffer plus its wait is of that order; the bf16 head block (33.5 MB) takes 3.36 ms; the
+fused int4 kernel takes **0.514 ms for 1024×2048** and **8.734 ms for 32768×2048**. The last figure is
+**38.8 MB in 8.7 ms = 4.4 GB/s**, on hardware whose memory does roughly **100 GB/s**. The kernel was not
+dispatch-bound, it was **mis-loading**: lane `l` and lane `l + 1` walked rows `padded / 2` bytes apart and
+each element was a separate `uchar` load, so every fetch used one byte of a cache line.
+
+**The fix is a load shape, not an arithmetic one.** Each thread now reads its own row as **`uint4`** — 16
+bytes, 32 four-bit codes, little-endian within each word — and the nibble order, the `D34` normalisation and
+`D61`'s `accumulator + metal::fma(x, w, 0)` are untouched. The tail (a group whose start is not 16-byte
+aligned, or fewer than 32 codes left in it) keeps the scalar loop, so a shape the wide path cannot take is
+slower and not different. Measured on the same probe:
+
+| shape | before | after | |
+| --- | --- | --- | --- |
+| 1024 × 2048 | 0.514 ms | **0.303 ms** | |
+| 2048 × 512 | 0.328 ms | **0.202 ms** | |
+| 8192 × 2048 | 2.327 ms | **0.652 ms** | 3.6x |
+| 32768 × 2048 | 8.734 ms | **2.196 ms** | 4.0x, 38.8 MB at **17.7 GB/s** |
+
+**And the grid caught a trap that had nothing to do with loads.** The first wide-load version failed one
+output in a 33-column test by **1 ULP**. The cause was `#pragma unroll`: with the inner chain written out,
+the optimiser is free to **reassociate** the float additions under `.relaxed`, and it did. An accumulator
+chain written in source order is the contract; a tree-reduced one is a different sum. The unroll is gone and
+the pipeline is `.safe` — `D61` measured that `.safe` still contracts `a*b+c` into one `fma`, which is why the
+`fma(x, w, 0)` spelling stays exact, so nothing is given up but the licence to reorder.
+
+**The cache size is the other half, and smaller is better.** With the fused path on, the packed slab cache
+was swept: **256 MiB 1.465 s, 512 1.467, 768 1.483, 1024 1.667** per step. Above 256 the resident bytes cost
+more in memory pressure than the reads they save — `D106`'s verdict, a third time — so the default is the
+smallest size that pays rather than the largest that fits. Five alternated pairs on one binary against the
+split path, same digest `ed5e0328c087e4db…` in all ten runs:
+
+| arm | per-step, five runs | median |
+| --- | --- | --- |
+| split (fused off) | 1.539, 1.544, 1.534, 1.524, 1.564 | 1.539 s |
+| fused, 256 MiB slab cache | 1.464, 1.550, 1.463, 1.466, 1.465 | **1.465 s** |
+
+**−4.8%**, and at **lower** peak RSS (3.04 against 3.13 GB), because the fp32 slab is never built. Both
+defaults are now the measured ones: `SHARD_GPU_INT4_EXPERTS=0` and `SHARD_SLAB_CACHE_MB=<n>` restore the
+other arms.
+
+**Three things were found by the suite rather than by a benchmark, and all three are fixed rather than
+excused.**
+
+1. **A units bug that made the default look like a cache that never held anything.** `slabCacheBudget`
+   returns **bytes**, and the new default was written as the bare literal `256` — a 256-**byte** budget,
+   which refused every 1.2 MB slab. The env-var path, which multiplies, worked, so the symptom was a default
+   that behaved as zero (`slab_cache_bytes_held` 0, step **2.52 s**) beside an explicit 256 that behaved
+   correctly (1.46 s). `SlabCacheTests` caught it. Absent and invalid are now different answers: unset takes
+   the default, unparseable is refused as zero.
+2. **`ExpertSlotCache.preload` was choosing a destination by switch rather than by capability.** It took the
+   packed branch whenever the fused path was on, so an array-backed provider — every test fixture — silently
+   lost the bank path it has always had. There is now a `servesPacked` capability on the provider, and an
+   install answers it only when it actually has a packed cache.
+3. **The fused path was over-reporting its traffic.** `countFused` added the weights it walked to
+   `elementsRead` on every request, so a forward whose slabs were all served from memory reported
+   **13,824 elements read**. It now counts the **request** and leaves the volume to the source's own
+   `bytesReadFromSource` and the slab counters, which is where the disk was actually touched — the same rule
+   `ExpertSlotCache.warm` learned in `D101`.
+
+**The step is 1.465 s, 0.682 tok/s**, from 0.638 at the top of the round and 0.565 before `D109`. 266 Swift
+tests, 0 failures; the three tests that asserted the old bank-only mechanism now assert the saving rather
+than the configuration. The objective is still 7 tok/s (143 ms), so what remains is the same list `D109`
+left: the expert read, `load`'s fp32 decode, and the per-layer dispatch structure.

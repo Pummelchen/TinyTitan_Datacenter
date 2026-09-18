@@ -55,7 +55,11 @@ final class SlabCacheTests: XCTestCase {
     }
 
     func testTheBudgetComesFromTheEnvironmentAndRefusesNonsense() {
-        XCTAssertEqual(InstallFile.slabCacheBudget(environment: [:]), 0, "the default is zero, and it is measured")
+        // **256 MiB, and measured** (`D110`): the packed expert path is what uses this cache, and a sweep of
+        // 256/512/768/1024 MiB found the step worse above 256 (1.465, 1.467, 1.483, 1.667 s) because the
+        // resident bytes cost more in memory pressure than the reads they save. The unit is bytes, which the
+        // first version of this default got wrong by returning the bare literal `256`.
+        XCTAssertEqual(InstallFile.slabCacheBudget(environment: [:]), 256 << 20, "the default is 256 MiB")
         XCTAssertEqual(InstallFile.slabCacheBudget(environment: ["SHARD_SLAB_CACHE_MB": "512"]), 512 << 20)
         XCTAssertEqual(InstallFile.slabCacheBudget(environment: ["SHARD_SLAB_CACHE_MB": "0"]), 0)
         // Refused rather than clamped, like every other budget in this engine: a budget nobody could hold is a node

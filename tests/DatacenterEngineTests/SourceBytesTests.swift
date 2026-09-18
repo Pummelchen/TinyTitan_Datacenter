@@ -26,8 +26,13 @@ final class SourceBytesTests: XCTestCase {
         let result = try forward.forwardWithDecisions(tokens: [1, 2, 3])
         let read = forward.sourceBytesRead - before
 
-        XCTAssertGreaterThan(
-            result.expertElementsRead, 0, "the fixture must route experts, or this test proves nothing"
+        // The fixture must route experts, or this test proves nothing — and **which counter shows it depends
+        // on the path** (`D110`): the split path counts the elements it decoded, the fused path counts a
+        // request and leaves the volume to the source and its packed slab cache. Either is a measurement; a
+        // zero on both would mean the fixture never routed an expert at all.
+        XCTAssertTrue(
+            result.expertElementsRead > 0 || forward.payloadCacheMetrics.slabMisses > 0,
+            "the fixture must route experts and fetch them, or this test proves nothing"
         )
         XCTAssertGreaterThan(read, 0, "the install counts the payload bytes it hands out")
         XCTAssertEqual(

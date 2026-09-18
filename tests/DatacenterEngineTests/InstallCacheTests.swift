@@ -60,9 +60,15 @@ final class InstallCacheTests: XCTestCase {
             "the second forward re-reads nothing: the dense payload is cached whole, and the expert slices are "
                 + "resident because `D101` stages the preload into the bank"
         )
-        XCTAssertGreaterThan(
-            result.expertHitRate, 0,
-            "and the bank is what served them, so the saving is visible rather than assumed"
+        // **Two mechanisms, one outcome** (`D110`). The split path stages the preload into a bank of fp32
+        // slices and counts a hit; the fused path has no bank and warms a cache of packed slabs instead, so
+        // the hit rate it reports is necessarily zero. Asserting the bank would therefore be asserting the
+        // *configuration* rather than the saving — the saving is that the bytes did not move, and either
+        // resident store proves it.
+        XCTAssertTrue(
+            result.expertHitRate > 0 || forward.payloadCacheMetrics.slabHits > 0,
+            "something resident served the second forward — the bank of fp32 slices on the split path, the "
+                + "packed slab cache on the fused one — so the saving is visible rather than assumed"
         )
         XCTAssertEqual(
             result.expertElementsRead, 0,

@@ -36,12 +36,13 @@ public enum MetalInt4Matmul {
     /// Whether this host has a GPU. CI runners have none, so every test skips on this.
     public static var isAvailable: Bool { MTLCreateSystemDefaultDevice() != nil }
 
-    /// Whether the **routed experts** take the fused path. **Off by default until the A/B says otherwise** —
-    /// the rule `D89`/`D98`/`D105`/`D106`/`D107` all followed — and `SHARD_GPU_INT4_EXPERTS=1` selects it, so
-    /// the two arms run on one binary (`D62`). The kernel itself is measured and bit-exact (`D108`); what is
-    /// not settled is whether replacing 640 unpack-plus-matmul pairs with 640 fused dispatches wins on this
-    /// node, which is a bandwidth and dispatch-overhead question rather than an arithmetic one.
-    public static let enabled = ProcessInfo.processInfo.environment["SHARD_GPU_INT4_EXPERTS"] == "1"
+    /// Whether the **routed experts** take the fused path. **On by default, and measured** (`D110`): with a
+    /// 256 MiB packed slab cache the step is **1.465 s against the split path's 1.539** over five alternated
+    /// pairs on one binary, digest unchanged, and at **lower** peak RSS (3.04 against 3.13 GB). The kernel had
+    /// to be made 3.6-4x faster first (`D110`'s wide loads) and the cache had to be sized *down* to 256 MiB —
+    /// 512 MiB and above cost more in memory pressure than they save, which is `D106`'s finding again.
+    /// `SHARD_GPU_INT4_EXPERTS=0` restores the split path.
+    public static let enabled = ProcessInfo.processInfo.environment["SHARD_GPU_INT4_EXPERTS"] != "0"
 
     private struct Pipeline {
         let device: any MTLDevice
@@ -64,7 +65,11 @@ public enum MetalInt4Matmul {
         // non-zero code is 1 and a denormal scale is flushed to zero first — so it needs a product of two
         // small normals, which is the model's regime never. The mode costs nothing that matters; the
         // boundary is a property of the device and is documented rather than hidden behind a flag.
-        options.mathMode = .relaxed
+        // **`.safe`, not `.relaxed`** (`D110`): this kernel's contract is the *order* of its additions, and
+        // `.relaxed` permits reassociation. `D61` measured that `.safe` still contracts `a*b+c` into one `fma`
+        // — which is why the `fma(x, w, 0)` spelling is still exact — so nothing is given up but the licence
+        // to reorder.
+        options.mathMode = .safe
         do {
             let library = try device.makeLibrary(source: shader, options: options)
             guard let function = library.makeFunction(name: "int4_matmul") else {
@@ -190,6 +195,12 @@ public enum MetalInt4Matmul {
 
         float accumulator = 0.0f;
         uint groupIndex = 0;
+        // **Wide loads** (`D110`). The first version read one `uchar` per element: lane `l` and lane `l + 1`
+        // walk rows `padded / 2` bytes apart, so every load fetch used one byte of a cache line and the kernel
+        // measured **4.3 GB/s on hardware that does ~100**. A `uint4` carries **32 codes**, and because a row's
+        // codes are contiguous each such load uses every byte it fetches. The arithmetic below is unchanged —
+        // same nibble order, same `fma`, ascending `k` — so this is a load-shape change and not a numeric one.
+        bool rowAligned = ((column * (padded / 2)) % 16) == 0;
         for (uint base = 0; base < k; base += group, ++groupIndex) {
             uint span = min(group, k - base);
             // `D11`: a denormal scale reads as zero, exactly as `tools/quantize.py` and both Swift paths
@@ -201,22 +212,47 @@ public enum MetalInt4Matmul {
             if (scale != 0.0f && fabs(scale) < as_type<float>(0x00800000u)) { scale = 0.0f; }
             int zero = int(rowZeros[groupIndex]);
             if (zero >= 128) { zero -= 256; }
-            for (uint offset = 0; offset < span; ++offset) {
+            uint offset = 0;
+            if (rowAligned && (base % 32) == 0) {
+                while (offset + 32 <= span) {
+                    // A `uint4` is 16 bytes and therefore 32 four-bit codes, little-endian within each word.
+                    uint4 word = *((const device uint4 *)(rowCodes + (base + offset) / 2));
+                    uint words[4] = { word.x, word.y, word.z, word.w };
+                    // **Not unrolled, on purpose** (`D110`). With `#pragma unroll` the optimiser is free to
+                    // reassociate this float chain under `.relaxed`, and it did: one output in a 33-wide test
+                    // came back 1 ULP off. An accumulator chain written out is the contract; a tree-reduced
+                    // one is a different sum. The loop bound is a compile-time constant so the compiler may
+                    // still unroll it — but it must not *reassociate* it, and only the sequential form is
+                    // entitled to that.
+                    for (uint w = 0; w < 4; ++w) {
+                        for (uint b = 0; b < 8; ++b) {
+                            uint nibble = (words[w] >> (4 * b)) & 0x0F;
+                            int code = nibble >= 8 ? int(nibble) - 16 : int(nibble);
+                            float value = float(code - zero) * scale;
+                            // `D34`, and the same two branches `MetalUnpack`'s kernel uses for the same reason:
+                            // a computed zero carries no sign, and the one indeterminate case (a zero code
+                            // times an infinite scale) is the canonical quiet NaN.
+                            if (value == 0.0f) { value = as_type<float>(0u); }
+                            if (isnan(value)) { value = as_type<float>(0x7FC00000u); }
+                            accumulator = accumulator + metal::fma(xRow[base + offset + w * 8 + b], value, 0.0f);
+                        }
+                    }
+                    offset += 32;
+                }
+            }
+            // The tail: a group whose start is not 16-byte aligned, or fewer than 32 codes left in it. The
+            // scalar path keeps the same arithmetic, so a shape the wide path cannot take is slower and not
+            // different.
+            while (offset < span) {
                 uint index = base + offset;
                 uchar byte = rowCodes[index / 2];
                 uint nibble = (index % 2 == 0) ? (byte & 0x0F) : (byte >> 4);
                 int code = nibble >= 8 ? int(nibble) - 16 : int(nibble);
                 float value = float(code - zero) * scale;
-                // `D34`, and the same two branches `MetalUnpack`'s kernel uses for the same reason: a
-                // computed zero carries no sign, and the one indeterminate case (a zero code times an
-                // infinite scale) is the canonical quiet NaN rather than whatever the device's NaN
-                // propagation happens to produce.
                 if (value == 0.0f) { value = as_type<float>(0u); }
                 if (isnan(value)) { value = as_type<float>(0x7FC00000u); }
-                // `D61`: the only spelling that keeps the contract's product and add apart under every
-                // math mode. Fusing the dequantisation's multiply into this one would be a different
-                // number; it is kept in its own statement above.
                 accumulator = accumulator + metal::fma(xRow[index], value, 0.0f);
+                offset += 1;
             }
         }
         out[row * outputs + column] = accumulator;

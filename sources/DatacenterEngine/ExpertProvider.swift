@@ -54,6 +54,13 @@ public protocol ExpertWeightProvider {
     /// `preload` warms a bank of fp32 slices; when the fused path is on there are no fp32 slices to warm, so
     /// the fan-out has to warm the packed slab cache instead or the reads fall back to one at a time.
     func preloadPacked(experts: [Int], shape: MixtureShape)
+    /// Whether `gateUpProduct`/`downProduct` can actually serve this provider (`D110`).
+    ///
+    /// `preload` has to choose between two destinations — a bank of fp32 slices and a cache of packed slabs —
+    /// and it can only choose correctly if it knows which one this provider has. Asking the *capability*
+    /// rather than testing the switch is what lets an array-backed provider keep the bank path it has always
+    /// had while an install takes the packed one.
+    var servesPacked: Bool { get }
 }
 
 extension ExpertWeightProvider {
@@ -62,6 +69,7 @@ extension ExpertWeightProvider {
     public func gateUpProduct(x: [Float], rows: Int, expert: Int, shape: MixtureShape) throws -> [Float]? { nil }
     public func downProduct(x: [Float], rows: Int, expert: Int, shape: MixtureShape) throws -> [Float]? { nil }
     public func preloadPacked(experts: [Int], shape: MixtureShape) {}
+    public var servesPacked: Bool { false }
 }
 
 /// Raised when a source hands back a width the mixture's geometry does not agree with — a
@@ -156,6 +164,10 @@ public struct StackedExpertProvider: ExpertWeightProvider {
             _ = try? target.source.packedRows(named: target.downName, range: range)
         }
     }
+
+    /// An install has a packed cache only when the knob gives it one; without it a preload would read bytes
+    /// that nothing keeps, which is a duplicated read rather than a hidden one (`D110`).
+    public var servesPacked: Bool { MetalInt4Matmul.isAvailable && source.packedCacheBudget > 0 }
 
     private func product(x: [Float], rows: Int, expert: Int, name: String, out: Int) throws -> [Float]? {
         guard MetalInt4Matmul.enabled, MetalInt4Matmul.isAvailable else { return nil }
@@ -368,7 +380,7 @@ public final class ExpertSlotCache: ExpertWeightProvider {
         guard let product = try upstream.gateUpProduct(x: x, rows: rows, expert: expert, shape: shape) else {
             return nil
         }
-        countFused(elements: 2 * shape.intermediate * shape.hiddenSize)
+        countFused()
         return product
     }
 
@@ -376,14 +388,19 @@ public final class ExpertSlotCache: ExpertWeightProvider {
         guard let product = try upstream.downProduct(x: x, rows: rows, expert: expert, shape: shape) else {
             return nil
         }
-        countFused(elements: shape.hiddenSize * shape.intermediate)
+        countFused()
         return product
     }
 
-    private func countFused(elements: Int) {
+    /// The fused path counts a **request** and nothing else.
+    ///
+    /// There is no bank to hit or miss, and `elementsRead` must mean "bytes that came off the source" rather
+    /// than "weights this call walked" — the first version counted every request as a read and reported
+    /// 13,824 elements read on a forward whose slabs were all served from the packed cache. The traffic
+    /// measure for this mode is the source's own `bytesReadFromSource` and the slab cache's counters, which
+    /// is where the disk was actually touched.
+    private func countFused() {
         metrics.requests += 1
-        metrics.misses += 1
-        addElementsRead(elements)
     }
 
     /// Fetch this layer's chosen experts ahead of the loop that asks for them (`DC-118`).
@@ -396,7 +413,7 @@ public final class ExpertSlotCache: ExpertWeightProvider {
     /// (`D109`) — the same threads, the same hint, a different destination, and without it the reads would
     /// fall back to one at a time.
     public func preload(experts: [Int], shape: MixtureShape) {
-        if MetalInt4Matmul.enabled {
+        if MetalInt4Matmul.enabled, upstream.servesPacked {
             upstream.preloadPacked(experts: experts.filter { upstream.serves($0) }, shape: shape)
             return
         }
