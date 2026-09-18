@@ -7309,3 +7309,43 @@ being a serial wait and the other four workers' CPU. **`DC-087`'s rule runs in b
 narrower than the gate reports success - and this is its mirror image: **two numbers that agree are not two
 measurements agreeing unless they are measurements of the same quantity.** The profile is the third measurement,
 and it is the one that decides it.
+
+## D213 — D212's correction was itself wrong: that semaphore is the top-level run wait, and it says nothing about the decode loop
+
+`D212` read the main thread blocked in `semaphore_wait_trap` for every sample and concluded the host term is a
+wait that can be overlapped. **That reading was wrong, and checking what the semaphore *is* takes one file:**
+
+    func drive(_ args: Args) -> Int32 {
+        let sem = DispatchSemaphore(value: 0)
+        box.task = Task { ... await run(args: args) ... sem.signal() }
+        ...
+        sem.wait()          // <- blocks until the WHOLE generation is done
+        return box.code
+    }
+
+`sources/TinyTitanCLI/Command/main.swift`. The main thread waits there **for the entire run by design**, while
+the generation executes in the `Task` on the cooperative pool. **A main thread blocked on a run-completion
+semaphore is what a correct program looks like**, and it carries no information about per-layer waits. The
+profile was measuring the one thread that is *supposed* to be idle.
+
+**A second error compounded it.** `D212` printed frames "deepest-first" by sorting on depth, which **interleaves
+frames from different branches of the tree**. `closure #1 in ExpertIOScheduler.init(workerCount:)` is a **worker's**
+frame; sorting it above `main` produced a stack that does not exist. The lesson is the one this session keeps
+relearning in new clothes: **the ordering of a tree is not the order of a list**, and a call graph read as if it
+were a stack will produce a plausible, false story.
+
+**What survives from `D212` is the observation and not the deduction:** there are indeed **four
+`TinyTitan.expert-io.0`-`.3` threads**, each sampled 1473 times, in `ExpertIOScheduler.runWorker()` and
+`submit_batch`. That is a real structural fact about the engine, it is new, and it stands.
+
+**What does not survive is the inference built on the main thread's wait.** So `D209`'s position is restored rather
+than overturned: the 41.3 ms remainder is most likely CPU, and its share matching `D191`'s 31-37% of one core is
+most likely a real agreement after all - with the caveat that **the 31-37% is spread across four worker threads
+rather than sitting on one**, which `D209` did not know and which makes "does not divide" a statement about the
+*scheduler's parallelism* rather than about a single core being saturated.
+
+**The honest state of the question.** Which is it - CPU work that must be reduced, or a wait that must be
+overlapped - is **not decided**, because the one profile that was taken measured the idle thread. Deciding it needs
+a profile of the **cooperative-pool threads that run the `Task`**, which is where `encodeDecodeRoutedMoE` and the
+expert scheduler are actually executing. **`D211` said the instrument had to be widened; `D212` and this record say
+it also has to be aimed**, and two rounds have now been spent on a semaphore that was working correctly.
