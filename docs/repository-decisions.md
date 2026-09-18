@@ -8548,3 +8548,31 @@ configuration is 40 slots at **7.72-7.80 tok/s**, and the whole span from 8 to 4
 **1.78x** range. That range is real, it is measured, and the engine's default already sits at its top - so the
 remaining question is why 40 is the top, and `D218` answered that from the other side: 64 swaps and halves the
 throughput. **The knob is spent on one node, and the mechanism by which it worked is the allocation.**
+
+## D244 — Resume point: one closure and one call, and the number it should produce
+
+Seventy-two rounds in, the goal is neither met nor blocked, and this records exactly where to start again so the
+next attempt does not spend its budget rediscovering the seam.
+
+**The state that is settled.** The exchange is built and tested on both sides and verified bit-identical to the
+single-node answer over a real socket; the ownership filter is reachable from the CLI and inert by default; the
+install is verified on all four nodes with a receipt issued in place; and the single node is measured at
+**7.377-7.974 tok/s against the reference's 7.075**, above it at every generation length. What is missing is the call
+site in `encodeDecodeRoutedMoE`, and `docs/DISTRIBUTION-STATUS.md` in the fork now carries it in full: the requesting
+and serving sides with line numbers, the lifecycle trap, `moeActs` in scope at the phase-2 site, the fp16-to-fp32
+readback excluded from `D208`'s 3.2 ms, and the module decision with two ways around it.
+
+**The decision already made:** take the exchange as a **closure**, not a stored participant — consistent with
+`ShardExchangeServer`'s injected `Compute` and `PreadExpertStreamer.ownedExpertFilter`, both `nil` by default, and it
+keeps `TinyTitan` from depending on `TinyTitanDecodeProtocol`, which is what protects the single-node path the whole
+measured record rests on (`D164`).
+
+**What the four-node run should show, so the result can be recognised rather than rationalised.** The measurements
+in this document put the reachable speedup at **~1.12x for expert sharding and ~1.21x with attention and the shared
+expert sharded too**, against the **~2.9x** that 21 tok/s needs. **So the expected outcome is a measured number
+between about 8 and 9 tok/s on four nodes, and the run would falsify the target rather than meet it.** That is worth
+having: the goal asked for a measurement, and a measured 1.1x is a result where a derived 1.1x is an argument.
+
+**The three things that must be recorded with it**, because this session lost records twice by omitting them: the
+**node loads**, the **repeat count and median**, and — per `D230` — the **generation length**, since the step is not
+stationary and a four-node number at a different length is not comparable with the single-node curve.
