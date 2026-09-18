@@ -8003,3 +8003,38 @@ the engine does not currently print and which is the direct measurement this fig
 **Marked as derived, not measured.** It is a subtraction of two measured quantities and therefore inherits their
 errors; 20.77 should be read as "about twenty milliseconds of unexplained per-token host time", which is enough to
 justify attacking it and not enough to predict a result from.
+
+## D230 — The decode step degrades with context at about 0.8 ms per token of position, and it is the attention over a growing KV
+
+`D229` left 20.77 ms per token unexplained. One hypothesis is testable directly from the layer trace's own `pos`
+field: if the per-token cost grows with context, the KV cache is implicated. Node3, the reference install, 40 slots,
+**300 tokens**, 716 traced layer samples, positions 16 to 288:
+
+| positions | body | io | wait | gpu_attn |
+| --- | --- | --- | --- | --- |
+| 0-32 | 2794 us | 1423 | 1153 | ~500 us |
+| 128-192 | 3032 us | 1487 | 1297 | growing |
+| 288 (single) | 1613 | 1 | 1471 | **734 us** |
+
+**The layer body grows by 238 us from position 16 to position 160 - 8.5% - and the attention kernel grows from about
+500 us to 734 us, a 47% increase.** That is the KV cache: attention cost is linear in position, and at 300 tokens
+the sequence is long enough for it to show. **It is a real effect, it is not the 20.77 ms, and it is worth recording
+for a reason that matters to every number in this document: the decode step is not stationary.**
+
+**What that does to the session's measurements.** Every step figure recorded here - 132.7 ms, 137.0 ms, the 106 ms
+body - was taken over 32 to 48 tokens, where the position effect is small but not zero. **A tok/s number is therefore
+a function of how many tokens were generated**, and the reference's 7.075 and this node's 7.357-7.451 were measured
+at similar lengths, so the comparison stands; but a four-node run at a different length would not be comparable
+without saying so. That is `D187`'s discipline extended to a variable nobody has been recording: **the generation
+length belongs beside the load and the configuration in every tok/s claim.**
+
+**And it puts the 20.77 ms in a different light.** The per-layer growth is 238 us at position 160, which over 40
+layers is **9.5 ms per token** - and the out-of-body figure of 20.77 ms was computed from a 24-token run whose
+positions averaged well below 24. So **part of what `D229` called out-of-body is context-dependent per-layer growth
+that my `step - sum(bodies)` subtraction attributed to the wrong place**: at longer positions the bodies themselves
+absorb it. **`D229`'s 20.77 ms is therefore an over-estimate, and the honest figure is smaller and not yet measured.**
+
+**This is the sixth self-correction in this session and it is the same species as the others**: a subtraction of two
+measured quantities attributed the remainder to a term that had not been measured directly. The instrument that
+would settle it - a trace of the token loop from the last layer's body to the next token's first - still does not
+exist in the engine.
