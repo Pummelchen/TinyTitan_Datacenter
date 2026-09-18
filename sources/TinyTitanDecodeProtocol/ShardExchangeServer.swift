@@ -17,7 +17,7 @@ import Foundation
 public final class ShardExchangeServer: @unchecked Sendable {
     /// Run the named experts over the activation and return one row of `dimensions` per expert, in the order
     /// asked. Injected so this type is testable without a model.
-    public typealias Compute = (_ layer: Int, _ experts: [Int], _ activation: [Float]) throws -> [Float]
+    public typealias Compute = (_ layer: Int, _ experts: [Int], _ activation: [Float]) async throws -> [Float]
 
     public enum Error: Swift.Error, Equatable {
         case computeReturnedWrongWidth(expected: Int, got: Int)
@@ -40,12 +40,12 @@ public final class ShardExchangeServer: @unchecked Sendable {
     ///
     /// Blocking, and meant to be run off the cooperative pool - `D197`'s lesson from the test suite, where a
     /// blocking accept inside a `Task` starved the very task that had to connect to it.
-    public func serve(connections: Int) throws {
+    public func serve(connections: Int) async throws {
         for _ in 0..<connections {
             let accepted = try DecodeTCPSocket.listenAndAccept(host: "0.0.0.0", port: port)
             boundPort = (try? DecodeTCPSocket.boundPort(of: accepted.input.fileDescriptor)) ?? port
             do {
-                try answer(accepted)
+                try await answer(accepted)
             } catch {
                 // A REQUEST THAT CANNOT BE ANSWERED MUST NOT TAKE THE SERVER WITH IT. Before this catch, one
                 // unanswerable request ended the node's willingness to answer any request - `answer` throwing
@@ -77,7 +77,7 @@ public final class ShardExchangeServer: @unchecked Sendable {
     }
 
     /// Answer one connection until its peer closes. Each request is decoded, computed and replied to in order.
-    public func answer(_ handles: (input: FileHandle, output: FileHandle)) throws {
+    public func answer(_ handles: (input: FileHandle, output: FileHandle)) async throws {
         let channel = ShardPeerChannel(input: handles.input, output: handles.output)
         defer { channel.close() }
         while true {
@@ -89,7 +89,7 @@ public final class ShardExchangeServer: @unchecked Sendable {
             }
             let request = try ShardExchange.decodeRequest(from: frame)
             let dimensions = request.activation.count
-            let values = try compute(request.layer, request.experts, request.activation)
+            let values = try await compute(request.layer, request.experts, request.activation)
             let expected = request.experts.count * dimensions
             guard values.count == expected else {
                 // Refused rather than padded: a short reply would be read as a shorter row and land on the wrong

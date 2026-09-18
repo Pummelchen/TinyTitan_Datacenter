@@ -28,15 +28,16 @@ extension RealForwardRunner {
     public func remoteExpertValues(layer: Int,
                                    experts: [Int],
                                    activation: [Float],
-                                   dims: Int) throws -> [Float] {
+                                   dims: Int) async throws -> [Float] {
         guard activation.count == dims else {
             throw ShardServeError.wrongActivationWidth(expected: dims, got: activation.count)
         }
         // Shares the node's expert cache: these are the entry points the request path itself uses.
-        guard let plan = try model.planRoutedExperts(layer: layer, experts: experts) else {
-            throw ShardServeError.noPlan(layer: layer)
-        }
-        let views = try model.routedExpertBuffers(for: plan)
+        // THE STREAMING READ, not the planning one. planRoutedExperts -> routedExpertBuffers describes where an
+        // expert can be placed in THIS node's bank, which fails with "8 experts do not fit in 40 cache slots" when
+        // a peer asks for an expert this node never routes to (D263, D264). fetchRoutedExperts is the path the MoE
+        // takes on a miss - and it is async, which is why the whole serving path is.
+        let views = try await model.fetchRoutedExperts(layer: layer, experts: experts)
         let offsets = try model.routedExpertOffsets(layer: layer)
 
         // The activation, widened from fp32 to the fp16 the kernels load (`...U16Load`).
@@ -72,7 +73,9 @@ extension RealForwardRunner {
                 acts: remoteActs, routingWeights: remoteWeight, residual: remoteResidual,
                 y: remoteY, d: UInt32(dims), f: f, topK: UInt32(slots))
             cb.commit()
-            cb.waitUntilCompleted()
+            // `await completed()`, NOT `waitUntilCompleted()`: Swift marks the blocking form unavailable from an
+            // asynchronous context, which is the compiler saying a cooperative-pool thread must not be parked.
+            await cb.completed()
             let src = remoteY.contents().bindMemory(to: Float.self, capacity: dims)
             for d in 0..<dims { out[index * dims + d] = src[d] }
         }

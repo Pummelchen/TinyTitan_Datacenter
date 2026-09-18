@@ -37,12 +37,10 @@ struct ShardExchangeEndToEndTests {
     let server = ShardExchangeServer(port: Self.port) { layer, experts, act in
       Self.compute(layer: layer, experts: experts, activation: act)
     }
+    // serve is async now, so the continuation-around-a-blocking-dispatch is unnecessary: the Task awaits it
+    // directly and holds no thread while it waits.
     let serving = Task { () -> Void in
-      try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-        DispatchQueue.global().async {
-          do { try server.serve(connections: 1); c.resume() } catch { c.resume(throwing: error) }
-        }
-      }
+      do { try await server.serve(connections: 1) } catch { }
     }
 
     // RETRY THE CONNECT. The server binds on another thread, so a client that connects immediately can be

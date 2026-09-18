@@ -275,11 +275,14 @@ public func run(args: Args,
         // request path does.
         if let servePort = args.shardServePort {
             let server = ShardExchangeServer(port: UInt16(servePort)) { layer, experts, activation in
-                try runner.remoteExpertValues(layer: layer, experts: experts,
-                                              activation: activation, dims: activation.count)
+                try await runner.remoteExpertValues(layer: layer, experts: experts,
+                                                    activation: activation, dims: activation.count)
             }
-            DispatchQueue.global().async {
-                do { try server.serve(connections: Int.max) } catch {
+            // Task rather than DispatchQueue.global(): the loop awaits instead of blocking and holds no thread.
+            // That reverses D197's reason for moving the accept off the pool - a *blocking* accept had to leave it,
+            // an awaiting one belongs back on it.
+            Task {
+                do { try await server.serve(connections: Int.max) } catch {
                     FileHandle.standardError.write(Data("[shard] serve stopped: \(error)\n".utf8))
                 }
             }

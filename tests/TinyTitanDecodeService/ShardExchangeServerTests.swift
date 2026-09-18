@@ -20,12 +20,10 @@ struct ShardExchangeServerTests {
 
   @Test func aRequestIsServedOverARealSocketAndLandsOnItsSlot() async throws {
     let server = ShardExchangeServer(port: Self.port, compute: Self.compute)
+    // serve is async now, so the continuation-around-a-blocking-dispatch is unnecessary: the Task awaits it
+    // directly and holds no thread while it waits.
     let serving = Task { () -> Void in
-      try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-        DispatchQueue.global().async {
-          do { try server.serve(connections: 1); c.resume() } catch { c.resume(throwing: error) }
-        }
-      }
+      do { try await server.serve(connections: 1) } catch { }
     }
 
     let plan = ShardPlan.generate(family: "qwen3_5_moe", experts: 256, nodes: 4, distribution: .contiguous)
@@ -67,12 +65,10 @@ struct ShardExchangeServerTests {
   /// shorter row and land on the wrong slots - a wrong number rather than an error.
   @Test func aComputeOfTheWrongWidthIsRefusedRatherThanPadded() async throws {
     let server = ShardExchangeServer(port: Self.wrongWidthPort) { _, _, _ in [1, 2, 3] }
+    // serve is async now, so the continuation-around-a-blocking-dispatch is unnecessary: the Task awaits it
+    // directly and holds no thread while it waits.
     let serving = Task { () -> Void in
-      try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-        DispatchQueue.global().async {
-          do { try server.serve(connections: 1); c.resume() } catch { c.resume(throwing: error) }
-        }
-      }
+      do { try await server.serve(connections: 1) } catch { }
     }
     var client: (input: FileHandle, output: FileHandle)?
     for _ in 0..<100 {
