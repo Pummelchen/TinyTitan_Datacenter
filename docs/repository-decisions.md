@@ -8471,3 +8471,41 @@ weakened that case; it has removed a competing one.**
 zeros may still take its full time, or may be slower for want of prefetch - is not measured. `D239`'s null result is
 consistent with both "the read is free" and "the read costs something and the GPU absorbs it", and those two would
 differ for a real sharded node. **The four-node run settles it; nothing on one node can.**
+
+## D242 — The cache sweep's mechanism is now down to one candidate, and it is the allocation itself
+
+`D240` narrowed what `--expert-cache-slots` actually measures to two candidates: the **per-layer planning work** over
+the routed expert set, and the **GPU-side residency bookkeeping**. `D239`'s experiment eliminates the first, because
+the ownership filter changes precisely what the planner sees - 64 experts instead of 256, a smaller candidate set,
+fewer fetch decisions - and the step does not move (1.00x, 0.99x, 1.00x). `D215` had already eliminated the second
+by turning the residency advice off entirely with no effect.
+
+So the list of explanations that have been **measured and eliminated** is now:
+
+  - read volume - cut ~4x by the ownership filter, no effect (`D239`);
+  - miss count - cut ~4x by the same filter, no effect (`D239`);
+  - the prefetch ring and its depth - no setting moves the layer body (`D227`);
+  - the residency advice - `--rdadvise off` has no effect (`D215`);
+  - per-layer planning over the candidate set - the filter changes it, no effect (`D239`);
+  - the read path itself - measured at 1.94-2.94 GB/s by `D196` and not implicated since.
+
+**What is left is the allocation.** A larger `--expert-cache-slots` reserves more wired memory and more slots per
+layer's streamer, and every eliminated candidate above is downstream of that reservation. **The one thing no
+experiment has varied while holding everything else fixed is the size of the reservation itself.**
+
+**And there is a physical story that fits every number in the record.** `D191` measured the host at 31-37% of one
+core; `D214` found four `expert-io` worker threads; `D202` decomposed the step into three terms that sum exactly.
+A larger cache means fewer distinct experts are resident-eligible per layer, which changes **how many slots the
+streamer must allocate, fence and recycle** - and that is GPU-visible state, not bytes. **`D114` is the precedent
+for what that costs**: batching 640 synchronous dispatches into 80 removed the *waits* rather than the work and was
+worth 1.27x, and the batch size was the thing that mattered.
+
+**It is not tested here and it should not be assumed.** The test is to hold the hit rate fixed and vary only the
+reservation - which the current flags do not allow, because slot count is simultaneously the cache size and the hit
+rate. **That is a missing knob, not a missing measurement**, and naming it is the honest end of this line: five
+explanations eliminated by measurement, one candidate standing, and no way to isolate it without a new control.
+
+**Nothing in this record changes a measurement.** 40 slots is still the fastest configuration, 64 still collapses
+into swap, 9.02 tok/s is still the measured floor, and the exchange still costs 3.2 ms a step. What it changes is
+that **`D218`, `D219` and `D220` describe a proxy and their prose should be read that way** - which `D240` said, and
+this narrows to a single unchecked alternative.
