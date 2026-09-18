@@ -73,3 +73,24 @@ material they include rather than material anyone here does.
 
 `tools/check_provenance.py` checks what can be checked offline: that this file exists, that it still names
 the relationship it describes, and that no source file has acquired a third-party copyright header.
+
+## The sister project's code is available to take — and what that obliges
+
+On 2026-09-18 the operator authorised taking code from
+[TinyTitan](https://github.com/Pummelchen/TinyTitan) rather than only reading it for approach. That permission
+does not change this repository's licence, and it does not make the material free of obligations. TinyTitan is
+**Apache-2.0**; this repository is **MIT**. Apache-2.0 permits use inside an MIT work, and §4 requires:
+
+- a readable copy of the **NOTICE** it ships — `TinyTitan`, Copyright (c) 2026 André Borchert, together with the
+  `turbo-fieldfare` notice it carries — which is why a root `NOTICE` file appears in the commit that first
+  takes code, and not before it;
+- the **licence text** of the work taken from;
+- **prominent notices on modified files**, stating that they were changed.
+
+**As of `D100` nothing has been copied yet**, so the statements above about this repository's own position still
+hold as written. The commit that takes the first file lands all four things together — the code, the `NOTICE`,
+this section's update, and the gate change in `tools/check_provenance.py`, which today *refuses* a third-party
+copyright line and will have to *require* the attribution instead. A gate that forbids what the operator has
+allowed is a gate that will be disabled in a hurry; `D100` records that it is changed deliberately, in the same
+commit, with the reason.
+

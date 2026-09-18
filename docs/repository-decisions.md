@@ -2755,3 +2755,49 @@ starts from the contract grid and a bit-for-bit test, not from the timings.
 the list `D97` and `D98` converged on: fuse the dequantise into the matmul so the fp32 slice is never
 materialised (`DC-120`), hide the reads behind compute (`DC-121`), and thread the matmul once it can be shown
 to preserve the contract order (`DC-122`).
+
+## D100 — Code may be taken from the sister project; `mix.read` is read *and* unpack; and the GPU matmul needs memory this node has not got
+
+Three things happened in one round, and the first is a policy change that outlives the round.
+
+**Taking code is now allowed, and therefore attribution is now required.** The operator authorised taking code
+from TinyTitan on 2026-09-18, having authorised reading it the day before. TinyTitan is **Apache-2.0** and this
+repository is **MIT**, so the code may be used here — §4 of that licence, not a favour, is what makes it legal,
+and it requires the NOTICE to travel (their notice names Copyright (c) 2026 André Borchert and a
+`turbo-fieldfare` dependency), the licence text to be included, and modified files to be marked. `AGENTS.md` now
+says so, `THIRD_PARTY_NOTICES.md` says what is required, and `tools/check_provenance.py` will be changed in the
+same commit as the first code taken: today it **refuses** a third-party copyright line and asserts that no
+third-party source is included, and that assertion becomes false the moment the permission is used. A gate that
+forbids what the operator has allowed gets disabled in a hurry, so it is changed deliberately, with the reason,
+in the commit that needs it — and **nothing has been copied yet**, which is why this record changes no code.
+
+**`mix.read` is two costs, and neither is the device.** `SourceTiming` has existed since the install reader was
+written — its own comment says "`mix.read` was 65% of a real forward and the disk is measured at ~1 GB/s, so the
+caller needs to know whether those seconds are the device or the unpacking, a distinction arithmetic cannot
+settle" — and no caller had ever asked for it. Now `datacenter-generate` writes all three, and on an 8-step
+decode of the 35 B-A3B:
+
+| quantity | per step | share of the step |
+| --- | --- | --- |
+| step | 3.342 s | — |
+| `mix.read` | 1.585 s | 47.4% |
+| source **read** (the device) | 1.298 s | 38.8% |
+| source **unpack** (CPU) | 1.353 s | 40.5% |
+| bytes read from disk | 1.08 GB | 0.8 GB/s |
+| fp32 materialised | **6.5 GB** | — |
+
+The read and unpack totals span every phase, which is why they sum past `mix.read` — the head's bf16 and the
+dense path's tensors are read and unpacked in `head` and `load` as well. Two conclusions follow, and they are
+measurements rather than arithmetic: **the disk is not the limit** (1.08 GB/step is 0.8 GB/s against a device
+this repository has measured at ~1 GB/s and up), and **the unpack is as large as the read** — 1.35 s and 6.5 GB
+of fp32 written per step, discarded, and written again on the next token. That is what `DC-120` is for, and it
+is now the best-supported target in the list.
+
+**The GPU matmul cannot run here, and the reason is the same one.** `MetalMatmul` is opt-in because `D63`
+measured the *older* kernel slower; the threadgroup-tiled kernel written since had never been measured
+(`DC-113`). It was measured this round and the run was **stopped by the disk watchdog** at 3.94 GB free with
+swap at 1.71 GB: the head's weights are 1.017 GB of bf16, the path materialises them as **2.03 GB of fp32**, and
+the kernel then needs an `MTLBuffer` of the same size — about **4 GB** on a node with ~4.5 GB usable. So the
+GPU path is not blocked by the kernel, it is blocked by the fp32 array that `DC-120` exists to remove, and that
+is one more reason to do `DC-120` first: after it, both the threaded CPU matmul (`DC-122`) and the GPU kernel
+become addressable.

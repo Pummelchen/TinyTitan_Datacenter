@@ -152,12 +152,19 @@ asserted on the binaries *inside* the archive, one checksum beside it — and pu
   while this repository's install container is its own — signed codes, fp32 scales, int8 zero points
   (`D39`) — so a file from one is not readable by the other; the earlier claim here that it "holds the
   install format" was imprecise. Treat it as
-  read-only unless a change there is explicitly requested. **Reading it for approach is authorised** (the operator
-  said so on 2026-09-17, and `docs/reference-tinytitan-decode.md` is the study that came out of it); *copying*
-  from it is not, and the position above is unchanged. It is **Apache-2.0**; this
-  repository is **MIT**, and `DC-013`'s review found **no code copied from it**, so no `NOTICE` transfers —
-  the measurement and the three conditions that would change it are in `THIRD_PARTY_NOTICES.md` and
-  `D36`, and `tools/check_provenance.py` guards the position offline.
+  read-only unless a change there is explicitly requested. **Reading it for approach is authorised, and so is *taking code from it***
+  (the operator said both, on 2026-09-17 and 2026-09-18; `docs/reference-tinytitan-decode.md` is the study that
+  came out of the first). Taking code is **not free**: it is Apache-2.0 and this repository is MIT, so anything
+  taken must carry its attribution — a root `NOTICE` with their notice and the `turbo-fieldfare` dependency it
+  names, the licence text, and a mark on every file that was modified. `D100` records the change and
+  `THIRD_PARTY_NOTICES.md` says what is required; `tools/check_provenance.py` is where the requirement is
+  enforced, and it is updated in the same commit as the first code taken rather than after it. It is **Apache-2.0**; this
+  repository is **MIT**. `DC-013`'s review found **no code copied from it** *at the time it was made*, and
+  `D36` wrote down the three conditions that would change that; the operator's permission of 2026-09-18 is the
+  first of them, so the `NOTICE` obligation is now **live** rather than hypothetical whenever a file is taken.
+  `THIRD_PARTY_NOTICES.md` records what is required and `tools/check_provenance.py` enforces it — it still
+  guards the position offline, and it changes from forbidding attribution to requiring it in the same commit
+  as the first code taken (`D100`).
 - `docs/` holds the decision records (`m0-decisions.md`, `m1-decisions.md`,
   `m2-decisions.md`, `repository-decisions.md` for decisions about the repository itself), the gate docs (`m0-gate.md`, `m1-gate.md`,
   `m0c-quantization.md`), the contracts

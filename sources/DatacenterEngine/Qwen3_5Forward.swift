@@ -35,6 +35,11 @@ public struct Qwen3_5Forward: ForwardPass {
     public var sourceBytesRead: Int { source.bytesReadFromSource }
 
     /// `ForwardPass`: what the reading, verifying and unpacking cost, in seconds.
+    ///
+    /// Surfaced into `metrics.json` in `D100`: `mix.read` is ~50% of a decode step and it is *read plus
+    /// unpack*, and which half dominates decides whether the next work hides I/O or fuses the dequantise.
+    /// The distinction is not arithmetic — it is a measurement this accessor has been able to give since the
+    /// reader was written, and no caller had asked for it.
     public var sourceTiming: SourceTiming { source.sourceTiming }
     public var payloadCacheMetrics: PayloadCacheMetrics { source.payloadCacheMetrics }
     public var payloadRequestCounts: [(name: String, count: Int)] { source.payloadRequestCounts }

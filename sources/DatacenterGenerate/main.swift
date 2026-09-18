@@ -255,6 +255,14 @@ do {
         metrics["plan_digest"] = sharded.planDigest
     }
     metrics["install_bytes_read_total"] = forward.sourceBytesRead
+    // The split inside the largest phase (`D100`). `mix.read` is ~50% of a decode step and it is read +
+    // unpack; which half dominates decides whether the next work is hiding I/O or fusing the dequantise, and
+    // no amount of arithmetic can tell the two apart.
+    let sourceTiming = forward.sourceTiming
+    metrics["source_read_seconds"] = sourceTiming.readSeconds
+    metrics["source_digest_seconds"] = sourceTiming.digestSeconds
+    metrics["source_unpack_seconds"] = sourceTiming.unpackSeconds
+    metrics["source_accounted_seconds"] = sourceTiming.accountedSeconds
     // The per-phase breakdown. The trace CLI has always written it for a full-sequence forward and this CLI
     // could not, because `Generation` carried no profile and the cached decode loop passed no profiler into
     // the mixture — so the step the throughput gate measures was the one step with no breakdown (`D88`).
