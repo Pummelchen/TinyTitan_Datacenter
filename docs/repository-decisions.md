@@ -3991,3 +3991,42 @@ gives no accuracy figure, so the requantisation is a fidelity experiment to be m
 agreement against the current bf16-head run on the frozen prompts, plus the trace contract — and **not** a step
 the reference has already validated. If the agreement is unacceptable, the fallback is the reference's own
 shipped posture: **int8** for the shared tensor, 540 MB one copy, still ~1.5 GB better than today.
+
+## D128 — Traced: the wired bank slows the reads, and every slab is fetched twice
+
+A code trace of `mix.gather`, prompted by `D125`'s retraction. It corrects two of my own numbers, kills the
+"fixed per-slab cost" reading outright, and finds one genuine structural waste.
+
+**Two corrections to `D126`.** That entry said the slab bank is "asked **7,040 times a step**" and holds "up to
+~106 entries". Both are wrong. The metric is a **run total**: the run is 25 forwards (5 prompt tokens decoded
+one per forward + 20 profiled steps) and each forward makes **1,280** `SlabCache.value` calls — 640 from
+`preloadPacked` and 640 from `products` — so 25 x 1,280 = 32,000, exactly the measured
+`slab_cache_hits + slab_cache_misses` (16,000 + 16,000). The per-step figure is **1,280, not 7,040** (my number
+was ~4.4x high), and the measured `slab_cache_bytes_held` of 133,971,968 B gives **~147 entries** mixed, not
+~106. The conclusion — a few milliseconds — survives, and the corrected count makes it smaller.
+
+**And the "fixed cost" reading is dead, with the mechanism identified.** `source_read_seconds` **rose** from
+30.94 s to 34.45 s while the bytes read *halved*. Per miss there are three section preads, so 16,000 misses at
+128 MiB against 8,027 at 1024 MiB gives **644 microseconds per pread at 128 MiB and 1,431 at 1024 MiB, at
+identical section sizes** — a **2.2x per-byte regression**. Half the bytes at half the rate is the same 265 ms.
+The mechanism is visible in the counters: `SlabCache.store` `mlock`s every slab and wiring is on by default, so
+the 1024 MiB bank pins ~1.07 GB of anonymous pages (RSS 1.60 -> 2.61 GB) and the remaining file reads lose the
+kernel page-cache help they were getting (`D111`). The causal step — page-cache eviction — is an inference from
+the counters, not a direct measurement, and is recorded as such.
+
+**The one genuine structural waste, and it is not subtle.** Every slab is looked up **twice per forward**:
+`preloadPacked` fetches each (expert, projection) to warm the bank, and `products` then fetches the same key
+again. The evidence is exact — at the 128 MiB default `slab_cache_hits == slab_cache_misses == 16,000`, which
+is the 1:1 first-lookup/second-lookup split, because that bank is too small for any cross-step reuse. So
+**640 of the 1,280 lookups a forward are redundant**: a second key construction, lock, dictionary get and
+recency update for zero new bytes. That is the clearest count-scaling waste in the phase, and unlike the
+others it is not an estimate.
+
+Two lesser items the trace found but did not quantify: `D126` removed the per-access linear scan but left
+`payloads.min(by:)` — still an O(n) tuple scan, now once per eviction instead of once per access, under the
+lock; and the key is an interpolated `String` (1,280 heap allocations a forward) where a struct key carrying
+install identity plus tensor and expert index would do. The second carries the `D115`/`D116` hazard exactly: a
+key coarser than the bytes it names returns another install's weights.
+
+**Also done this round:** the 20 GB install is backed up to `macbook-ab:~/Downloads/ttdc/m1-install`
+(21,701,089,793 bytes, `rsync` exit 0), so the destructive rebuild the operator authorised is now recoverable.
