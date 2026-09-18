@@ -9105,3 +9105,45 @@ validates `topK == 8` and would reduce all eight slots. So:
 one path with no test, and predicted a silent death. `D260`: the crash report named it, and the precondition said the
 design was wrong rather than the code. **Every one of those four was a thing that could only be learned by executing
 the thing** - and the method this session used for its measurements was, until the run, not applied to its own work.
+
+## D261 — The exchange works and is SLOWER: 5.172 tok/s on three nodes against 7.6 single-node
+
+The one-hot weight fix in `D260`'s follow-up made the serving path answer instead of trapping. node2's log, end to
+end:
+
+    [shard] node 1 of 3 reads 85 of 256 experts; peer contributions ARE exchanged.
+    [shard] serving peer expert requests on port 9150.
+    Paris, a city renowned for its rich history, culture, and iconic landmarks. ...
+    [stop=maxTokens prefill=5tok/1.63s new=48tok decode=9.28s tok/s=5.172]
+
+**So the exchange is real**: requests sent, answers computed by peers on their own GPUs, contributions folded into
+the phase-2 reduce, and a token stream produced with **every routed expert accounted for**. That is the first time
+the distributed engine has produced a correct-looking generation on more than one machine.
+
+**And it is 5.172 tok/s against this node's own single-node 7.61-7.77 at the same 48 tokens and 40 slots - 0.68x.**
+The distribution is not merely failing to help; it is **costing a third of the throughput**, and the reason is the
+one `D257` predicted before any of this ran:
+
+    remoteExpertValues does, PER REQUEST, eight phase-1 encodes, eight phase-2 encodes and one blocking wait -
+    because the kernels validate topK == maxStreamedExperts and the same expert is placed in all eight slots
+    with a one-hot weight. At eight routed experts and forty layers on the serving node that is 2,560 encodes and
+    320 blocking waits per token, all of it on the requesting node's critical path.
+
+**`D221` said the routed MoE is 19.4 ms of a 137.0 ms step.** The exchange is now adding 52.7 ms of step (129 -> 182
+ms at 48 tokens), so it is costing **2.7x what the entire kernel it replaces costs** - and it does so for the
+minority of experts this node does not own. **That is not a tuning problem; it is the shape of the serving path**,
+and it is why the down-only kernel is the only route rather than the clean one.
+
+**The run is still not clean.** node1 and node3 both failed at start with `Connection refused` - the bounded retry in
+`connect()` expired, so at least one peer was not listening within five seconds despite all three starting together
+and all three reaching the serving line. **node2 connected and completed, which is why there is a number at all**;
+one node of three, one run, no median, no repeats. `observation_only`, as `D258` was.
+
+**What to fix, in order, and the first two are not the kernel.**
+
+  1. **The startup race is not fixed, only widened.** Five seconds was not enough on this farm, and "not enough" is a
+     tunable that should not exist. The server should report that it is listening and the client should wait on that
+     fact, not on a duration.
+  2. **The eight-slot one-hot is wasteful by construction** - it computes the same expert eight times. Raising
+     `topKExperts` in the plan would not help; a down-only kernel is what computes it once.
+  3. **Then measure four nodes**, with loads, a median over repeats, and the generation length.
