@@ -8892,3 +8892,27 @@ it. Re-run with the output written to a file and `$?` read from the shell, the e
     says so in the trap list, in the imperative, having paid for it three times. Making it four - in a session whose
     entire method was "run the measurement rather than reason about it" - is the most useful thing this record can
     say: **the discipline has to apply to the commands that verify the work, not only to the ones that measure it.**
+
+## D254 — The second missing gate caught a second defect, and both were introduced by the work that reported the first
+
+`D253` found that this session had been verifying the fork with `swift test` alone while its CI runs five steps. Running
+the second of them - the **0-warnings release build** - found another defect in the same session's code:
+
+    sources/TinyTitanDecodeProtocol/ShardExchange.swift:195:9: warning: no calls to throwing functions
+    occur within 'try' expression [#UnnecessaryEffectMarker]
+
+and the gate's own pattern is `^[^ ]+\.(swift|metal|c|h|m|mm):[0-9]+:[0-9]+: warning:`, which matches it exactly. The
+`try` was unnecessary - the closure bounds-checks and returns, and the count mismatch is detected by the caller - so
+it is gone and the release build now emits **0 gate-matching warnings**.
+
+**Two of five gates, two defects, both in this session's own commits.** Neither was visible to `swift test`, which
+passes in each case: a missing documentation marker and a redundant effect marker are exactly the class of thing a
+compiler and a suite do not check for. **`D132` says the gate set is four documentation checks plus `swift test` and
+the Python suite; the fork's set is different, and this session applied the main repository's habits to the fork and
+called it verification.**
+
+**What has been run on the fork now, and what has not.** Build release with the warning grep: **0 warnings**. `tools/lint.sh`:
+**all checks ok**, with `converter-expert-order` reporting **SKIP** for a missing `numpy` - reported rather than
+passed. `swift test --no-parallel`: **0 failure markers**. Not yet run: the Markdown link check, and the
+ThreadSanitizer pass, which is the one most likely to say something about the exchange's blocking sends and receives
+and which is therefore the one most worth running before anything is concluded about the wire.
