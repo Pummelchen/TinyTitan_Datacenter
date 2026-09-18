@@ -806,11 +806,15 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         self.remoteResidual = context.device.makeBuffer(length: D * MemoryLayout<Float>.stride, options: .storageModeShared)!
         // Eight, not one: the kernels validate `topK == maxStreamedExperts`, so a request always has eight slots
         // and only the first is weighted. The other seven compute the same expert and contribute zero.
-        self.remoteWeight = context.device.makeBuffer(length: 8 * MemoryLayout<Float>.stride, options: .storageModeShared)!
+// FP16, NOT FLOAT. The kernel declares `device const half* routing_w`, so a Float buffer is read as
+        // pairs of halfs: 1.0f is 0x3F800000, which is 0.0 then 1.875. The weights were therefore
+        // [0.0, 1.875, 0, 0, ...] - the WRONG EXPERT scaled by the wrong amount - which is the NaN D268
+        // narrowed to the arithmetic. The router's own outWeights are half, and this must match them.
+        self.remoteWeight = context.device.makeBuffer(length: 8 * MemoryLayout<Float16>.stride, options: .storageModeShared)!
         // The weight is 1.0 and the residual is zero because the REQUESTER owns the router's decision and applies
         // the weight (D168). A peer that applied it too would be counted twice, silently.
-        let weights = self.remoteWeight.contents().bindMemory(to: Float.self, capacity: 8)
-        for slot in 0..<8 { weights[slot] = slot == 0 ? 1.0 : 0.0 }
+        let weights = self.remoteWeight.contents().bindMemory(to: Float16.self, capacity: 8)
+        for slot in 0..<8 { weights[slot] = slot == 0 ? Float16(1) : Float16(0) }
 
         // ZERO THE SCRATCH. `remoteResidual` was zeroed and these two were not, and the phase-1 kernel can return
         // WITHOUT WRITING `acts`: `if (!moe_io_ready(io_status)) return;` in the Metal source (D267). A scratch
