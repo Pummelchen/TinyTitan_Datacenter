@@ -10343,3 +10343,45 @@ and what INT8 does to the trace digest - prefill feeds decode, the gates assert 
 gate to renegotiate with the measurement that forces it rather than to work around.
 
 **Recorded in `docs/distribution-design.md` as section 8b.**
+
+## D294 — The affinity partition helps, but the groups are unbalanced; and routing has NO cross-layer correlation
+
+`D292` found the co-occurrence structure (mean lift 1.941, max 305x) and `D294`'s two questions were whether a
+partition built from it concentrates a token's eight experts, and whether layers predict each other. **Both are
+answered, and the first answer is qualified.**
+
+**Placement.** Per layer, 256 experts into four groups, measuring the mean number of groups a token's eight experts
+touch - lower is better, random ~3.6, perfect concentration 1.0:
+
+| layer | marginal-greedy | **affinity (k-means on co-occurrence)** | random |
+| --- | --- | --- | --- |
+| 0 | 3.14 | **2.11** | 3.54 |
+| 24 | 2.95 | **2.17** | 3.67 |
+| 39 | 2.80 | **1.76** | 3.69 |
+| **mean** | **2.89** | **2.19** | **3.63** |
+
+**So an affinity partition is worth 24% fewer groups than a marginal-greedy one and 40% fewer than random - and it
+is not the 1.5-2x `D286` hoped for.** Even at 2.19 of four, a token still touches roughly **two peers a layer**,
+which across forty layers is the serving cost `D278` measured at 2.95 ms a request and 61% of a serving node's
+token. A 24% cut in groups is a **~1.2-1.3x on serving, not a route to 21.**
+
+**And the qualification matters more than the result: the affinity groups are badly unbalanced** - sizes of
+`[90, 87, 65, 14]`, `[130, 82, 43, 1]`, `[168, 68, 12, 8]`. **An unbalanced partition concentrates experts partly
+by putting most of them in one group**, which is not available to a real placement, where the four nodes must hold
+comparable memory. **So 2.19 is an upper bound on the achievable concentration, not a figure a deployment could
+use**, and the fair test - the same k-means with a balance constraint - **has not been run.**
+
+**Cross-layer correlation is zero, and it is a clean negative result:**
+
+    adjacent layers (L, L+1):   mean overlap 0.253   vs chance 0.250   = 1.01x
+    20 layers apart:            mean overlap 0.235   vs chance 0.250   = 0.94x
+
+**A layer's routing says nothing about the next layer's**, which retires `D286` section 8's third analysis item -
+"if it does, the unit of placement is a layer band rather than a single layer". **It does not, so the unit is a
+single layer**, and there is no cross-layer prefetch to exploit. It also independently supports `D291`'s measured
+68% per-layer cache hit: per-layer caches work well precisely because the layers share no structure to reuse.
+
+**What this leaves.** The operator's affinity idea is **real but small**: a fifth to a quarter off the serving
+cost, and less than that once the partition is balanced. **It is not a route to 21 tok/s** - the target needs 2.8x
+and this offers ~1.25x on one term of it. **Design A remains the recommendation**, and it is unaffected: it
+partitions by layer, so it needs no expert placement at all.
