@@ -4316,3 +4316,37 @@ single-node 35B number is already known to be 7 tok/s on identical hardware.
 **Order, unchanged from `D135`:** build (done) → a running single-node baseline on a model that fits → a TCP
 transport beside `DecodeUnixSocket` speaking the same `DecodeFrameCodec` frames → the shard plan as data,
 lifted from `D20` → measure across node1-4 toward 21+ tok/s.
+
+## D137 — The 70 GB download is already on disk, and it is exactly the source TinyTitan converts
+
+`D136` named disk as the blocker: TinyTitan's `--help` says every install is built from the model's own bf16
+release, *"one ~70 GB download"* for a 35B MoE, against **8.1 GB** free on this node. That would have been a
+hard stop. It is not one:
+
+**`.build/hf-cache/models--Qwen--Qwen3.6-35B-A3B` is 67 GB and is precisely the source the fork's `qwen36` key
+converts from** (`convert_qwen35moe` = `tools/prepare_agentworld.py --model qwen36`, "Qwen 3.6 35B-A3B"). This
+repository has been holding that checkpoint for its own install all along, and the two projects happen to want
+the same weights. So the download is unnecessary and the blocker reduces to **output space for the install**.
+
+What that leaves, in order:
+
+| step | space |
+| --- | --- |
+| free at the time of writing | 8.1 GB |
+| the 20 GB install, **verified backed up** on `macbook-ab` (20 GB, `install.json` present) | **+20 GB** |
+| available for a TinyTitan install | **~28 GB** |
+| a 4-bit `qwen36` install (16.875 GiB of packed experts over 40x256 plus ~1.9 GB resident) | ~20 GB |
+
+So the 4-bit `qwen36` install fits, with the hf-cache kept in place because it is the *source*. Two
+consequences worth stating plainly:
+
+- **The local install was deleted only after the backup was verified** (`BACKUP_OK`, 20 GB, with its manifest).
+  It is rebuildable from the same cache, so nothing was lost — but this repository's own engine can no longer
+  be run until it is rebuilt, which is the correct trade now that `D135` puts the deliverable in the fork.
+- **The hf-cache must not be freed.** It is 67 GB of the only copy of the source weights on this node, and both
+  projects need it. Any future "free space" step has to start from that constraint rather than discover it
+  afterwards.
+
+**The corrected plan is therefore unchanged in shape and much cheaper than `D136` assumed:** install 4-bit
+`qwen36` from the local snapshot into the fork, get a running single-node baseline, then add the LAN transport
+and the shard plan. No download is required for any of it.
