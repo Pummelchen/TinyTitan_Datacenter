@@ -10312,3 +10312,34 @@ now wrong and must be reopened**: the marginals are near-uniform, the joint is n
 whether a partition built from the **affinity graph** can concentrate a token's eight experts into one or two groups
 where the marginal-greedy split manages three. **If it can, the serving cost `D278` measured at 2.95 ms a request
 and 61% of a serving node's token comes down; if it cannot, the idea dies on the right evidence this time.**
+
+## D293 — Engine assignment settled: ANE prefills, GPU decodes, handed over sequentially
+
+The operator corrected an idea in `D286`'s follow-up and the correction is adopted. I had proposed a *heterogeneous
+layer pipeline* - layer L's routed MoE on the GPU while layer L+1's dense work runs on the Neural Engine, on the
+reasoning that two engines could divide one layer's chain across two. **That is withdrawn.** The ANE and the GPU
+**share the same unified memory**, so running both at once does not add bandwidth, it splits the same ~100 GB/s
+between them. **The design is a sequential handover: ANE prefills, then hands to the GPU for decode.**
+
+**Why the split is right, and it follows from the phases rather than from the silicon.** *Prefill is
+compute-bound* - every weight is read **once** and applied to *N* tokens, so arithmetic intensity grows with prompt
+length, and a batched matmul is what a 16-core INT8 engine is for. *Decode is bandwidth-bound* - every weight is
+read once and applied to **one** token, and no amount of compute fixes that. **The ANE is useful exactly where the
+work is compute-shaped, and useless where it is not.**
+
+**And the sequential handover is what makes the prefill read affordable.** Prefill reads the active weights once
+for the **whole prompt**, not once per token: a 1,000-token prefill reads ~566 MB, about **0.31 s at the measured
+1.8 GB/s**, with the batched matmul on top. The read amortises across the prompt, which is the case where the ANE's
+higher INT8 throughput is worth having.
+
+**What it does to the three designs: nothing.** Decode still runs on the GPU, so the throughput law is unchanged
+and **Design A's ~31 tok/s projection stands**. The ANE moves **time-to-first-token** and the prefill share of a
+request - which matters for real prompts and not for the 48-token benchmark runs this record is built on. **The
+correction removed the riskiest idea in the document and left the recommendation untouched.**
+
+**Three things are unmeasured and none is counted anywhere above:** whether the ANE beats the GPU on this model's
+actual prefill shapes; what the handover costs, since a phase change means laying weights out for the next engine;
+and what INT8 does to the trace digest - prefill feeds decode, the gates assert bit-identity (`I3`), and that is a
+gate to renegotiate with the measurement that forces it rather than to work around.
+
+**Recorded in `docs/distribution-design.md` as section 8b.**

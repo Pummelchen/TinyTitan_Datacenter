@@ -208,6 +208,48 @@ cache curve — 5.164, 6.019 and 7.075 tok/s at 1, 2 and 3 GB — is close to *l
 for weak skew. But a slot-count sweep measured a **1.78x** lever, which argues there is real
 structure to exploit. Those two readings cannot both be right.
 
+## 8b. Engine assignment — ANE for prefill, GPU for decode, handed over sequentially
+
+**The operator's direction, and it supersedes an earlier idea of mine.** I had proposed a
+*heterogeneous layer pipeline* - layer L's routed MoE on the GPU while layer L+1's dense work runs
+on the Neural Engine. **That is withdrawn.** The ANE and the GPU share the same unified memory, so
+running both at once does not add bandwidth; it splits the same ~100 GB/s between them. **The design
+is a sequential handover, not concurrency.**
+
+```
+prompt ──▶ ANE: prefill ──hand over──▶ GPU: decode ──▶ tokens
+```
+
+**Why this is the right split, and it is a property of the two phases rather than of the silicon:**
+
+- **Prefill is compute-bound.** Every weight is read **once** and applied to *N* tokens, so
+  arithmetic intensity grows with prompt length. It is a batched matmul, and it is what a 16-core
+  INT8 engine is for.
+- **Decode is bandwidth-bound.** Every weight is read once and applied to **one** token. Adding
+  compute engines to it changes nothing, which is why the ANE does not help decode.
+
+**What this means for the three designs above: nothing.** The decode throughput law is unchanged,
+because decode still runs on the GPU and still divides the same way. **The ~31 tok/s projection for
+Design A stands.** The ANE moves **time-to-first-token** and the prefill share of a request, which
+matters for real prompts and not for the 48-token benchmark runs in this record.
+
+**And the sequential handover is what makes the prefill read affordable.** Prefill reads the active
+weights **once for the whole prompt**, not once per token - so a 1,000-token prefill reads ~566 MB,
+about **0.31 s at the measured 1.8 GB/s**, and the batched matmul rides on top of that. The read is
+amortised across the prompt and the phase is compute-shaped, which is exactly the case where the
+ANE's higher INT8 throughput is worth having.
+
+**Unmeasured, and therefore not counted anywhere above:**
+
+1. **Does the ANE beat the GPU on this model's actual prefill shapes?** Core ML conversion of the
+   real dimensions, measured against the current path. The repository already pins
+   `coremltools==9.1.dev1`, so the toolchain exists.
+2. **What does the handover cost?** A phase change means the weights must be laid out for whichever
+   engine runs next, and that is a real cost that has not been measured.
+3. **What does INT8 do to the trace digest?** Prefill output feeds decode, so ANE prefill changes
+   numerics. The gates assert bit-identity (`I3`); that is a gate to renegotiate **with the
+   measurement that forces it**, not to work around.
+
 ## 9. The measurements that decide — TAKEN
 
 **All four are done, and each carries its result.**
