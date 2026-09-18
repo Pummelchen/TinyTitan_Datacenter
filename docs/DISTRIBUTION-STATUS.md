@@ -408,3 +408,32 @@ cost, and the server would then hold a thread per request.
 **Neither is chosen here, and the choice should be made deliberately**, because the wrong one produces a server that
 passes its tests and then deadlocks under a real four-node run - which is precisely the failure `D197` cost this
 repository once already.
+
+### Decided: the serve path is synchronous, and it needs no change to the server
+
+`D245`-style, the decision is made by checking rather than by choosing. The MoE path already reaches the expert
+buffers **synchronously**:
+
+    model.planRoutedExperts(layer:experts:...)   ModelExpertIO.swift:107   synchronous
+    model.routedExpertBuffers(for: plan)         ModelExpertIO.swift:165   synchronous
+    model.routedExpertResidentIDs(layer:)        ModelExpertIO.swift:190   synchronous
+
+while the async ones (`beginFetchRoutedExperts:230`, `fetchRoutedExperts:266`) are the *fallback* the path takes when
+the synchronous route has nothing. **So a serve-side `Compute` can be written entirely on the synchronous entry
+points**, which means `ShardExchangeServer.Compute` keeps its current signature, `answer(_:)` keeps its shape, and
+none of its tests change. **Option 2 of the two recorded, and it is the one that costs nothing.**
+
+**What that leaves is genuinely small.** A synchronous method on `RealForwardRunner` (which holds `model`, `moe` and
+`moeActs`): plan for the requested ids, `routedExpertBuffers(for:)`, `makeRoutedArgumentBuffer`, one
+`encodeRoutedPersistentPhase1U16Load` with the supplied activation widened from `[Float]` to the fp16 `x:` buffer,
+a down projection, and a readback.
+
+**One unknown is left and it is mechanical**: the runner holds **no command queue property** - a grep for
+`commandQueue`, `queue` or `metalQueue` finds none, and the encode helpers all receive a `commandBuffer` from their
+caller. So the serve method needs a queue, which means taking one from `context` or from `MoE`. **That is the last
+thing to look up before writing the function**, and it is a one-line question rather than a design one.
+
+**And the trap recorded earlier still stands unchanged**: the down projection must not apply the routing weight,
+because the requester applies it. A `Compute` built on `encodeRoutedPersistentPhase2Reduce` as it stands would send
+`w * value` and the requester would multiply by `w` again - silently, and invisibly to a bit-exactness contract that
+each side satisfies on its own terms.
