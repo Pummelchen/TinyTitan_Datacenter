@@ -130,6 +130,27 @@ extension Model {
         return RoutedExpertFetchPlan(layer: layer, cachePlan: cachePlan)
     }
 
+    /// Restrict every layer's routed-expert reads to the experts **this node owns**.
+    ///
+    /// This is the whole of the distributed read path's change to the model. The decode step reaches the cache
+    /// plan through `encodeDecodeRoutedMoE` → `planRoutedExperts` → `streamer.planExpertsCached` →
+    /// `makeExpertCachePlan`, so setting the filter there covers the entire layer loop without the runner
+    /// knowing a plan exists.
+    ///
+    /// Applied across **all** layers, because a node's ownership is a property of the shard plan, not of one
+    /// layer: a filter that reached some layers and not others would have a node fetch an expert it does not
+    /// own in one layer and wait for it in the next.
+    ///
+    /// `nil` restores the single-node path exactly — the filter is then absent rather than an identity, so it
+    /// is not invoked at all (`D164`).
+    public func setOwnedExpertFilter(_ filter: ((Int) -> Bool)?) {
+        streamersQueue.sync {
+            for case let streamer? in streamersBox.streamers {
+                streamer.ownedExpertFilter = filter
+            }
+        }
+    }
+
     /// Cache slot count is a per-model streaming property (the same for every
     /// layer), so it deliberately takes no layer argument.
     public func routedExpertCacheSlotCount() -> Int? {
