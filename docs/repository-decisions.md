@@ -7714,3 +7714,48 @@ being worse.
 15.4 tok/s, with 15.4 the best case** - is the number a four-node run should be compared against. The route it
 named is unchanged and unbuilt: **shard attention and the shared expert as well as the experts**, since those
 three kernels are 56.4% of the work and the plan divides none of them.
+
+## D223 — Sharding attention and the shared expert is worth it, and it brings the four-node case to 20.6 tok/s against 21
+
+`D221` and `D222` established that **56.4% of the GPU is replicated work the expert plan does not divide**, and named
+sharding attention and the shared expert as the only route. Two questions decide whether it is worth building, and
+both are answerable from measurements already in hand.
+
+**What it costs.** Attention sharding needs one all-reduce of the attention output per layer - 2048 floats, 8,192
+bytes - and the shared expert needs one more. `D208` measured a 16,584-byte round trip on the switch at **0.079 ms**,
+and at these sizes the cost is latency and not bandwidth, so:
+
+    2 all-reduces x 40 layers x 0.079 ms = 6.3 ms per token
+
+**What it buys**, from `D222`'s per-token profile:
+
+    attn_norm_qkv   22.5 ms  ->  5.6 ms at four nodes
+    shared_expert    8.0 ms  ->  2.0 ms
+    ------------------------------------------
+    replicated      37.7 ms  ->  14.8 ms    (saving 22.9 ms for 6.3 ms of wire)
+
+**It pays for itself nearly four times over**, and the four-node projection becomes:
+
+    non-GPU term does NOT divide    78.7 ms  ->  12.70 tok/s
+    divides 2x                      58.7 ms  ->  17.04 tok/s
+    divides 4x                      48.6 ms  ->  20.56 tok/s
+
+**against 10.51 / 13.31 / 15.35 without it.** So the route is real and worth roughly a third on the four-node case.
+
+**And it lands 2% short of the target.** At full division the step is **48.6 ms against the 47.6 ms that 21 tok/s
+needs** - a gap of 1.0 ms, which is smaller than the exchange's own measurement error and well inside this farm's
+run-to-run spread (`D187`). **That is a very different statement from "the ceiling is 1.0-1.1x"**: the target is
+reachable on this design *if* the non-GPU term divides, and the whole question has narrowed to that single term.
+
+**A correction to how this was first phrased.** The first pass at this arithmetic said attention sharding makes the
+requirement "divide by 4.46x instead of 2.85x", which reads as *worse* and is a misleading way to state it: the
+non-GPU term is a fixed 40.1 ms, and sharding the 22.9 ms of replicated GPU away simply leaves less headroom for it
+to hide in. **The right comparison is the one above - best case 15.35 tok/s without sharding, 20.56 with** - and on
+that comparison the route is unambiguously the right thing to build next.
+
+**What this fixes as the next step, in order:**
+
+  1. establish what the **40.1 ms non-GPU term** is made of and whether it divides - the last unmeasured quantity,
+     and the one that decides whether the target is met;
+  2. **shard attention and the shared expert** - designed here, costed here, and worth 5.2 tok/s at four nodes;
+  3. wire the two runner call sites and run four nodes, against the **20.56 tok/s** prediction.
