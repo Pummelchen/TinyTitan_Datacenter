@@ -7461,3 +7461,44 @@ exactly the shape that produced `D209`'s error - so it is recorded as a hypothes
 the direct test is named: **time a decode step with the experts already resident** (warm the cache so the miss path
 does not run) and see whether the 68 ms disappears. If it does, the read is on the critical path through the GPU's
 stall and the read path is the target. If it does not, the stall is something else and this record is wrong.
+
+## D217 — The direct test confirms it: the step tracks the read volume monotonically, so the GPU is starved by the read
+
+`D216` inferred that the third term is GPU starvation waiting on the expert read, and named the test: change the
+amount read per token and see whether the step follows. `--expert-cache-slots` does exactly that - more resident
+experts, fewer misses - and the answer is unambiguous. Node3, the reference install, 48 tokens, two runs each:
+
+| slots | tok/s | step |
+| --- | --- | --- |
+| 8 | 4.435 · 4.360 | ~227 ms |
+| 16 | 5.598 · 5.591 | ~179 ms |
+| 24 | 6.439 · 6.453 | ~155 ms |
+| 40 | 7.357 · 7.649 | ~134 ms |
+| 48 | 7.435 · 7.856 | ~130 ms |
+
+**Monotonic across a 5x range of cache size, with no plateau at 40 and no reversal at 48** - the step falls 227 ->
+130 ms as the read volume falls. The two runs at each size agree to 1-5%, which is tighter than the run-to-run
+spread this farm usually shows (`D187`), so the effect is well clear of the noise.
+
+**This is the evidence `D216` was marked as needing, and it reverses `D209`.** The term that does not divide is not
+host CPU - it is **the GPU waiting for bytes the disk has not delivered**. Three independent things now agree:
+
+  - the profile: the decode thread is **83.2% in `waitUntilCompleted`** (`D214`);
+  - the arithmetic: **68.4 ms of the step is not kernel execution** (`D216`);
+  - this test: **the step moves with the read volume across a 5x range**.
+
+**And it explains the one thing that did not fit.** `D195` measured deeper prefetch as **28% worse**, which
+"starved GPU" does not predict. But a deeper ring changes *how many* reads are outstanding, not *how many bytes*
+are read: if the limit is bytes delivered rather than requests in flight, depth is the wrong axis and the cache is
+the right one - which is what this table shows. **The two are consistent once the mechanism is bytes and not
+concurrency**, and `D196` had already measured the read as bandwidth-limited (1.94 GB/s at depth 1, 2.94 at depth
+8, scattered identical to sequential) rather than latency-limited.
+
+**What it means for the target, and it is now the same answer from three directions.** If the step is set by bytes
+of expert data reaching the GPU, then the levers are exactly: **read fewer bytes** (a bigger cache - bounded here by
+8 GB of RAM), **read them faster** (the disk, measured at 985 MB/s average on a 37% duty cycle, `D203`), or
+**have another machine read them** - which is what the four-node plan does. `D202`'s overlap arithmetic
+(20.2 tok/s with reads, device and host overlapped) and `D84`'s independent finding on the other engine that "the
+step is not expert-read-bound, so >=3x is not what an expert plan delivers on that design" are now in tension, and
+**this engine's own measurement is the one that decides**: on this runtime, the read is on the critical path, and
+dividing it four ways is worth more here than `D84` found there.
