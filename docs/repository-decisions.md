@@ -6947,3 +6947,43 @@ supply the missing compute, which needs a draft head this install does not have 
 of an instrument that could not see I/O. It closes with a three-term decomposition that sums exactly to the
 measured step, every term measured independently, every read-path hypothesis and setting closed by measurement,
 and the target expressed as two bounded changes with a measured ceiling of 23.8 tok/s.
+
+## D203 — The 985 MB/s is an average, not a rate: the read is already at its measured speed when it runs, and the target needs batching
+
+`D202` makes the last open question answerable without another instrument, and the answer removes the lever this
+session had been pointing at.
+
+**The 985 MB/s was never a slow read.** `iostat` reports a rate averaged over its window. From `D202`'s exact
+composition the disk is busy **49.4 ms of a 132.7 ms step - a 37% duty cycle** - so the *average* over the step is
+
+    95.9 MB / 132.7 ms = 723 MB/s  (and 985 MB/s measured on shorter, prefill-adjacent windows)
+
+against an **active** rate of **1,940 MB/s**, which is exactly what `D196` measured for the identical reads issued
+without gaps. **The read achieves its measured rate whenever it is running.** It is idle between layers, and no
+change to how the bytes are read can recover time the disk is not being asked to work.
+
+**So "read the misses faster" is not the lever, and `DC-137` is wrong in its corrected form too.** The rate is
+already at the measured ceiling for this access pattern; the deficit is duty cycle, and duty cycle is set by the
+serialisation, not by the reader. This is the fourth time in this goal that a rate computed from a windowed
+instrument has been mistaken for a rate - `D188`'s bytes-over-bandwidth, `D190`'s prefetch proxy, `D195`'s
+985 MB/s - and the pattern is consistent enough to be a rule: **an average over a window is a duty cycle, and a
+duty cycle is a scheduling fact, not a device fact.**
+
+**What that leaves, and it is one thing.** The step is three serialised thirds (`D202`), the reads cannot be
+issued earlier within a token because the experts are unknown until the router readback returns (`D201`), and more
+speculation is measured worse (`D197`). The only remaining source of the compute needed to hide the reads is
+**another token's work** - which is batching, and batching decode needs a draft head, and this install does not
+have one (`D187`).
+
+**So the honest conclusion of twenty-one rounds:**
+
+    to reach 21 tok/s this engine needs speculative decoding, and therefore a draft head
+
+and every other route has been measured and closed: sharding (~1.0-1.1x, `D183`), replication (sized 40x too
+small, `D179`), the read path in all its forms (`D187`, `D193`, `D196`, `D197`, `D199`, `D201`, `D203`), the head
+(6.6% of the step, `D183`), and the setting space (exhausted, `D199`).
+
+**The composition's ceiling with a draft head is measured, not hoped for:** batching supplies the compute window
+that one layer's 1.05 ms cannot, and `D202` gives the arithmetic - all three phases overlapped is **20.2 tok/s**,
+and with the read at depth 8, **23.8**. A draft head is what makes the overlap possible; it is a different project
+from this one, and it is now the *only* one the measurements point at.
