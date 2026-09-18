@@ -7839,3 +7839,51 @@ where this farm usually shows several percent of spread.
 and the explanation for why the per-layer term is 40.1 ms is open again. **This is the third round in which the
 answer has narrowed and then reopened**, and it is worth saying plainly: the measurements are sound and repeatable,
 and the *mechanism* of the largest remaining term has resisted three attempts to name it.
+
+## D226 — The engine's own layer trace names the term in one run: the IO is 49% of the layer body and does not overlap the wait
+
+`D224` inferred the 40.1 ms non-GPU term was dispatch overhead and `D225` falsified that with the command-buffer
+split. The lesson `D225` drew was to stop shape-matching and use a **direct** instrument - and the engine already
+has one. `TINYTITAN_LAYER_TRACE` prints per-layer `body_us`, `wait_us`, `io_us`, `cb1_us`, `cb2_us` and the three
+GPU segments; it produced nothing when first tried because it was never successfully run, not because it was
+broken. Node3, the reference install, 40 slots, 24 tokens, **39 layers traced**:
+
+    body_us       mean 2650.2   median 2453.0   max 5583.0
+    wait_us       mean 1148.1   median 1126.0   max 1408.0
+    io_us         mean 1287.3   median 1183.0   max 4186.0
+    cb1_us        mean   76.8   median   79.0   max   94.0
+    cb2_us        mean   24.6   median   25.0   max   53.0
+    gpu_attn_us   mean  498.0   median  497.0
+    gpu_tail_us   mean  166.7   median  163.5
+
+**The first line settles the intercept.** `body_us` at 2650 us over 40 layers is **106.0 ms per token**, against
+`D220`'s independently fitted intercept of **106.7 ms**. The intercept is not a residual - it is **the layer body**,
+and the fit was measuring it correctly all along.
+
+**And the body decomposes in the engine's own accounting, per layer:**
+
+    io     1287 us   49%      the expert read
+    wait   1148 us   43%      waiting for the GPU
+    cb1+cb2 101 us    4%      encoding
+
+**So the IO and the wait are sequential within a layer, and neither is hidden.** At 40 layers that is **51.5 ms of
+IO and 45.9 ms of waiting per token** - and `D202`'s measured 49.4 ms read agrees with the 51.5 to 4%. The prefetch
+ring that `D200` found "lands about one" is covering a single layer's misses and no more, so **every layer pays its
+own read in full and then waits for its own GPU work in full**.
+
+**This is what `D202` said at the top of the session and what five rounds of attribution failed to confirm**: nothing
+overlaps. `D202` computed that overlapping reads, device and host gives **20.2 tok/s** against 7.5 with none
+overlapped - and the layer trace now shows the two largest segments sitting end to end, 49% and 43%, with 4% of
+encoding between them.
+
+**A correction to `D204`'s "the ring lands about one" being a good sign.** It is a description, not a defence: one
+layer of lookahead against a layer whose read is 49% of its body means the read can hide at most one layer's worth,
+and there is no second layer of work to hide it behind. Overlapping the IO of layer L+1 with the wait of layer L is
+the change, and it is exactly what `TINYTITAN_PREFETCH_AHEAD=2` was supposed to do - and `D195` measured as **28%
+worse**, which is now the contradiction to chase rather than a closed question, because the layer trace says the
+opportunity is 51.5 ms of a 106 ms body.
+
+**What this does to the four-node target.** It does not change `D223`/`D224`'s arithmetic - a per-layer term still
+does not divide - but it says the per-layer term is **IO plus wait**, and the **IO does divide**: a node owning a
+quarter of the experts reads a quarter as much, so the 51.5 ms becomes ~12.9 ms and the wait that depends on it
+shrinks with it. **The term that `D224` treated as indivisible is mostly the read, and the read divides.**
