@@ -43,6 +43,15 @@ REQUIRED_PHRASES = (
 )
 
 
+# The licence and notice material any taken file must travel with (Apache-2.0 section 4). Staged before the
+# first file is taken, and **required** from here on: the check below is strictly stronger than the review it
+# replaces, which could only observe that nothing had been taken yet.
+THIRD_PARTY_MATERIAL = (
+    "third_party/TinyTitan/LICENSE",
+    "third_party/TinyTitan/NOTICE",
+)
+
+
 def source_files(root: Path):
     for directory in SOURCE_DIRS:
         base = root / directory
@@ -67,6 +76,14 @@ def check(root: Path) -> tuple[list[str], int]:
         for phrase in REQUIRED_PHRASES:
             if phrase not in text:
                 problems.append(f"{NOTICES} no longer mentions {phrase!r}")
+
+    for name in THIRD_PARTY_MATERIAL:
+        if not (root / name).exists():
+            problems.append(
+                f"{name} is missing. A file taken from the reference must travel with its licence and "
+                f"notice (Apache-2.0 s4); this repository permits taking code, so the material is required "
+                f"whether or not a file has been taken yet"
+            )
 
     for path in source_files(root):
         inspected += 1

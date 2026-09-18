@@ -3,6 +3,19 @@
 This repository's own source is **MIT** (`LICENSE`, Copyright (c) 2026 André Borchert). This file records
 the provenance review behind that, and what would change it.
 
+## TinyTitan — permission granted, material staged, no source taken yet
+
+On 2026-09-18 the operator authorised taking code from [TinyTitan](https://github.com/Pummelchen/TinyTitan)
+(Apache-2.0) into this MIT repository, and `D100` wrote down the price. The licence and notice material is now
+**staged** at `third_party/TinyTitan/` — the Apache-2.0 text and the reference's own `NOTICE`, including the
+`turbo-fieldfare` line it carries forward — so the obligation cannot be met late.
+
+The statement below ("no third-party source is included") is **still true and is still checked**: no *source*
+file has been taken. What has changed is that `tools/check_provenance.py` now additionally **requires** that
+material to be present, which is strictly stronger than the review it replaces — that review could only observe
+that nothing had been taken yet. The first file actually taken must carry a header naming the source, the
+licence and the modification, and must be listed below.
+
 ## No third-party source is included
 
 **Nothing in this repository is copied from another project.** The review on 2026-09-16 compared every

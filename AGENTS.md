@@ -242,6 +242,13 @@ attribution: `NOTICE`, the Apache-2.0 text, marks on modified files and an inver
 same commit as the first code taken**. That scaffolding is stage 0 and it is blocking; the stages after it are
 per-layer wired slot bank + `F_NOCACHE` + one `pread` per expert (needs the install re-laid-out), the MoE in two
 kernels, an int4 fused head, then the four-node distribution and a measured ~28 tok/s.
+**Stage 0 is done (`D124`).** The attribution material the first taken file must travel with is staged at
+`third_party/TinyTitan/` — the Apache-2.0 text and the reference's own `NOTICE`, including the `turbo-fieldfare`
+line it carries forward — and `tools/check_provenance.py` now **requires** both, which is strictly stronger than
+the review it replaces: that review could only observe that nothing had been taken yet. The notices file gains
+the relationship, the still-true "no third-party source is included" is kept *and still checked*, and the
+discipline for the first file taken (header naming source, licence and modification; a list entry here) is
+written down. Nothing is copied yet; the gate that guards the copying is live.
 **Then the bf16 tile turned out to be loaded one instruction per row (`D117`)** — `D110` in a different
 kernel. The head fills a 32x32 tile with one warp-wide 64-byte load **per row**, 32 instructions for 2 KB, and
 `head` measured 12 GB/s on hardware whose memory does ~100. Four bf16 per lane per load with `ushort4`: eight
