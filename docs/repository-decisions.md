@@ -8856,3 +8856,39 @@ is the entry point the request path already uses, and **its silent-failure mode 
 the existing down projection applies the routing weight, so a peer built on it would send `w * value` and the
 requester would multiply by `w` again - a wrong number the bit-exactness contract cannot catch, because each side is
 internally consistent. That is `D168`'s trap mirrored.
+
+## D253 — The fork's CI runs five gates and this session ran one; the missing one caught a real defect
+
+Every change to the fork in this session was verified with `swift test --no-parallel`. **That is one of five steps the
+fork's own CI runs**, per `.github/workflows/ci.yml`:
+
+    build release products, 0 warnings gate
+    tools/lint.sh                      <- force-cast, function length, unchecked-sendable, expert order, arch path
+    swift test --no-parallel           <- the only one this session ran
+    check Markdown links
+    swift test --no-parallel --sanitize=thread
+
+**Running the missing lint found a defect in code this session wrote and committed.** `ShardPeerSet` is
+`@unchecked Sendable` - added by this session - and the gate requires the safety argument in a comment containing the
+literal marker `unchecked-invariant:`. The class carried the argument in prose and not in the form the gate reads, so
+it failed:
+
+    NEW: sources/TinyTitanDecodeProtocol/ShardPeerSet.swift:ShardPeerSet
+    FAIL: document the invariant above it in a comment containing 'unchecked-invariant: ...'
+
+The marker is now there and the lint passes every check it can run.
+
+**And the first time it was run, its failure was invisible.** The command was `bash tools/lint.sh 2>&1 | tail -20`,
+and `$?` then reports **`tail`'s** status, which is 0. The gate had failed and the shell said success - which is
+`D132`'s trap, written in this repository's own guidance, committed again in the same session that has been quoting
+it. Re-run with the output written to a file and `$?` read from the shell, the exit status is real.
+
+**Two things follow, and the second is the one worth keeping.**
+
+  - **A gate set is not a command.** `swift test` passing says nothing about warnings, lint, links or TSan, and this
+    session treated it as "the gates" for a hundred rounds on the fork. The same mistake is recorded in `D132` for the
+    main repository and was made again here, in the other one.
+  - **A pipe between a command and its exit status is a claim that has not been checked.** This repository's guidance
+    says so in the trap list, in the imperative, having paid for it three times. Making it four - in a session whose
+    entire method was "run the measurement rather than reason about it" - is the most useful thing this record can
+    say: **the discipline has to apply to the commands that verify the work, not only to the ones that measure it.**
