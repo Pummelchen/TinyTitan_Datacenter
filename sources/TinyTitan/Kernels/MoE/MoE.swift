@@ -88,6 +88,12 @@ final class MoE {
     var supportsEarlyHits: Bool { phase1PoolU16SpecializedPSO != nil }
     private let phase2ReduceK8PSO: MTLComputePipelineState
     private let phase2ReduceK8SpecializedPSO: MTLComputePipelineState
+    /// The sharded variant of the k8 reduce, which adds the peers' partials. A SEPARATE kernel from
+    /// the one above, so the single-node path is provably the kernel it always was: `remote` on the
+    /// original relied on an unbound Metal buffer being null, which Metal does not promise, and
+    /// MoEFusedFFNTests.productionRoutedPipelineAndHitSplitMatchReference caught it.
+    private let phase2ReduceK8RemotePSO: MTLComputePipelineState
+    private let phase2ReduceK8RemoteSpecializedPSO: MTLComputePipelineState
     /// Used when top-k is not 8; the k8 kernels stay the golden path.
     private let phase2ReduceKNPSO: MTLComputePipelineState
     private let routedArgEncoder: MTLArgumentEncoder
@@ -205,6 +211,12 @@ final class MoE {
         self.phase2ReduceK8SpecializedPSO = try context.pipeline(
             phase2Name,
             constants: moeConstants)
+
+        // Only dispatched when a caller supplies peer partials, which no single-node run does.
+        self.phase2ReduceK8RemotePSO = try context.pipeline(
+            "moe_phase2_down_reduce_k8_remote", constants: weightConstants + ioConstants)
+        self.phase2ReduceK8RemoteSpecializedPSO = try context.pipeline(
+            "moe_phase2_down_reduce_k8_remote", constants: moeConstants)
 
         guard let logits = context.device.makeBuffer(
             length: Int(Self.maxRouterExperts) * MemoryLayout<Float>.stride,
@@ -553,7 +565,10 @@ final class MoE {
         f: UInt32,
         topK: UInt32,
         ioStatus: MTLBuffer? = nil,
-        ioStatusOffset: Int = 0
+        ioStatusOffset: Int = 0,
+        // The peers' partials, [d][8] fp32, zero where a peer owns nothing. `nil` on every single-node run,
+        // and then the ORIGINAL kernel is dispatched - not this one with a null pointer.
+        remotePartials: MTLBuffer? = nil
     ) throws {
         validate(routedBlobs: routedBlobs, topK: topK)
         var dimension = d
@@ -563,9 +578,13 @@ final class MoE {
         }
         encoder.setComputePipelineState(
             maxStreamedExperts == 8
-                ? (useRealDecodeConstants(d: d, f: f)
-                    ? phase2ReduceK8SpecializedPSO
-                    : phase2ReduceK8PSO)
+                ? (remotePartials != nil
+                    ? (useRealDecodeConstants(d: d, f: f)
+                        ? phase2ReduceK8RemoteSpecializedPSO
+                        : phase2ReduceK8RemotePSO)
+                    : (useRealDecodeConstants(d: d, f: f)
+                        ? phase2ReduceK8SpecializedPSO
+                        : phase2ReduceK8PSO))
                 : phase2ReduceKNPSO)
         encoder.setBuffer(routedArgBuffer, offset: 0, index: 0)
         for buffer in routedBlobs { encoder.useResource(buffer, usage: .read) }
@@ -580,6 +599,7 @@ final class MoE {
         encoder.setBuffer(ioStatus ?? alwaysReadyIOStatus,
                           offset: ioStatus == nil ? 0 : ioStatusOffset,
                           index: 8)
+        if let remotePartials { encoder.setBuffer(remotePartials, offset: 0, index: 9) }
         // One simdgroup per expert slot. The kn kernel has no sg >= k guard
         // precisely because the launch width says k, so this must stay in
         // step with it: 32 lanes x k.
