@@ -22,6 +22,11 @@ public struct Args: Equatable, Sendable {
     public var topPWasSet: Bool = false
     public var repetitionPenalty: Float
     public var seed: UInt64?
+    /// Sharded-run configuration, all three or none. Absent on every single-node run, so the engine's default
+    /// behaviour is untouched and the ownership filter stays unset rather than set to an identity (`D164`).
+    public var shardPlanPath: String?
+    public var shardNode: Int?
+    public var shardPeersSpec: String?
     public var stops: [String]
     public var quiet: Bool
     public var concise: Bool
@@ -50,6 +55,9 @@ public struct Args: Equatable, Sendable {
                 topPWasSet: Bool = false,
                 repetitionPenalty: Float = 1.0,
                 seed: UInt64? = nil,
+                shardPlanPath: String? = nil,
+                shardNode: Int? = nil,
+                shardPeersSpec: String? = nil,
                 stops: [String] = [],
                 quiet: Bool = false,
                 concise: Bool = false,
@@ -78,6 +86,9 @@ public struct Args: Equatable, Sendable {
         self.kvCachePrecision = kvCachePrecision
         self.ropeScalingMode = ropeScalingMode
         self.seed = seed
+        self.shardPlanPath = shardPlanPath
+        self.shardNode = shardNode
+        self.shardPeersSpec = shardPeersSpec
         self.stops = stops
         self.quiet = quiet
         self.concise = concise
@@ -196,6 +207,9 @@ extension Args {
         var topP: Float? = GenerationDefaults.topP
         var repetitionPenalty: Float = 1.0
         var seed: UInt64?
+        var shardPlanPath: String?
+        var shardNode: Int?
+        var shardPeersSpec: String?
         var stops: [String] = []
         var quiet = false
         var concise = false
@@ -231,6 +245,16 @@ extension Args {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
                 reasoningEffort = parsed
+            case "--shard-plan":
+                shardPlanPath = try takeValue(argv, &index, flag: flag)
+            case "--shard-node":
+                let value = try takeValue(argv, &index, flag: flag)
+                guard let parsed = Int(value), parsed >= 0 else {
+                    throw ArgsError.invalidValue(flag: flag, value: value)
+                }
+                shardNode = parsed
+            case "--shard-peers":
+                shardPeersSpec = try takeValue(argv, &index, flag: flag)
             case "--model":
                 model = try takeValue(argv, &index, flag: flag)
             case "--prompt":
@@ -373,6 +397,9 @@ extension Args {
                     topPWasSet: topPWasSet,
                     repetitionPenalty: repetitionPenalty,
                     seed: seed,
+                    shardPlanPath: shardPlanPath,
+                    shardNode: shardNode,
+                    shardPeersSpec: shardPeersSpec,
                     stops: stops,
                     quiet: quiet,
                     concise: concise,
