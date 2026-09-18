@@ -56,12 +56,11 @@ public final class ShardExchangeServer: @unchecked Sendable {
                 // The protocol has no error frame, so the honest thing is to close this connection and keep
                 // serving. The requester sees a closed channel and falls back to single-node for that layer, which
                 // is the same behaviour a missing peer gets.
-                refusedRequests += 1
-                lastRefusal = "\(error)"
-                accepted.input.closeFile()
-                if accepted.output.fileDescriptor != accepted.input.fileDescriptor {
-                    accepted.output.closeFile()
-                }
+                // NO CLOSE HERE. `answer(_:)` owns its handles and closes them in its own `defer`, so closing
+                // them again from the caller raised an NSException out of FileHandle - terminating the process
+                // rather than returning an error, which took node2 and node3 with it and crashed the test suite.
+                // That is the same double-close this session hit at round 9; the fix is to let the owner close.
+                recordRefusal(error)
             }
         }
     }
