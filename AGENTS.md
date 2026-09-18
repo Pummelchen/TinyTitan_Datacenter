@@ -16,7 +16,7 @@ A distributed inference engine for large MoE language models on a cluster of Mac
 minis and Mac Studios, over LAN/SFP/QSFP and Thunderbolt. The Swift engine under
 `sources/` **builds and passes its tests on Swift 6.4 / Xcode 27**, the toolchain
 `swift-tools-version:6.4` requires: `swift build` clean, `swift test --no-parallel`
-at **259 tests, 0 skipped, 0 failures** — the Metal kernel tests run on the node's GPU
+at **266 tests, 0 skipped, 0 failures** — the Metal kernel tests run on the node's GPU
 since `D34`. **M0, M1 and M2 are done and their gates have passed** — M0 on `Qwen/Qwen3.5-2B`
 (three frozen prompts, **40,683,520 bytes identical** to the contract, every discrete
 decision matching: `docs/m0-gate.md`), and **M1's gate passes in both of its forms** — the **checkpoint**
@@ -145,6 +145,23 @@ So the arithmetic is not the route to 7 tok/s: `mix.read` is the **disk read**, 
 The grid also found a boundary that had been assumed away — **an Apple GPU flushes a denormal product to zero
 where the CPU keeps it**, for this kernel and for the `MetalMatmul` already in the tree, and no math mode changes
 it — now pinned by a named test rather than left implicit.
+**Then the head, and the losses that bound the rest (`D109`).** A fresh profile put the step at **1769 ms**:
+`mix.read` **805**, `load` **361**, `head` **255**, `attn.core` **202**. Three ideas lost and are recorded as
+losses: the GPU unpack for the dense `tensor(named:)` path cost **`load` 353 → 534 ms**; the fused int4
+**expert** path is a wash (2.29 s/step with no slab cache, **1.575** with a 1 GB one against a 1.69 s control —
+the 640 per-slab dispatch-and-wait pairs eat what the kernel saves), so it stays off by default as the
+foundation for batching; and the first head-residency attempt took the node into `D106`'s swap failure twice —
+once because 31 concurrent head blocks each read the whole 1.017 GB, and once because
+`UncachedFile.readData` was `Data(try read(...))`, building **every** read twice (2.03 GB transient for one
+1.017 GB block). Both are fixed. **The win kept is the LM head on the GPU from its stored bf16**
+(`MetalBf16Matmul`): `head` **255 → 118 ms**, step **1.718 → 1.580 s** in an alternated A/B, digest unchanged.
+The default configuration is now **1.567 s/step, 0.638 tok/s, peak RSS 3.10 GB** (from 0.565 at the top of the
+round), **266 tests, 0 failures**. The study of the sister project says what is left and it is not arithmetic:
+its per-token traffic is **~1.5-1.8 GB of dense plus ~0.17 GB of experts, all packed and never widened to
+fp32**, its head is **int4 at 286 MB**, and its 141 ms is ~60 ms GPU + **~55 ms host blocked on the routing
+readback and the miss reads** + ~26 ms encode, with per-layer slot caches and layer L's MoE overlapped with
+layer L+1's attention. The measured order here is **batch the experts per layer into one dispatch**, then
+**residency sized from one budget**, then the overlap.
 
 ## Scope of this checkout
 
@@ -280,7 +297,7 @@ python3 tools/run_all_gates.py
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 259 --swift-skipped 0 --python-tests 427
+python3 tools/check_status_claims.py --swift-tests 266 --swift-skipped 0 --python-tests 427
 
 # The provenance position: no copied code, and no NOTICE to carry
 python3 tools/check_provenance.py
@@ -450,7 +467,7 @@ any failure.
   evidenced.** The first revision said there was no source code; the second said the
   engine runs; the third said it is "untested and does not run". The first two were
   wrong, and so is the third as written — on the toolchain the manifest requires, the
-  build is clean and **259 Swift tests pass**, while on the `macos-26` CI image (Xcode
+  build is clean and **266 Swift tests pass**, while on the `macos-26` CI image (Xcode
   26.x, below the 6.4 floor) the manifest does not even parse. **Any status claim must
   name the toolchain**, because that is the whole difference between "does not build"
   and "builds and passes". Point at a command and its output, never at an adjective.

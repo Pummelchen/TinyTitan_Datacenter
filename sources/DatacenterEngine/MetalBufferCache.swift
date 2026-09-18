@@ -25,13 +25,24 @@ final class MetalBufferCache: @unchecked Sendable {
     }
 
     /// Runs `body` with one buffer per requested size, each at least that long, growing as needed.
+    ///
+    /// **Per slot, and grow-only** (`D109`). The first version replaced *every* buffer the moment one slot
+    /// was too small, and the expert path alternates a 1.2 MB gate-up slab with a 0.6 MB down slab: slot 0
+    /// grew and shrank on alternate fetches, so the whole set — including the 8 MB fp32 output buffer —
+    /// was reallocated with it, ~320 times in a decode step. A slot now keeps the largest size it has ever
+    /// been asked for, which is what makes this a cache rather than an allocator. Reuse is still safe for
+    /// the same reason it always was: the lock is held across the dispatch and its completion.
     func withBuffers<T>(
         _ sizes: [Int], device: any MTLDevice, _ body: ([any MTLBuffer]) throws -> T
     ) throws -> T {
         lock.lock()
         defer { lock.unlock() }
-        if cached.count != sizes.count || zip(cached, sizes).contains(where: { $0.length < max($1, 1) }) {
+        if cached.count != sizes.count {
             cached = try sizes.map { try Self.makeBuffer(device, $0) }
+        } else {
+            for (index, size) in sizes.enumerated() where cached[index].length < max(size, 1) {
+                cached[index] = try Self.makeBuffer(device, size)
+            }
         }
         return try body(cached)
     }

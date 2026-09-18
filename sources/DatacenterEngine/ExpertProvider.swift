@@ -40,11 +40,28 @@ public protocol ExpertWeightProvider {
     /// the only way to stop paying for them one at a time. A preload that fails is not an error — the call that
     /// follows raises it, which is where the failure belongs.
     func preload(experts: [Int], shape: MixtureShape)
+    /// The gate-up projection's **product**, from the stored int4 form, when this provider can compute it
+    /// without materialising the weights (`D109`).
+    ///
+    /// `nil` means "not this provider", and the caller falls back to `gateUp` followed by the contract matmul.
+    /// The default is `nil`, so `ArrayExpertProvider`, the counting wrapper and every test keep the old path
+    /// with no code of their own.
+    func gateUpProduct(x: [Float], rows: Int, expert: Int, shape: MixtureShape) throws -> [Float]?
+    /// The down projection's product, on the same terms as `gateUpProduct`.
+    func downProduct(x: [Float], rows: Int, expert: Int, shape: MixtureShape) throws -> [Float]?
+    /// Read these experts' **stored** forms ahead of the loop, the packed counterpart of `preload` (`D109`).
+    ///
+    /// `preload` warms a bank of fp32 slices; when the fused path is on there are no fp32 slices to warm, so
+    /// the fan-out has to warm the packed slab cache instead or the reads fall back to one at a time.
+    func preloadPacked(experts: [Int], shape: MixtureShape)
 }
 
 extension ExpertWeightProvider {
     public func serves(_ expert: Int) -> Bool { true }
     public func preload(experts: [Int], shape: MixtureShape) {}
+    public func gateUpProduct(x: [Float], rows: Int, expert: Int, shape: MixtureShape) throws -> [Float]? { nil }
+    public func downProduct(x: [Float], rows: Int, expert: Int, shape: MixtureShape) throws -> [Float]? { nil }
+    public func preloadPacked(experts: [Int], shape: MixtureShape) {}
 }
 
 /// Raised when a source hands back a width the mixture's geometry does not agree with — a
@@ -106,6 +123,52 @@ public struct StackedExpertProvider: ExpertWeightProvider {
             )
         }
         return values
+    }
+
+    /// **The fused path** (`D109`): the slab goes to the device kernel, which dequantises as it multiplies.
+    ///
+    /// `nil` is the answer whenever the device cannot be used — no Metal, the switch off — and also when the
+    /// source has no stored form, which is what keeps this honest for a checkpoint. The output width is
+    /// checked exactly as `gateUp`/`down` check the input width, and for the same reason: a misread stack
+    /// would otherwise be multiplied as if it were the right matrix.
+    public func gateUpProduct(x: [Float], rows: Int, expert: Int, shape: MixtureShape) throws -> [Float]? {
+        try product(x: x, rows: rows, expert: expert, name: gateUpName, out: 2 * shape.intermediate)
+    }
+
+    public func downProduct(x: [Float], rows: Int, expert: Int, shape: MixtureShape) throws -> [Float]? {
+        try product(x: x, rows: rows, expert: expert, name: downName, out: shape.hiddenSize)
+    }
+
+    /// `D101`'s fan-out, against the **packed** slabs rather than a bank of `[Float]`.
+    ///
+    /// The budget check is load-bearing and was learned the hard way: with `SHARD_SLAB_CACHE_MB=0` there is
+    /// nowhere to keep what this reads, so the loop reads every slab a **second** time — the fused arm
+    /// measured 14.86 GB of reads against the control's 8.46 GB, which is the whole of its regression. A
+    /// preload with no cache is not a hidden read, it is a duplicated one.
+    public func preloadPacked(experts: [Int], shape: MixtureShape) {
+        guard MetalInt4Matmul.enabled, MetalInt4Matmul.isAvailable,
+            source.packedCacheBudget > 0, !experts.isEmpty
+        else { return }
+        nonisolated(unsafe) let target = self
+        DispatchQueue.concurrentPerform(iterations: experts.count) { index in
+            let range = experts[index]..<(experts[index] + 1)
+            _ = try? target.source.packedRows(named: target.gateUpName, range: range)
+            _ = try? target.source.packedRows(named: target.downName, range: range)
+        }
+    }
+
+    private func product(x: [Float], rows: Int, expert: Int, name: String, out: Int) throws -> [Float]? {
+        guard MetalInt4Matmul.enabled, MetalInt4Matmul.isAvailable else { return nil }
+        guard let packed = try source.packedRows(named: name, range: expert..<(expert + 1)) else { return nil }
+        let product = try MetalInt4Matmul.matmul(
+            payload: packed.payload, entry: packed.entry, rowCount: packed.payloadRows, x: x, rows: rows
+        )
+        guard product.count == rows * out else {
+            throw ExpertProviderError.unexpectedWidth(
+                tensor: name, expert: expert, got: product.count, expected: rows * out
+            )
+        }
+        return product
     }
 }
 
@@ -294,16 +357,49 @@ public final class ExpertSlotCache: ExpertWeightProvider {
     /// Wait for the background prefetch, so a test can assert what it warmed instead of sleeping on it.
     func waitForPrefetch() { Self.prefetchQueue.sync {} }
 
+    /// The fused products, on their way past the bank.
+    ///
+    /// There is nothing for the bank to hold here: the whole point is that the fp32 slice never exists. The
+    /// counters are kept honest rather than skipped — a fused fetch **is** a request and a miss (it went to
+    /// the source), and the elements read are the weights the kernel walked, computed from the geometry
+    /// exactly as the fp32 path counts them — so the gate's hit-rate and traffic numbers mean the same thing
+    /// in both arms.
+    public func gateUpProduct(x: [Float], rows: Int, expert: Int, shape: MixtureShape) throws -> [Float]? {
+        guard let product = try upstream.gateUpProduct(x: x, rows: rows, expert: expert, shape: shape) else {
+            return nil
+        }
+        countFused(elements: 2 * shape.intermediate * shape.hiddenSize)
+        return product
+    }
+
+    public func downProduct(x: [Float], rows: Int, expert: Int, shape: MixtureShape) throws -> [Float]? {
+        guard let product = try upstream.downProduct(x: x, rows: rows, expert: expert, shape: shape) else {
+            return nil
+        }
+        countFused(elements: shape.hiddenSize * shape.intermediate)
+        return product
+    }
+
+    private func countFused(elements: Int) {
+        metrics.requests += 1
+        metrics.misses += 1
+        addElementsRead(elements)
+    }
+
     /// Fetch this layer's chosen experts ahead of the loop that asks for them (`DC-118`).
     ///
     /// Two conditions, and both are load-bearing. The bank must have a budget, because otherwise the
     /// preloaded bytes are discarded and the loop reads them **again** — twice the work rather than half the
     /// latency. And there must be more than one thread, because the point is the fan-out.
     ///
-    /// The warm reads deliberately **do not count as requests**: the request is the loop's, and the loop will
-    /// find each slice resident and count a *hit*. Counting the warm-up too would double every request and
-    /// every miss, and `ForwardResult.expertMetrics` is summed over layers by callers.
+    /// Under the fused path there is no bank to warm, so the fan-out warms the **packed slab cache** instead
+    /// (`D109`) — the same threads, the same hint, a different destination, and without it the reads would
+    /// fall back to one at a time.
     public func preload(experts: [Int], shape: MixtureShape) {
+        if MetalInt4Matmul.enabled {
+            upstream.preloadPacked(experts: experts.filter { upstream.serves($0) }, shape: shape)
+            return
+        }
         guard let bank, bank.budgetBytes > 0, DecodeThreads.count > 1 else { return }
         let wanted = experts.filter { upstream.serves($0) }
         guard wanted.count > 1 else { return }

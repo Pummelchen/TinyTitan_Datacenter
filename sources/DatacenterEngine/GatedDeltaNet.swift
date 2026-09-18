@@ -423,8 +423,12 @@ public enum GatedDeltaNet {
 
         // The window, oldest first, then the new projection: the reference's `torch.cat`.
         var convolved = [Float](repeating: 0, count: convDim)
+        // **One buffer for every channel** (`D109`). This was allocated *inside* the loop below — 8,192
+        // times per layer and 245,760 times in a decode step — for a four-element array that is fully
+        // overwritten before it is read, so the allocator was paying for work the loop does not need.
+        // The values cannot change: every one of `0..<kernel` is written each iteration.
+        var samples = [Float](repeating: 0, count: kernel)
         for channel in 0..<convDim {
-            var samples = [Float](repeating: 0, count: kernel)
             for index in 0..<window { samples[index] = state.conv[channel * window + index] }
             samples[window] = mixed[channel]
             var total: Float = 0

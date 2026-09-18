@@ -82,9 +82,40 @@ public final class UncachedFile {
         return buffer
     }
 
-    /// The same bytes, as `Data`, for the decoders that take one.
+    /// The same bytes, as `Data`, for the decoders that take one — **allocated once** (`D109`).
+    ///
+    /// This was `Data(try read(...))`, which built an `[UInt8]` of the payload and then copied it into a
+    /// `Data`: every read existed twice at its peak. For the LM head that is **2.03 GB of transient memory
+    /// for a 1.017 GB block**, and the node paid for it in swap — which is disk — so holding the head in
+    /// memory made things worse rather than better. `Data(count:)` reserves the storage once and `pread`
+    /// fills it in place. The zero-fill is a pass over memory and is still cheaper than a second allocation
+    /// of the whole payload at the moment memory is tightest.
     public func readData(offset: Int, byteCount: Int) throws -> Data {
-        Data(try read(offset: offset, byteCount: byteCount))
+        guard offset >= 0, byteCount >= 0, offset + byteCount <= self.byteCount else {
+            throw Error.tooShort(expected: offset + byteCount, got: self.byteCount)
+        }
+        var data = Data(count: byteCount)
+        var failure: Int32 = 0
+        let filled = data.withUnsafeMutableBytes { raw -> Int in
+            var filled = 0
+            while filled < byteCount {
+                let got = pread(
+                    descriptor, raw.baseAddress!.advanced(by: filled), byteCount - filled,
+                    off_t(offset + filled)
+                )
+                if got < 0 {
+                    if errno == EINTR { continue }
+                    failure = errno
+                    return -1
+                }
+                if got == 0 { return filled }
+                filled += got
+            }
+            return filled
+        }
+        if filled < 0 { throw Error.readFailed(offset: offset, errno: failure) }
+        if filled < byteCount { throw Error.tooShort(expected: byteCount, got: filled) }
+        return data
     }
 
     /// A digest over the whole file, read in bounded windows so the caller's memory does not

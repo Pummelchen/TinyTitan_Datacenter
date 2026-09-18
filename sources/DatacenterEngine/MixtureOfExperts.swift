@@ -159,9 +159,6 @@ public enum MixtureOfExperts {
         provider.preload(experts: chosen, shape: shape)
         for expert in chosen {
             let assignments = pairs[expert]!
-            let gateUp = try provider.gateUp(expert: expert, shape: shape)
-            let down = try provider.down(expert: expert, shape: shape)
-            profiler?.mark("mix.read")
             var current = [Float](repeating: 0, count: assignments.count * hiddenSize)
             for (position, assignment) in assignments.enumerated() {
                 for index in 0..<hiddenSize {
@@ -169,9 +166,24 @@ public enum MixtureOfExperts {
                 }
             }
             profiler?.mark("mix.gather")
-            let fused = MetalMatmul.ordered(
-                x: current, w: gateUp, rows: assignments.count, k: hiddenSize, out: 2 * intermediate
-            )
+            // **The stored form first** (`D109`). The provider answers `nil` when it has no packed form, when
+            // the device is off or when the switch is off, and the fallback is the previous sequence — fetch
+            // the projection, then the contract matmul — so a checkpoint, the tiny fixtures and an A/B control
+            // all take exactly the path they took before. The phase marks move with the work: a fused product
+            // reads *and* multiplies, so its read is booked to `mix.read` and `mix.gateup` is nearly empty.
+            let gateUpProduct: [Float]
+            if let stored = try provider.gateUpProduct(
+                x: current, rows: assignments.count, expert: expert, shape: shape
+            ) {
+                gateUpProduct = stored
+            } else {
+                let gateUp = try provider.gateUp(expert: expert, shape: shape)
+                gateUpProduct = MetalMatmul.ordered(
+                    x: current, w: gateUp, rows: assignments.count, k: hiddenSize, out: 2 * intermediate
+                )
+            }
+            profiler?.mark("mix.read")
+            let fused = gateUpProduct
             profiler?.mark("mix.gateup")
             var activated = [Float](repeating: 0, count: assignments.count * intermediate)
             for row in 0..<assignments.count {
@@ -182,9 +194,17 @@ public enum MixtureOfExperts {
                 }
             }
             profiler?.mark("mix.act")
-            let projected = MetalMatmul.ordered(
-                x: activated, w: down, rows: assignments.count, k: intermediate, out: hiddenSize
-            )
+            let projected: [Float]
+            if let stored = try provider.downProduct(
+                x: activated, rows: assignments.count, expert: expert, shape: shape
+            ) {
+                projected = stored
+            } else {
+                let down = try provider.down(expert: expert, shape: shape)
+                projected = MetalMatmul.ordered(
+                    x: activated, w: down, rows: assignments.count, k: intermediate, out: hiddenSize
+                )
+            }
             profiler?.mark("mix.down")
             for (position, assignment) in assignments.enumerated() {
                 let base = position * hiddenSize

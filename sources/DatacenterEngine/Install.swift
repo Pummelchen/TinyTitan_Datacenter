@@ -8,6 +8,46 @@ import Foundation
 /// There are two implementations — a checkpoint's `safetensors` and a quantized install —
 /// and the forward pass is written against this rather than against either, so the same
 /// arithmetic runs on both and a difference between them is the quantization's.
+/// A leading-axis row range of an int4 tensor **exactly as stored**, for a consumer that decodes it
+/// itself — the device kernels above all.
+///
+/// `payload` is the layout `InstallFile.dequantizeInt4` takes: every row's codes, then every row's
+/// scales, then every row's zeros. `payloadRows` is the number of **payload** rows in the range, which is
+/// *not* `range.count` for a stacked expert tensor — one expert of `[256, 1024, 2048]` is 1,024 payload
+/// rows, and confusing the two is what `rows`' own comment calls out as a bug that still looks like a
+/// tensor.
+public struct PackedInt4Rows: Sendable {
+    public let payload: Data
+    public let entry: InstallFile.Entry
+    public let payloadRows: Int
+
+    public init(payload: Data, entry: InstallFile.Entry, payloadRows: Int) {
+        self.payload = payload
+        self.entry = entry
+        self.payloadRows = payloadRows
+    }
+}
+
+/// A row range of a **non-int4** tensor, exactly as stored — bf16, above all, which is how the LM head and
+/// the smaller dense tensors are held (`D109`).
+///
+/// `data` is a slice of the source's cached whole-tensor payload, so fetching many ranges of one tensor
+/// costs one read and no copies. `dtype` and `width` travel with it because a consumer has to know how to
+/// widen the row and how many elements a row holds.
+public struct StoredRows: Sendable {
+    public let data: Data
+    public let dtype: String
+    public let rowCount: Int
+    public let width: Int
+
+    public init(data: Data, dtype: String, rowCount: Int, width: Int) {
+        self.data = data
+        self.dtype = dtype
+        self.rowCount = rowCount
+        self.width = width
+    }
+}
+
 public protocol WeightSource {
     /// A whole tensor, in fp32.
     func tensor(named name: String) throws -> [Float]
@@ -18,6 +58,22 @@ public protocol WeightSource {
     /// keeping: the routed expert slabs. Defaults to the ordinary read, which is what an install
     /// already does — its payload is read uncached by construction.
     func rowsStreaming(named name: String, range: Range<Int>) throws -> [Float]
+    /// The **stored** bytes of a leading-axis row range, when this source can hand them over without
+    /// decoding them (`D108`).
+    ///
+    /// A quantized source can, and that is the point: `dequantizeInt4` materialises four bytes per weight
+    /// where the file holds half a byte, and a device kernel consumes the packed form directly. The
+    /// default is `nil`, so every source keeps working and a caller falls back to `rows` — a checkpoint
+    /// has no packed form at all.
+    func packedRows(named name: String, range: Range<Int>) throws -> PackedInt4Rows?
+    /// The **stored** bytes of a row range for a dtype that is not int4 — bf16 above all, which is how the
+    /// LM head is held (`D109`).
+    ///
+    /// `rows` decodes these to `Float` through a whole-tensor read that never touches the payload cache, so
+    /// the head's 1.017 GB came off the device on **every** token. Here the whole tensor is fetched through
+    /// `payload`, which caches it, and the range is a slice of the cached bytes with no copy and no decode.
+    /// The default is `nil`, so a source that holds only fp32 keeps the old path.
+    func storedRows(named name: String, range: Range<Int>) throws -> StoredRows?
     /// Payload bytes this source has **actually read**, when it counts them.
     ///
     /// Zero means **not counted**, not "nothing was read": the dense family loads its weights at
@@ -31,6 +87,12 @@ public protocol WeightSource {
     var payloadCacheMetrics: PayloadCacheMetrics { get }
     /// Whole-tensor requests per tensor, most-requested first — the `DC-106` repeat-read audit.
     var payloadRequestCounts: [(name: String, count: Int)] { get }
+    /// The **stored-form** cache's budget in bytes, when this source has one (`D109`).
+    ///
+    /// A preload of packed rows is only useful if the bytes it reads are kept: with nowhere to put them the
+    /// loop reads the same slab again, which is work done twice rather than latency hidden. The default is
+    /// zero, so a source with no such cache (a checkpoint) makes `preloadPacked` a no-op.
+    var packedCacheBudget: Int { get }
 }
 
 /// A source's own account of its cost: bytes read, and the seconds spent reading, verifying and
@@ -89,12 +151,20 @@ extension WeightSource {
     public var sourceTiming: SourceTiming { SourceTiming() }
     public var payloadCacheMetrics: PayloadCacheMetrics { PayloadCacheMetrics() }
     public var payloadRequestCounts: [(name: String, count: Int)] { [] }
+    public var packedCacheBudget: Int { 0 }
 }
 
 extension WeightSource {
     public func rowsStreaming(named name: String, range: Range<Int>) throws -> [Float] {
         try rows(named: name, range: range)
     }
+
+    /// A checkpoint stores no packed form, and neither does a source that decodes on the way in, so the
+    /// default is to have nothing to hand over.
+    public func packedRows(named name: String, range: Range<Int>) throws -> PackedInt4Rows? { nil }
+
+    /// A source that holds only fp32 has nothing stored to hand over either.
+    public func storedRows(named name: String, range: Range<Int>) throws -> StoredRows? { nil }
 }
 
 extension SafetensorsFile: WeightSource {
@@ -256,6 +326,9 @@ public struct InstallFile: WeightSource {
 
         init(budget: Int) { self.budget = budget }
 
+        /// What this cache may hold, so a caller can decide whether a preload has anywhere to put its bytes.
+        var budgetBytes: Int { budget }
+
         func value(for key: String) -> Data? {
             guard budget > 0 else { return nil }
             lock.lock(); defer { lock.unlock() }
@@ -358,6 +431,10 @@ public struct InstallFile: WeightSource {
     /// `WeightSource`: the same counter, so a caller can report measured traffic rather than an
     /// estimate derived from element counts.
     public var bytesReadFromSource: Int { bytesRead }
+
+    /// `WeightSource`: what the packed slab cache is allowed to hold (`D109`), so a caller can tell whether
+    /// a stored-form preload has anywhere to put its bytes.
+    public var packedCacheBudget: Int { slabCache.budgetBytes }
 
     /// `WeightSource`: what the reading, verifying and unpacking cost, in seconds.
     public var sourceTiming: SourceTiming {
@@ -483,7 +560,12 @@ public struct InstallFile: WeightSource {
     }
 
     static func payloadCacheBudget(environment: [String: String]) -> Int {
-        let defaultMegabytes = 1024
+        // **2048 MiB, not 1024** (`D109`). The budget has to hold the layer payload (~995 MiB) *and* the LM
+        // head (~970 MiB) at once, because both are re-read every token and an LRU that holds one evicts the
+        // other, so the two trade device reads forever. At 1024 MiB the head could not be held at all, which
+        // is why it was read off the device on every step; `storedRows` is what puts it through this cache.
+        // `SHARD_DENSE_CACHE_MB=1024` restores the old ceiling for an A/B.
+        let defaultMegabytes = 2048
         guard let raw = environment["SHARD_DENSE_CACHE_MB"], let megabytes = Int(raw) else {
             return defaultMegabytes * 1_048_576
         }
@@ -521,6 +603,12 @@ public struct InstallFile: WeightSource {
         guard entry.dtype == "int4" else {
             return try Self.decodeRaw(data, dtype: entry.dtype, elementCount: entry.shape.reduce(1, *))
         }
+        // **The CPU decoder, measured rather than assumed** (`D109`). This path was pointed at
+        // `MetalUnpack` on the theory that the device must win, and it lost: `load` went 353 → 534 ms/step,
+        // because a dense projection is a *few large* tensors and the device path copies the payload into
+        // buffers and the fp32 result back out for each one, where `dequantizeInt4` is already threaded
+        // across the cores (`D94`) on data that is in cache. The GPU unpack stays where `D59` measured it
+        // winning: the many small expert slabs in `rows`.
         return try Self.dequantizeInt4(data, entry: entry)
     }
 
@@ -550,6 +638,39 @@ public struct InstallFile: WeightSource {
         // whole-tensor decode. That distinction is the difference between streaming and not: the
         // real model's expert tensor is `[256, 1024, 2048]`, so decoding it to return one expert
         // is 537 M parameters and two gigabytes of `Float` on a node with four and a half.
+        //
+        // Since `D108` the packed payload is also a **product**: `packedRows` hands the same bytes over
+        // undecoded so a device kernel can consume them, and this path decodes them for the CPU. One read,
+        // two consumers, and the section layout is computed in one place.
+        let packed = try int4RowsPayload(named: name, entry: entry, range: range)
+        let unpackStarted = DispatchTime.now().uptimeNanoseconds
+        // The decoder is *chosen*, not replaced. The GPU path has existed since `D10` and has been called
+        // by nothing but its own tests, because it used to disagree with the scalar one on a row whose
+        // final group is partly filled (`DC-087`). That reproducer passes on the widened grid now, so this
+        // is the last step `DC-033` was waiting for -- and it stays behind a flag because every recorded
+        // digest was produced by the scalar path, so a changed default would move all of them at once.
+        // `SHARD_GPU_UNPACK=1` selects it; the real-model trace digest is what verifies it.
+        let decoded: [Float]
+        if Self.gpuUnpackEnabled, MetalUnpack.isAvailable {
+            decoded = try MetalUnpack.unpack(
+                payload: packed.payload, entry: entry, rowCount: packed.payloadRows
+            )
+        } else {
+            decoded = try Self.dequantizeInt4(packed.payload, entry: entry, rowCount: packed.payloadRows)
+        }
+        state.addUnpack(seconds: Double(DispatchTime.now().uptimeNanoseconds &- unpackStarted) / 1e9)
+        return decoded
+    }
+
+    /// The **stored** payload of a leading-axis row range, with the packed slab cache consulted first.
+    ///
+    /// This is the read half of `rows`' int4 branch, split out so that `packedRows` can offer the same
+    /// bytes to a device kernel without decoding them (`D108`). It returns the three sections
+    /// concatenated — every row's codes, then every row's scales, then every row's zeros — which is the
+    /// layout both decoders take and the layout `InstallFile.int4Layout` describes.
+    func int4RowsPayload(
+        named name: String, entry: Entry, range: Range<Int>
+    ) throws -> (payload: Data, payloadRows: Int) {
         let totalRows = entry.shape.dropLast().reduce(1, *)
         guard entry.padded_columns % entry.group == 0, entry.padded_columns % 2 == 0 else {
             throw Error.badHeader("\(name): group \(entry.group) does not divide \(entry.padded_columns)")
@@ -568,12 +689,7 @@ public struct InstallFile: WeightSource {
         // below are skipped entirely. The key is the tensor and the range, because that is what the expert provider
         // asks for and what the router repeats.
         let slabKey = "\(name)#\(range.lowerBound)-\(range.upperBound)"
-        if let cached = slabCache.value(for: slabKey) {
-            let hitUnpackStarted = DispatchTime.now().uptimeNanoseconds
-            let decoded = try Self.dequantizeInt4(cached, entry: entry, rowCount: payloadRows)
-            state.addUnpack(seconds: Double(DispatchTime.now().uptimeNanoseconds &- hitUnpackStarted) / 1e9)
-            return decoded
-        }
+        if let cached = slabCache.value(for: slabKey) { return (cached, payloadRows) }
         let codes = try readCounted(
             offset: entry.offset + first * codesPerRow, byteCount: payloadRows * codesPerRow
         )
@@ -622,24 +738,57 @@ public struct InstallFile: WeightSource {
         }
         // The concatenation is inside the unpack timing on purpose: `codes + scales + zeros` copies
         // the payload before the decoder sees it, and a copy of the payload is part of what the
-        // caller experiences as "fetching an expert".
+        // caller experiences as "fetching an expert". A device consumer pays the same copy, and it is
+        // still the unpack phase rather than the read.
         let unpackStarted = DispatchTime.now().uptimeNanoseconds
-        // The decoder is *chosen*, not replaced. The GPU path has existed since `D10` and has been called
-        // by nothing but its own tests, because it used to disagree with the scalar one on a row whose
-        // final group is partly filled (`DC-087`). That reproducer passes on the widened grid now, so this
-        // is the last step `DC-033` was waiting for -- and it stays behind a flag because every recorded
-        // digest was produced by the scalar path, so a changed default would move all of them at once.
-        // `SHARD_GPU_UNPACK=1` selects it; the real-model trace digest is what verifies it.
         let payload = codes + scales + zeros
-        let decoded: [Float]
-        if Self.gpuUnpackEnabled, MetalUnpack.isAvailable {
-            decoded = try MetalUnpack.unpack(payload: payload, entry: entry, rowCount: payloadRows)
-        } else {
-            decoded = try Self.dequantizeInt4(payload, entry: entry, rowCount: payloadRows)
-        }
         state.addUnpack(seconds: Double(DispatchTime.now().uptimeNanoseconds &- unpackStarted) / 1e9)
         slabCache.store(payload, named: slabKey)
-        return decoded
+        return (payload, payloadRows)
+    }
+
+    /// `WeightSource.packedRows`: the bytes `rows` would decode, handed over undecoded (`D108`).
+    ///
+    /// The counters are the read path's own — `readCounted` and the slab cache — so a device consumer's
+    /// traffic is measured exactly as a CPU one's is, and `SHARD_SLAB_CACHE_MB` is the knob that decides
+    /// how much of it is memory. A non-int4 tensor, or one without a leading axis, has no packed form to
+    /// offer and answers `nil`, which is what sends the caller back to `rows`.
+    public func packedRows(named name: String, range: Range<Int>) throws -> PackedInt4Rows? {
+        let entry = try entry(name)
+        guard entry.dtype == "int4", entry.shape.count >= 2 else { return nil }
+        guard range.lowerBound >= 0, range.upperBound <= entry.shape[0] else {
+            throw Error.badHeader("row range \(range) is outside '\(name)'")
+        }
+        let packed = try int4RowsPayload(named: name, entry: entry, range: range)
+        return PackedInt4Rows(payload: packed.payload, entry: entry, payloadRows: packed.payloadRows)
+    }
+
+    /// `WeightSource.storedRows`: the stored bf16/fp32 bytes of a row range, through the payload cache.
+    ///
+    /// The whole tensor goes through `payload`, which is the difference that matters for the head: `rows`
+    /// reads the slice straight from the blob with `F_NOCACHE` and **never caches it**, so `[248320, 2048]`
+    /// of bf16 — 1.017 GB — came off the device on every token (`D109`). Here the first request reads and
+    /// caches it and every later one is a slice of memory. `SHARD_DENSE_CACHE_MB` has to be large enough to
+    /// hold it beside the layer payload, or the LRU will trade the two.
+    ///
+    /// A row range of a non-int4 tensor is contiguous — the leading axis is the outermost — so the slice is
+    /// exact and free. int4 is `packedRows`' business: its sections are not contiguous, so there is no
+    /// byte range that means one row.
+    public func storedRows(named name: String, range: Range<Int>) throws -> StoredRows? {
+        let entry = try entry(name)
+        guard entry.dtype != "int4", entry.shape.count >= 2 else { return nil }
+        let width = entry.shape.dropFirst().reduce(1, *)
+        guard range.lowerBound >= 0, range.upperBound <= entry.shape[0] else {
+            throw Error.badHeader("row range \(range) is outside '\(name)'")
+        }
+        let data = try payload(entry)
+        let stride = Self.elementSize(entry.dtype) * width
+        let start = range.lowerBound * stride
+        let end = start + range.count * stride
+        guard end <= data.count else {
+            throw Error.badHeader("\(name): rows \(range) need \(end) bytes, the payload has \(data.count)")
+        }
+        return StoredRows(data: data[start..<end], dtype: entry.dtype, rowCount: range.count, width: width)
     }
 
     static func elementSize(_ dtype: String) -> Int {

@@ -36,6 +36,13 @@ public enum MetalInt4Matmul {
     /// Whether this host has a GPU. CI runners have none, so every test skips on this.
     public static var isAvailable: Bool { MTLCreateSystemDefaultDevice() != nil }
 
+    /// Whether the **routed experts** take the fused path. **Off by default until the A/B says otherwise** —
+    /// the rule `D89`/`D98`/`D105`/`D106`/`D107` all followed — and `SHARD_GPU_INT4_EXPERTS=1` selects it, so
+    /// the two arms run on one binary (`D62`). The kernel itself is measured and bit-exact (`D108`); what is
+    /// not settled is whether replacing 640 unpack-plus-matmul pairs with 640 fused dispatches wins on this
+    /// node, which is a bandwidth and dispatch-overhead question rather than an arithmetic one.
+    public static let enabled = ProcessInfo.processInfo.environment["SHARD_GPU_INT4_EXPERTS"] == "1"
+
     private struct Pipeline {
         let device: any MTLDevice
         let queue: any MTLCommandQueue

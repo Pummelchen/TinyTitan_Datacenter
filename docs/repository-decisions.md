@@ -3164,3 +3164,84 @@ provider hands over a **packed payload** instead of a `[Float]` slice and the sl
 residency change `DC-113`/`DC-123` describe — and that change is the next row, gated by the M1 install trace
 rather than by a kernel test. `D63` is the precedent: a bit-exact, faster kernel sat opt-in until something
 called it, and the switch it needs is a call site, not a flag.
+
+## D109 — The LM head comes off the device every step, and the first fixes were losses as much as wins
+
+The round opened by reading the sister project's decode path (`D100` authorised it) and by taking a fresh
+profile of this engine's step, because the operator's objective is **7 tok/s on one node** and every earlier
+conclusion had to be re-checked against the tree rather than trusted. What follows is in the order it was
+measured, including the three ideas that **lost**, because the losses set the budget for the rest.
+
+**The step, measured before anything changed** (`SHARD_PROFILE=1`, 6 cached steps, digest `ed5e0328c087e4db…`):
+
+| phase | ms/step | what it is |
+| --- | --- | --- |
+| `mix.read` | **805** | expert slabs off the device (582 MB/step at ~4 GB/s) plus the unpack |
+| `load` | **361** | the dense backbone decoded to fp32, every layer, every token |
+| `head` | **255** | bf16 weights read and widened to `Float` |
+| `attn.core` | **202** | the attention and DeltaNet matmuls |
+| `mix.gateup` + `mix.down` | 119 | the routed projections |
+| step | **1769** | **0.565 tok/s** |
+
+**Losses first, because they bound the prize.**
+
+1. **The GPU unpack for the dense `tensor(named:)` path is slower than the CPU one.** It looked like a
+   three-line win — `rows` uses `MetalUnpack`, `tensor` did not — and it cost **`load` 353 → 534 ms/step**.
+   A dense projection is a *few large* tensors, so the device path pays a payload copy in and an fp32 result
+   out where `dequantizeInt4` is already threaded across the cores (`D94`) on data that is in cache. Reverted,
+   with the reason in the code so it is not "fixed" again.
+2. **The fused int4 expert path is a wash, and it is only not a loss because of a cache.** `D108` proved the
+   kernel and measured it 1.23-2.36x faster per slab in isolation. In the engine, with the slab cache off, it
+   is **2.29 s/step against the control's 1.69** — the per-slab dispatch and payload copy (640 dispatch-and-wait
+   pairs per token) cost more than the unpack-plus-threaded-matmul it replaces. With `SHARD_SLAB_CACHE_MB=1024`
+   the reads fall **8.46 → 5.73 GB** (71% slab hits) and the step comes back to **1.575 s** — level with the
+   control, not ahead of it. Default **off**; the wiring (`packedRows`, `gateUpProduct`/`downProduct`,
+   `preloadPacked`) stays as the tested foundation for batching, which is where the arithmetic says the win is:
+   one dispatch per layer instead of eight per expert.
+3. The first attempt at head residency **took the node into the same swap-discipline failure `D106` recorded**,
+   twice. Two bugs, and both are now fixed and pinned:
+   - `headLogits` fans out over 31 blocks, and the natural first cut asked `storedRows` for the head *per block*.
+     The payload cache is populated only by the **first** read to finish, so all 31 missed and each read the
+     whole 1.017 GB — 31 GB of transient allocations. Fixed by fetching the whole stored tensor **once**, before
+     the fan-out. The disk watchdog stopped that run at 4.48 GB free with **6 GB of swap in use**.
+   - `UncachedFile.readData` was `Data(try read(...))`, so **every** read existed twice at its peak: 2.03 GB of
+     transient memory for the head's 1.017 GB block. It now fills `Data(count:)` in place. That is a general
+     fix — every payload read in the engine paid it.
+
+**Wins, all alternated on one binary with the digest unchanged.**
+
+**The LM head runs on the GPU from its stored bf16** (`MetalBf16Matmul`). The head is `[248320, 2048]` of bf16
+— **1.017 GB stored, 2.034 GB decoded, per token** — and `rows` read it with `F_NOCACHE` through a path that
+never touched the payload cache, so it came off the device on every step. `storedRows` fetches it once through
+the payload cache (whose default budget moves **1024 → 2048 MiB**, because the head and the layer payload must
+both fit or an LRU trades them back and forth), and the kernel widens each bf16 in a register — a shift of the
+top sixteen bits, which cannot round. Measured:
+
+| arm | `head` | step | tok/s |
+| --- | --- | --- | --- |
+| CPU head | 255.3 ms | 1.7178 s | 0.582 |
+| GPU bf16 head | **117.8 ms** | **1.5804 s** | **0.633** |
+
+**And three small ones that were kept because they measured:** `MetalBufferCache` is now **per slot and
+grow-only** — it replaced *every* buffer as soon as one slot was too small, and gate-up and down alternate
+sizes, so the whole set including the 8 MB output was reallocated ~320 times a step (1.77 → 1.75 s, small but
+strictly right); `GatedDeltaNet.decodeStep` no longer allocates a `kernel`-element array inside an 8,192-iteration
+loop (**245,760 allocations a step**, `attn.core` 201 → 180 ms); and `headLogits` calls the **serial** matmul
+body rather than the chooser, because it is already a fan-out and was nesting 31 × 8 tasks on 8 cores.
+
+**One more bug, found by the suite rather than by a measurement.** A `Data` slice keeps its parent's indices, so
+the head's per-block window `storedHead.data[start..<end]` was out of bounds the moment a vocabulary window did
+not start at zero — which is exactly the sharded case, and `ShardedGenerateTests` trapped on it. Indexed from
+`startIndex` now. The full suite is **266 tests, 0 failures** (7 new: 4 `MetalBf16MatmulTests`, 3
+`InstallStoredFormTests`).
+
+**Where the step stands, and what the reference says is left.** Default configuration: **1.567 s/step,
+0.638 tok/s, peak RSS 3.10 GB**, digest `ed5e0328c087e4db…` unchanged — from 0.565 at the top of the round. The
+study of the sister project is unambiguous about the remaining distance, and it is not arithmetic: its
+per-token traffic is **~1.5-1.8 GB of dense weights plus ~0.17 GB of experts, all of it packed, none of it ever
+widened to fp32**, and its head is **int4 at 286 MB** against this install's bf16 at 1017 MB. Its 141 ms is
+~60 ms of GPU, **~55 ms of host blocked on the routing readback and the miss reads**, and ~26 ms of CPU encode,
+with per-layer slot caches (48 of 256 experts per layer at 3 GiB) and layer L's MoE running in its own command
+buffer while layer L+1's attention runs. The measured order of attack here is therefore: **batch the experts
+per layer into one dispatch** (the fused kernel is already bit-exact and the per-slab overhead is what eats
+it), **residency sized from one budget** with a packed slab cache, and only then the overlap.

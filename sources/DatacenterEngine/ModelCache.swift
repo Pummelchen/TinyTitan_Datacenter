@@ -76,14 +76,49 @@ extension Qwen3_5Forward {
         guard blocks > 0 else { return logits }
         let failure = HeadBlockFailure()
         nonisolated(unsafe) let upstream = source
+        // **The stored form is fetched exactly once, before the fan-out** (`D109`). Asking for it per block
+        // looked harmless — `storedRows` slices a cached payload — but the cache is only populated by the
+        // *first* read, so 31 concurrent blocks each missed and each read the whole 1.017 GB head: 31 GB of
+        // transient allocations, which the node answered with six gigabytes of swap and the disk watchdog.
+        // One fetch, then cheap slices. `storedRows(named:range:)` over the whole slice is the same call a
+        // block would make, so a source without a stored form simply falls through to the old path.
+        var storedHeadValue: StoredRows?
+        if MetalBf16Matmul.enabled, MetalBf16Matmul.isAvailable,
+            let whole = try upstream.storedRows(named: name, range: rows),
+            whole.dtype == "bf16", whole.width == hiddenSize
+        {
+            storedHeadValue = whole
+        }
+        let storedHead = storedHeadValue
+        let stride = hiddenSize * 2
         logits.withUnsafeMutableBufferPointer { buffer in
             nonisolated(unsafe) let target = buffer.baseAddress!
             let body: @Sendable (Int) -> Void = { block in
                 let lower = rows.lowerBound + block * blockRows
                 let upper = min(lower + blockRows, rows.upperBound)
                 do {
+                    if let storedHead {
+                        // The slice is a view of the cached payload: no copy, no decode. **`Data` slices keep
+                        // the parent's indices**, so the window is offset from `startIndex` rather than from
+                        // zero — indexing a sharded vocabulary window from zero is out of bounds, which is
+                        // exactly how `ShardedGenerateTests` found this.
+                        let base = storedHead.data.startIndex
+                        let start = base + block * blockRows * stride
+                        let end = min(start + (upper - lower) * stride, storedHead.data.endIndex)
+                        let product = try MetalBf16Matmul.matmul(
+                            x: x, w: storedHead.data[start..<end], rows: 1, k: hiddenSize, out: upper - lower
+                        )
+                        for column in 0..<(upper - lower) { target[lower + column] = product[column] }
+                        return
+                    }
                     let weights = try upstream.rows(named: name, range: lower..<upper)
-                    let product = Ops.orderedMatmul(
+                    // **The serial body, not the chooser** (`D109`). `Ops.orderedMatmul` fans out across
+                    // output columns when there is enough work, and this loop is *already* a fan-out over
+                    // blocks — so the public entry point nested one `concurrentPerform` inside another and
+                    // put 31 × 8 tasks on 8 cores. `Ops`' own comment says a caller that is already parallel
+                    // at a higher level calls the serial body; this one did not. The two are bit-identical by
+                    // `D104`'s aligned-chunk rule, which is why the swap cannot move a digest.
+                    let product = Ops.orderedMatmulVectorized(
                         x: x, w: weights, rows: 1, k: hiddenSize, out: upper - lower
                     )
                     for column in 0..<(upper - lower) { target[lower + column] = product[column] }
