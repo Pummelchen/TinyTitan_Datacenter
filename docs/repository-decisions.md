@@ -4757,3 +4757,49 @@ local service — a fallback that would look like it worked and talk to the wron
 `--host`/`--port` and proves `DecodeServiceCommand` frames cross it (`D147`), and the client can reach a remote
 service (`D150`) — so **a two-node run no longer waits on transport code**. What it waits on is a model, which
 is the install decision that has been outstanding for many rounds and has now cost real work twice.
+
+## D151 — `macbook-ab` has room: the install gets built there and only the result comes back
+
+The operator's answer to the blocking condition in `D148`/the goal's `blocked_reason`: **macbook-ab now has
+144 GB free**. That removes the constraint that stopped two install attempts, and it changes the plan rather
+than merely relaxing it.
+
+**Why building on this node was never going to work.** The conversion needs three things on one filesystem: the
+**source** (67 GB), **scratch** (~10 GB) and **output** (~16-20 GB). This node has 228 GB total, of which the
+source is 67 GB and the system ~111 GB, leaving ~30 GB — against a peak need of ~26-30 GB. Two attempts proved
+that arithmetic: the first drove free space to **1.2 GB** (the watchdog logged `0.77 GB free`) at 21/26 shards,
+and the second was tracking to the same wall at 5/26 when it was stopped.
+
+**The plan.** Build on macbook-ab, where 97 GB of need fits inside 144 GB with room to spare, and copy back only
+the **install** — the ~16-20 GB the engine actually runs, not the 67 GB source it is derived from:
+
+| step | where | size |
+| --- | --- | --- |
+| copy the source cache | this node → macbook-ab | 67 GB |
+| convert (`prepare_agentworld.py --bits 4`) | macbook-ab | scratch ~10 GB, output ~16-20 GB |
+| copy back the install | macbook-ab → this node | ~16-20 GB |
+
+This node then holds its 67 GB source **and** a ~16-20 GB install inside ~30 GB free — which is the combination
+that was impossible before, because the conversion's scratch never has to coexist with both here.
+
+**Verified before starting**, because a plan that assumes a toolchain is a plan that fails halfway: macbook-ab
+is `arm64`, has `python3` and `python3.13` with `numpy`, `ml_dtypes` and `safetensors` already importable
+(`DEPS OK`), and its existing `~/Downloads/ttdc/m1-install` backup is untouched. The fork's tree is staged there
+(git and `.build` excluded). The transfer runs at 26-30 MB/s, so ~40 minutes for the source.
+
+**What this does not change:** the reference is still one install away from the single-node measurement, and the
+distribution is still complete and waiting at the transport layer (`D147`, `D150`). This is the step that
+finally produces something to run.
+
+**`D148`'s fix confirmed in production.** The `DISK_STOP` marker written during the second attempt reads:
+
+```
+2026-09-18 13:50:15 STOP: 3.85 GB free, below 5.0 GB; stopping 1 heavy job(s)
+  TERM 96186 .../Python.app/Contents/MacOS/Python
+```
+
+**`stopping 1 heavy job(s)`**, where the earlier marker read `stopping 0`. The restarted watchdog **named and
+TERMed the converter itself** at 3.85 GB free, instead of detecting the condition and being unable to act on the
+one process responsible. That is the whole point of `D140`/`D148` demonstrated rather than asserted, and it is
+why the second attempt cost disk but not a panic: the guard stopped the job *before* it reached the 0.77 GB the
+first attempt hit.
