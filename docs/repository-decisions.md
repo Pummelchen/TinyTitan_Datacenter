@@ -3636,3 +3636,25 @@ bytes-per-second against what the hardware can do, which is what finally pointed
 **Round total.** 1.476 -> **1.591 tok/s** across `D116` and `D117`, step 0.678 -> 0.628 s. The phases are now
 `mix.gather` **243**, `attn.core` **120**, `mix.read` **84**, `load` **55**, `head` **48**, `mix.down` **43**.
 The read remains the floor and the remaining 4.4x to 7 tok/s is still not in the arithmetic.
+
+## D118 — The decoded-layer cache was re-tested at the new operating point, and it still loses
+
+`D89` rejected the decoded-layer cache when a step was 5.42 s and `load` was 30.5% of it, on the grounds that
+the resident fp32 arrays cost more elsewhere than they saved. Nine rounds later the step is **0.626 s** and
+`load` is **68 ms (11%)**, so the trade was worth re-asking: the same 1 GB budget on the same binary, three
+alternated pairs each.
+
+| `SHARD_LAYER_CACHE_MB` | `load` | step | median |
+| --- | --- | --- | --- |
+| 0 (default) | 68 ms | 0.646, 0.626, 0.625 | **0.626 s** |
+| 1024 | **20 ms** | 0.640, 0.628, 0.690 | 0.639 s |
+
+**The cache does exactly what it was built for** — `load` falls 68 -> 20 ms, which is 70% of the phase and
+7.7% of the step — and the step is still **2% worse**, because `mix.gather` absorbs 16 ms of it and the
+run-to-run spread (0.625-0.690) is wider than the effect. This is the **fourth independent confirmation** of
+the same wall (`D106`, `D112`, `D113`, `D115`): on this node, a resident working set of any kind —
+decoded fp32, packed slabs, dense payload — costs more in memory pressure than the reads it saves.
+
+The default stays **0**. Recorded because a default that was right at 5.4 s/step is not automatically right at
+0.63 s/step, and the only way to know is to re-measure it; the answer happened to be the same, and now it is
+the same *with a measurement at the current operating point* rather than by inheritance.
