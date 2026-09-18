@@ -1,6 +1,7 @@
 import Foundation
 import Metal
 import TinyTitan
+import TinyTitanDecodeProtocol
 
 private struct MessageJSON: Decodable {
     let role: String
@@ -238,6 +239,18 @@ public func run(args: Args,
             ropeScalingMode: args.ropeScalingMode,
             yarnContextTokens: args.ropeScalingMode == .yarn
                 ? args.maxContext : RuntimeConfiguration.defaultYaRNContextTokens)
+        // BENCHMARK ONLY. With --shard-plan and --shard-node this node reads only its own share of the routed
+        // experts and therefore produces a WRONG ANSWER - there is no exchange wired yet, so the other nodes'
+        // contributions are missing. What it measures is real: the step time of a node reading a quarter of the
+        // experts, which is the quantity the four-node projection rests on. It must never be reported as tok/s.
+        if let planPath = args.shardPlanPath, let node = args.shardNode {
+            let plan = try ShardPlan.load(from: URL(fileURLWithPath: planPath))
+            model.setOwnedExpertFilter { plan.isLocal(expert: $0, to: node) }
+            let owned = (0..<plan.experts).filter { plan.owner(of: $0) == node }.count
+            FileHandle.standardError.write(Data((
+                "[shard-benchmark] node \(node) of \(plan.nodes) reads \(owned) of \(plan.experts) experts. "
+                + "THE OUTPUT IS NOT A RESULT - no exchange is wired. Timing only.\n").utf8))
+        }
         let runner = try RealForwardRunner(
             model: model,
             context: context,

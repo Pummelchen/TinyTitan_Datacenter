@@ -80,7 +80,7 @@ let package = Package(
         ),
         .target(
             name: "TinyTitanCLICore",
-            dependencies: ["TinyTitan"],
+            dependencies: ["TinyTitan", "TinyTitanDecodeProtocol"],
             path: "sources/TinyTitanCLI",
             exclude: ["Command"],
             swiftSettings: tinytitanLanguageStandard
