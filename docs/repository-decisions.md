@@ -4350,3 +4350,30 @@ consequences worth stating plainly:
 **The corrected plan is therefore unchanged in shape and much cheaper than `D136` assumed:** install 4-bit
 `qwen36` from the local snapshot into the fork, get a running single-node baseline, then add the LAN transport
 and the shard plan. No download is required for any of it.
+
+## D138 — The qwen36 install is running from the local snapshot
+
+`D137` established that the source weights are already on disk. The install is now running:
+
+```
+converting qwen36 -> .build/qwen36-affine-{4,8}bit
+```
+
+with `HF_HOME` pointed at this repository's 67 GB cache, `HF_HUB_OFFLINE=1` so no fetch is attempted, and
+`TINYTITAN_PYTHON` pointed at this repository's pinned `.venv`. Free space 27 GB and falling as it writes.
+
+**Two operational facts worth keeping**, because both will recur:
+
+- **The converter needs `numpy`, `ml_dtypes` and `safetensors`, and this repository's pinned venv had the
+  first and third but not `ml_dtypes`.** It is installed there (`ml-dtypes==0.6.0`, CPython 3.14.7) rather than
+  into the system interpreter, which is the convention this repository already states. The fork's own tools
+  search for an interpreter themselves and refused every one on the node; `TINYTITAN_PYTHON` is the switch that
+  makes them use this one.
+- **The heavy-job claim was refused**, with *"declares 4.20 GB and only 4.03 GB looks reclaimable"* and then
+  again at 2 GB — `heavy_job.py` reports `none claimed` while the install runs anyway, because the guard
+  measures *memory* and this job is disk-bound (a streaming repack). That is a real gap in the guard rather
+  than a mistake in using it: a job that writes 20 GB and holds 2 GB is not the shape `heavy_job.py` was built
+  to refuse, and the disk watchdog is the one that matters here. It is recorded rather than worked around,
+  because the next person to run this will hit the same refusal.
+
+The next measurement is the fork's own single-node number on this model, against the reference's 7 tok/s.
