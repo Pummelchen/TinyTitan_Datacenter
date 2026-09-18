@@ -8,6 +8,7 @@ import Testing
 @Suite("Shard exchange server", .serialized)
 struct ShardExchangeServerTests {
   private static let port: UInt16 = 45951
+  private static let wrongWidthPort: UInt16 = 45953
 
   /// Deterministic in (layer, expert, dimension), so a reply placed on the wrong slot or reordered is
   /// detectably wrong rather than plausible.
@@ -60,7 +61,43 @@ struct ShardExchangeServerTests {
     #expect(Array(try #require(reply.row(at: 0))) == Self.compute(layer: 7, experts: [200], activation: request.activation))
   }
 
-  // NOTE: the wrong-width guard in `answer` is NOT covered here. It was exercised through a raw socketpair, and
+  /// The wrong-width guard, covered through `DecodeTCPSocket` as this file's own note prescribed rather than
+  /// through a hand-made socketpair (which crashed the runner with signal 6 on a double close). A server whose
+  /// compute returns the wrong number of values must REFUSE the request, because a short reply would be read as a
+  /// shorter row and land on the wrong slots - a wrong number rather than an error.
+  @Test func aComputeOfTheWrongWidthIsRefusedRatherThanPadded() async throws {
+    let server = ShardExchangeServer(port: Self.wrongWidthPort) { _, _, _ in [1, 2, 3] }
+    let serving = Task { () -> Void in
+      try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+        DispatchQueue.global().async {
+          do { try server.serve(connections: 1); c.resume() } catch { c.resume(throwing: error) }
+        }
+      }
+    }
+    var client: (input: FileHandle, output: FileHandle)?
+    for _ in 0..<100 {
+      client = try? DecodeTCPSocket.connect(host: "127.0.0.1", port: Self.wrongWidthPort)
+      if client != nil { break }
+      try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    let connected = try #require(client)
+    let channel = ShardPeerChannel(input: connected.input, output: connected.output)
+    // Two experts x two dimensions = four values expected; the compute returns three.
+    try channel.send(try ShardExchange.encode(ShardExchange.Request(
+      layer: 0, slots: [0, 1], experts: [5, 6], activation: [1, 2])))
+    // The server refuses, closes, and the connection ends without a reply frame.
+    var refused = false
+    do {
+      _ = try channel.receive()
+    } catch {
+      refused = true
+    }
+    channel.close()
+    _ = try? await serving.value
+    #expect(refused, "a wrong-width compute must end the connection rather than send a short row")
+  }
+
+  // NOTE: the wrong-width guard in `answer` was NOT covered here when this file was written It was exercised through a raw socketpair, and
   // that test crashed the runner with signal 6 rather than failing - a FileHandle read after its descriptor was
   // closed, which `closeOnDealloc: false` plus two owners for one fd brought about. Rather than ship a test that
   // kills the process, the guard is left untested and said so; the real four-node run exercises it, and a
