@@ -6807,3 +6807,51 @@ install, the load recorded, and repeats:
 the composition says the device and the read path each idle while the other works, and a configuration knob cannot
 make two serialised things concurrent. `D114` is the precedent for the size of such a change - batching 640
 synchronous dispatches into 80 was **1.27x** by removing waits - and `D198` says the prize here is **3.2x**.
+
+## D200 — Why the overlap does not happen: one layer's compute window is shorter than one expert's read
+
+`D198` left a puzzle — the prefetch ring exists and is worth only 5%, where the composition says overlap is worth
+up to 3.2x. The decode path answers it, and the answer is arithmetic on three measured numbers.
+
+`RealForwardRunner+Decode.swift:1384`:
+
+    let readyPrefetches = predictivePrefetch?.readyBuffers(layer: L, experts: experts) ?? [:]
+
+**The ring is already non-blocking**: it offers the buffers that have *completed* and lets the rest fall through to
+a demand read. So this is not a missing mechanism and not a wait that could be removed. It is a **timing** problem:
+
+    one expert read           1,769,472 B at 1,940 MB/s (D196, depth 1)  =  0.91 ms
+    one layer's device work   42.0 ms / 40 layers                        =  1.05 ms
+    misses per layer          64 / 40                                    =  1.6
+
+**A single expert's read takes 0.91 ms and a layer's compute window is 1.05 ms.** So the ring has room for
+**one** read to land per layer, and a layer misses **1.6** experts on average. The ring lands about one of them;
+the rest become demand reads on the critical path, and that is the 97.4 ms of `D198` - the misses that could not
+be pre-read because there was not enough compute to hide them behind.
+
+**This is why every depth and every knob failed, and the failures now have one cause:**
+
+* **depth > 1 is worse** (`D197`) because more speculative reads contend for a device whose busy time is already
+  the thing being waited on - the code says so itself at `RealForwardRunner.swift:443`: *"One read deep, not
+  four... deeper rings contend with the demand traffic"*;
+* **`KEEP_WIRED`, `IO_TIER`, `EARLY_HITS` do nothing** (`D199`) because none of them changes the ratio of read
+  time to compute time;
+* **`prefetchAhead=2` is worse** (`D187`) for the same reason as depth.
+
+**So there are exactly two ways to reach 21 tok/s, and both are now identified:**
+
+1. **Read the misses faster.** The demand reads achieve 985 MB/s (`D195`) against a measured 1,940 at depth 1 and
+   2,940 at depth 8 (`D196`). The demand set is known exactly, so **concurrency on demand reads** is not a
+   speculation problem - it is issuing them together rather than one per layer. `D196` says that is worth up to
+   3x on the read term, which is the 97.4 ms.
+2. **Amortise the read over more compute.** The ratio is the obstacle, so more compute per read helps directly -
+   which is what batching tokens does. That is what MTP would have been, and `D187` closed it: this install has no
+   draft head. A draft head would have to be produced, which is a different project.
+
+**What cannot work, and is now measured rather than assumed:** any plan that leaves the read on the critical path
+of a single-token step. The compute is not long enough to hide it, and no plan, replication set, or exchange
+arrangement changes that - which is `D183`'s conclusion arrived at from the other direction.
+
+**The fourteen rounds in one line.** The target needs the demand reads issued concurrently across layers, because
+one layer's compute cannot hide one expert's read; that is a change to the read issue path, worth up to 3x on the
+dominant term, and it is the only route the measurements support.
