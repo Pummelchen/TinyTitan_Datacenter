@@ -3902,3 +3902,15 @@ A/B was taken and it said 512 was ahead by 2.7%.
    next thing to attack in the read path, and it is *not* I/O — which is why no amount of cache or device
    work would have moved it, and why the phase looked stuck at ~245-290 ms across every configuration tried
    since `D114`.
+
+**A caveat on the second point, added the same day.** Those two figures are **one run each**, and the
+arithmetic does not actually support "fixed cost" as the only reading. At 128 MiB the phase moves 727 MB in
+265 ms — **2.7 GB/s**, *above* the device's measured cold 1.65 GB/s, so part of it is page-cache help. At
+1024 MiB it moves 365 MB in 265 ms — **1.38 GB/s**, *below* cold. A read path that gets **slower per byte**
+when a wired 1 GiB bank is added is at least as good an explanation as a fixed per-slab cost, and it is the
+one the rest of this record supports (`D119` in particular). So the claim that "half of `mix.gather` is a fixed
+per-slab cost" is **not established** and should not be repeated as though it were: it needs an alternated A/B
+at a fixed bank size with the byte counter held constant, which has not been run. What *is* established is
+only that raising the bank from 512 MiB to 1024 MiB halves the bytes read and does not make the step faster.
+This is the third time in this session that a single-run comparison pointed the wrong way; the rule the record
+already states — alternate, and quote the median of several — is the one that keeps being skipped.
