@@ -6326,3 +6326,46 @@ does not sit on the critical path. `D114` is the precedent: batching 640 synchro
 **The honest position on the target.** 21 tok/s is reachable only if `other host` falls from 36 ms to under
 ~19 ms *and* the reads are divided. Neither has been attempted in this session; both are measurable on one node,
 which is where the next round should work.
+
+## D190 — D188 was wrong: the expert read is already hidden, and the host loop is the whole problem
+
+`D188` took 101.0 MiB/token of decode expert I/O, divided it by the device's cold 1.65 GB/s, and concluded the
+read was **~61 ms, 44% of the step**, exposed. That inference had a hidden assumption — that a byte read costs
+its cold time — and it is false. `TINYTITAN_PREDICTIVE_PREFETCH=0` disables speculative expert reads
+(`ModelProfile`: "Speculative expert reads in flight; 0 disables prefetch"), so the read's real contribution can
+be measured rather than inferred. Node3, the reference's install, 40 slots, 16 tokens, four **alternating** pairs:
+
+| pair | load | prefetch ON | OFF | delta |
+| --- | --- | --- | --- | --- |
+| 1 | 3.75 | 6.574 | 6.424 | +2.3% |
+| 2 | 3.50 | 6.516 | 6.333 | +2.9% |
+| 3 | 3.36 | 6.867 | 6.392 | +7.4% |
+| 4 | 3.07 | 7.118 | 6.329 | +12.5% |
+
+**Median ON 6.695 against OFF 6.376 — prefetch is worth about 5%**, and **every pair has the same sign**, which
+is the part that matters on a farm where `D187` found run-to-run spread larger than the effect being looked for.
+
+**Turning the prefetch off does not expose 61 ms; it costs about 7 ms.** So the read is **~95% overlapped
+already**, and `D188`'s 44% was an overestimate by roughly a factor of six. The correct reading of the same
+instrument is that **101.0 MiB/token is real traffic and is almost entirely hidden**.
+
+**And the shipped profile says so independently.** `ModelProfile.table` records the measurements behind the
+shipped defaults: prefetch depth 1 on Qwen 3.6 4-bit is worth **+1.8%** (and +11.3% on 8-bit, where the reads are
+twice the size). The repository measured this before this session began, and `D188` reasoned past it.
+
+**What this restores and what it costs.**
+
+* `D183`'s arithmetic stands: **only the mixture divides (~13%), the ceiling is ~1.0-1.1x**, and `D188`'s
+  corrected claim of ~57% divisible and ~1.4-1.75x is **withdrawn**. Sharding divides reads that are already
+  hidden, which buys little.
+* What is left is what `D189` already identified and `D188` obscured: the host loop. With ~42 ms of device work
+  and ~7 ms of exposed read in a 139.4 ms step, **~90 ms is host orchestration** — plan, encode, dispatch and
+  readback, **~2.3 ms per layer**, on every node, dividing not at all.
+* **47.6 ms/step therefore requires the host loop to fall from ~90 ms to under ~30 ms**, a 3x reduction in
+  non-device work, and that is the entire problem. `D114` is the precedent for the kind of change that does it:
+  batching 640 synchronous dispatches into 80 was worth 1.27x by removing waits rather than work.
+
+**The lesson worth keeping.** Two rounds ago this session concluded the read was 44% of the step and that
+sharding would reach ~1.7x; the correction came from measuring the term instead of computing it from a bandwidth
+figure. A byte count divided by a peak rate is an upper bound on a cost, never an estimate of it, and the
+repository had already published the measurement that contradicts it.
