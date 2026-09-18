@@ -8146,3 +8146,42 @@ from a counter, find out what it counts.**
 **The concrete fix is small and it belongs in the engine rather than in a decision:** have `TINYTITAN_LAYER_TRACE`
 print the exposed fraction it already computes, so the next attempt at this question starts from the right number
 instead of from a subtraction.
+
+## D234 — The engine says the read is NOT exposed: exposed_io_us is zero for all 119 layers, and the wait is the term
+
+`D233` said the fix was to print the exposed fraction the engine already computes. It is now printed -
+`TINYTITAN_LAYER_TRACE` emits `exposed_io_us` beside `io_us`, using the same `totalExposedIoNanos` arithmetic the
+server reports. Node3, the reference install, 40 slots, 48 tokens, **119 layers**:
+
+    body           2612 us
+    io (total)     1078 us   -> x40 = 43.1 ms/token
+    io EXPOSED        0 us   -> x40 =  0.0 ms/token
+    wait           1332 us
+
+**`exposed_io_us` is zero for every layer traced.** And the zero is a measurement rather than a missing instrument:
+`completionClock` is `missCount > 0 ? overlapCompletionClock : nil`, so it is non-nil on exactly the layers that
+have misses, and the counter is incremented whenever `overlapEnd < tIoStart + layerIo`. A persistent zero means
+**the completion clock's latest completion was at or after the read finished - the read window was covered.**
+
+**So `D226` and `D227` were wrong, and wrong in the way this session has been wrong before.** `D226` saw `io_us`
+1078-1287 against `wait_us` 1148-1332, noticed they summed to the body, and concluded the two were **sequential**.
+They do sum to the body; that does not make them sequential. **The read is 43.1 ms of the token and it is already
+overlapped**; what the layer spends its time on is the **wait, 1332 us x 40 = 53.3 ms**.
+
+**And that substantially changes the route to the target.**
+
+  - **"Overlap the read" is already done.** `D202` computed it as worth 7.5 -> 20.2 tok/s, `D227` sized it at
+    2.9 tok/s at four nodes, and `D228`'s projection leaned on it. **There is no prize there** - the engine is
+    already hiding the read behind the GPU work, which is what the 0 says.
+  - **The wait is the term.** 53.3 ms per token of waiting, against a GPU that `D222` measured at 61.7-62.8 ms of
+    kernel time per token across all layers. Those are close, so the wait is mostly **the device executing** - and a
+    device term divides with the work, which is exactly what sharding the experts and then the attention does.
+  - **`D228`'s four-node projection survives, for a different reason than it was built on** and with one line
+    changed: the "read overlapped" column was already true and its 2.9 tok/s was double-counted. **The honest
+    projection is the "no overlap" column of 14.33 tok/s without attention sharding and 16.35 with**, not the
+    17.27 and 19.42 that assumed the read had to be recovered.
+
+**This is the tenth self-correction and the fourth of the same species**, and the species now has a name worth
+writing down: **a sum that fits is not a sequence.** `io_us + wait_us = body_us` was true and was read as "the IO
+happens, then the wait happens" - when the engine was saying, in a counter it was already keeping,
+that they overlap. **The measurement was in the binary the whole time; the trace simply did not print it.**
