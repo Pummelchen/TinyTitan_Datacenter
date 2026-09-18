@@ -10096,3 +10096,43 @@ can orchestrate over the VPN as it already does.
 **The honest position on this round: no test in `D286`'s plan has produced a usable number yet**, and the two that
 were attempted taught only that the instruments were broken. **The wire measurement is still the first thing to
 get right, and it should be run between two farm nodes rather than from here.**
+
+## D288 — Test 3 measured: the wire is 1 GbE, and parallel streams add nothing
+
+`D287` left the wire unmeasured because node4's own egress is denied by local-network permission. **Running the
+same test between two farm nodes over the LAN removes that entirely**, and the third attempt at the script finally
+produced a valid number - the previous two had been measuring broken pipes, and this one only looks wrong because
+my own print statement labelled bytes as megabytes:
+
+    node1 -> node2, 192.168.18.25          200 MiB in  1.78 s   = 117.8 MB/s  (943 Mbit/s)
+    node1 -> node2, 4 parallel streams     800 MiB in  7.13 s   = 117.7 MB/s  (941 Mbit/s)
+    node1 -> node2, 8 parallel streams   1,600 MiB in 14.28 s   = 117.5 MB/s  (940 Mbit/s)
+    node1 -> node2 over the VPN            200 MiB in  2.09 s   = 100.3 MB/s  (803 Mbit/s)
+
+**Three conclusions, and the second is the one that changes a design.**
+
+**1. The link is 1 GbE.** 941 Mbit/s against a 1,000 Mbit/s link is saturation, not overhead. The figure the
+records have carried as "118 MB/s" is **confirmed** - and it is the LAN, not the VPN, which is slightly slower at
+803 Mbit/s.
+
+**2. Parallel streams add nothing.** One, four and eight streams all deliver **117.5-117.8 MB/s** - a spread of
+0.3%. So the limit is the **link**, not a single TCP stream, and `D286`'s third measurement is answered: **there is
+no hidden headroom to recover with concurrency.** The only way to more bandwidth is a faster physical link.
+
+**3. This decides Design C, and against it.** The tensor-parallel design's wire *volume* was never the problem -
+320 KB a token is 2.7 ms at 118 MB/s. **Its problem is the latency of 80 collectives per token**, and a saturated
+1 GbE link makes that worse rather than better: with eight streams unable to beat one, a collective cannot be
+sped up by parallelism either. **On a 1 GbE switch, Design C's 45 ms of all-reduce latency stands.**
+
+**And it leaves Design A exactly where `D286` put it.** Twelve kilobytes per token is **0.1 ms** against a wire
+that carries 117 MB/s - two orders of magnitude of margin. **The design that puts almost nothing on the wire is
+unaffected by the wire being slow, and this is the measurement that says so.**
+
+**What it also settles, for the whole engine.** 566 MB of active experts per token at 117.8 MB/s is **4.8 seconds a
+token, 0.21 tok/s**. Any design that moves expert weights across this link is dead by a factor of a hundred. That
+was an inference from an older figure; it is now a measurement.
+
+**Test 1's instrument does not exist yet.** `TINYTITAN_LAYER_TRACE` prints timings - `body_us`, `wait_us`,
+`io_us`, `exposed_io_us`, `cb1_us`, `cb2_us`, `gpu_attn_us`, `gpu_tail_us`, `gpu_routed_us` - and **no expert ids**.
+The routing trace `D286` proposes, 640 B a token, needs `outIndices` written at the point it is already in scope.
+**That is the next thing to build, and it is the smallest change in the plan.**
