@@ -61,7 +61,12 @@ public final class ShardPeerSet: ShardTransport, @unchecked Sendable {
     /// therefore refused every peer, deterministically, and the run never began (`D257`). A sleep before connecting
     /// would paper over it with a timing assumption that a loaded farm does not honour; a bounded retry waits
     /// exactly as long as it takes and no longer.
-    public static let connectRetrySeconds: Double = 5.0
+    /// A CAP, not a schedule. The condition being waited on is real - the peer's listener accepting - so the retry
+    /// succeeds the moment it can and this only bounds how long we wait before calling it a failure. Five seconds was
+    /// not enough on this farm (D261: two of three nodes gave up while the third connected and finished), and the
+    /// fix for that is a cap with room in it, not a longer sleep: a sleep would wait the same time whether or not
+    /// the peer was ready.
+    public static let connectRetrySeconds: Double = 60.0
     public static let connectRetryIntervalSeconds: Double = 0.02
 
     public func connect() throws {
