@@ -4030,3 +4030,40 @@ key coarser than the bytes it names returns another install's weights.
 
 **Also done this round:** the 20 GB install is backed up to `macbook-ab:~/Downloads/ttdc/m1-install`
 (21,701,089,793 bytes, `rsync` exit 0), so the destructive rebuild the operator authorised is now recoverable.
+
+## D129 — The re-stated objective, and what the trace says the priority actually is
+
+The operator has restated the goal in two phases, which matches `D123`: **reach 7 tok/s on this single Mac
+mini, then build the distributed version across node1-node4 (all M2 Mac mini 8 GB) running the 35B over LAN at
+**at least 3x** that — i.e. ~21 tok/s aggregate. This repository already owns the second half's machinery (a
+shard plan as data, a wire protocol, a four-node mesh, vocabulary-parallel head sharding, all demonstrated
+bit-identical), so the shape of the work is unchanged. What this round changes is the *order inside phase one*.
+
+`D128`'s trace re-ranked the candidates, and it demoted the one I had put first. Removing the duplicate slab
+lookup is real — 640 of 1,280 lookups a forward are redundant, with exact evidence — but the trace's own
+estimates put the whole count-scaling family at **single-digit milliseconds** at the 128 MiB default, because
+`D126` already removed the only one that was large. A few milliseconds is not the lever and should not be done
+first for its speed; it is worth doing as hygiene when the code is open for another reason.
+
+**The trace's real finding is about `mlock`, and it cuts both ways.** Wiring bought **+5.7%** at the 128 MiB
+default (`D122`) and is what makes a **1024 MiB** bank *slower* (`D128`: 2.2x per-byte regression on the reads,
+because pinning ~1.07 GB displaces the kernel page cache). So the measured optimum is the current small, wired
+bank, and "hold more experts" is not available by making the bank bigger — which is what every earlier sweep
+was really discovering.
+
+**Which makes the int4 shared head the top of the list, for a reason other than the head.** It is not only that
+the head's own weight traffic falls from 1,017 MB to 294 MB a step; it is that **676 MB that is presently
+wired, anonymous and unreclaimable becomes free**. `D119` is the caution: freeing anonymous memory did *not*
+by itself make the page cache retain the dense payload, because the expert stream was churning the same cache
+at 582 MB a step. So the freed memory is **not** promised as a page-cache miracle — it is promised as (a) the
+head's own arithmetic measured in bytes rather than faith, and (b) headroom against the pressure that `D128`
+identified as the thing making reads slow. Anything beyond that has to be measured, not assumed; the
+alternative reading of `D128` — that the read path is simply at the device's rate and always was — is not
+excluded by the evidence on hand.
+
+So phase one's order is: **int4 shared head and embedding** (with the code branch before the policy change,
+per `D127`), which needs the install rebuilt in chunks now that the backup exists; then **one `pread` per
+expert** by re-laying-out the expert stacks expert-major, which is the only change that attacks the read
+directly and is what the reference measures at 3.2 GB/s on four concurrent reads against this node's
+1.65-1.82; then the fused two-kernel MoE. Phase two is the existing four-node distribution, which is a
+different problem and already solved here.
