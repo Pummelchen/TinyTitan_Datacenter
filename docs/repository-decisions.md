@@ -3843,3 +3843,62 @@ one node, and then 4x it across four.
   reference solved one node; this repository solved four; the combination is the product the project is for.
 - **Stage 5 — measure.** The M3 gate's `--quiet-load` rule is the instrument (`D38`), and the target is
   **~28 tok/s aggregate** — 4x the reference's single-node 7 — with bit-identity intact on every node.
+
+## D124 — Stage 0: the reference's licence and notice material, staged and required
+
+The operator authorised taking code from TinyTitan (Apache-2.0 into MIT) and `D100` wrote down the price: the
+licence text, the reference's `NOTICE` with the `turbo-fieldfare` line it carries forward, a mark on every
+modified file, and a provenance gate that requires the attribution rather than merely observing its absence.
+`D123` made that stage 0 and blocking.
+
+The material now lives at `third_party/TinyTitan/` — `LICENSE` and `NOTICE` copied verbatim, because Apache-2.0
+s4(d) requires the notice to travel, and a `README.md` stating the discipline for any file taken: a header
+naming the source, the licence and the modification, an entry in `THIRD_PARTY_NOTICES.md`, and a satisfied
+gate.
+
+**Staged before the first file rather than with it.** `D100` said "in the same commit"; arriving early cannot
+be wrong and arriving late can, so it is its own commit and the first file taken will land in a tree where the
+requirement already holds.
+
+`tools/check_provenance.py` now **requires** both files. That is strictly stronger than the review it replaces,
+which could only observe that nothing had been taken yet — and it is verified to bite: removing `NOTICE` makes
+it exit non-zero with `third_party/TinyTitan/NOTICE is missing`, and restoring it exits 0.
+`THIRD_PARTY_NOTICES.md` gains the relationship; its still-true "no third-party source is included" is kept and
+still checked.
+
+**And a correction that belongs in the record.** The commit that landed this stage (`08b4ddf`) claimed "all
+four documentation gates green" and that was **false**: it cited `D124` in `AGENTS.md` without defining it, so
+`check_status_claims.py` was failing — which is exactly what that gate is for, and exactly the trap recorded
+below about a commit that is not gated on its own documentation step. The failure was found on the next round,
+by which time the commit was already pushed; the definition above is the fix, and the claim should not have
+been made. The lesson is the one already written down and not applied: **run the gates in the same command
+that commits, and never assert a gate result that has not just been read.**
+
+## D125 — The bank re-sweep after wiring: 128 MiB stands, and the read is only half of what it looked like
+
+`D122` wired the bank, which removed the mechanism that had made every earlier size sweep say "smaller is
+better". So the sweep was re-run, and it first appeared to say something new:
+
+| `SHARD_SLAB_CACHE_MB` | step (one run each, 20 steps) | expert bytes/step |
+| --- | --- | --- |
+| 128 | 0.634 s | 727 MB |
+| 512 | **0.617 s** | 727 MB |
+| 1024 | 0.654 s | **365 MB** |
+
+**The one-run comparison was noise, and the alternated pairs say the opposite**: 128 at 0.621/0.639/0.640
+(median **0.639**) against 512 at 0.726/0.692/0.695 (median **0.695**). The default stays **128 MiB**. The
+record is corrected here rather than quietly dropped, because the single-run table was reported before the
+A/B was taken and it said 512 was ahead by 2.7%.
+
+**Two things the sweep did establish, and the second is new.**
+
+1. **There is no extra cross-step reuse between 128 and 512 MiB** — the expert bytes per step are *identical*
+   at 727 MB. The threshold is between 512 and 1024: at 1024 MB the traffic halves to 365 MB/step, which is
+   about a 62% hit rate on the decode steps. So the bank has a cliff, not a gradient, and 512 MiB buys nothing
+   for the memory it costs.
+2. **`mix.gather` is not mostly the read.** It measured **265 ms** with 727 MB of traffic and **still 265 ms**
+   with 365 MB — half the bytes, the same time. So roughly half of that phase is a **fixed per-slab cost**
+   that the bytes do not explain: 7,040 slab-cache lookups and their `Data` handling per step. That is the
+   next thing to attack in the read path, and it is *not* I/O — which is why no amount of cache or device
+   work would have moved it, and why the phase looked stuck at ~245-290 ms across every configuration tried
+   since `D114`.
