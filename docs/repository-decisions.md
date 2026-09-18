@@ -8616,3 +8616,37 @@ settled in the previous note.**
 
 **The property added here is inert and verified**: `nil` on every run that is not given a plan, the build is clean,
 and no behaviour changes. The call site stays unwritten until the wire's contents are decided.
+
+## D246 — D245's decision holds and shortens the call site: `h1Buf` is already at the call
+
+`D245` concluded the wire should carry the token's hidden state rather than `moeActs`, because one token's hidden
+state feeds every routed expert and the frame's single shared `activation` row is exactly that shape. Reading the
+phase-2 site confirms the buffer is **already there**:
+
+    try moe.encodeRoutedPersistentPhase2Reduce(commandBuffer: routedCB,
+                                               ...
+                                               residual: h1Buf,
+                                               y: h2Buf,
+                                               d: D, f: FmoE, topK: topK, ...)
+
+`h1Buf` is the residual the reduce folds in - the layer's MoE input - and it is passed to the same kernel the remote
+buffer goes to. So **no new buffer has to be plumbed to the call site for the activation**: it is in scope, which
+means `D245`'s first option costs one closure call and one upload rather than a readback of `moeActs`.
+
+**What is still missing to write it**, and this is where the round stops rather than guesses:
+
+  * **the routed expert ids for this layer.** `experts` appears in the window as `experts: prediction` in a
+    *different* call, and the list the router chose is not visibly bound near the phase-2 site. The provider needs
+    it, because it decides which peers to ask by which experts this node does not own.
+  * **`h1Buf`'s element type.** If it is fp16 the activation must be widened before the exchange carries fp32; if it
+    is fp32 it goes straight out. `D245` flagged the widening as unsettled and this does not settle it.
+  * **a persistent 64 KiB buffer** for the `[d * 8]` reply - `2048 * 8` floats - which must not be allocated per
+    layer.
+
+**None of the three is hard and all three are cheap to check; none is checked here.** The honest position is that
+the call site went from "read `moeActs` back, drive the exchange, build the buffer" to **"call the provider with
+`h1Buf` and the routed list, upload the reply, pass it"** - one buffer fewer and no readback - and that the three
+unchecked items above are what the next attempt should open with rather than discover mid-edit.
+
+**The closure seam added in the previous round is inert and verified**: `nil` on every run without a plan, build
+clean, whole suite green.
