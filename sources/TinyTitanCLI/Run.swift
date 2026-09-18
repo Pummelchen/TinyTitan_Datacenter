@@ -247,9 +247,16 @@ public func run(args: Args,
             let plan = try ShardPlan.load(from: URL(fileURLWithPath: planPath))
             model.setOwnedExpertFilter { plan.isLocal(expert: $0, to: node) }
             let owned = (0..<plan.experts).filter { plan.owner(of: $0) == node }.count
+            // The warning depends on whether the exchange is actually running, and it was stale the moment the
+            // requesting half landed: with peers the contributions arrive and the output IS a result; without them
+            // the node reads its own experts alone and the output is not. Saying "not a result" in both cases
+            // would invite someone to discard a valid run, or to trust an invalid one.
+            let exchanging = args.shardPeersSpec != nil
             FileHandle.standardError.write(Data((
-                "[shard-benchmark] node \(node) of \(plan.nodes) reads \(owned) of \(plan.experts) experts. "
-                + "THE OUTPUT IS NOT A RESULT - no exchange is wired. Timing only.\n").utf8))
+                "[shard] node \(node) of \(plan.nodes) reads \(owned) of \(plan.experts) experts; "
+                + (exchanging
+                   ? "peer contributions ARE exchanged.\n"
+                   : "NO exchange - peers were not given, so THE OUTPUT IS NOT A RESULT. Timing only.\n")).utf8))
         }
         let runner = try RealForwardRunner(
             model: model,
