@@ -4280,3 +4280,39 @@ plan, in that order, each measured against the single-node 7 tok/s.
 **What this repository keeps contributing:** the shard plan as data, the reduction contract, the wire-protocol
 discipline, the head-sharding result, the gate set, and the record of what has already been measured and
 refuted. It is the design and the gate, not the runtime.
+
+## D136 — The fork builds and runs on this node: the port's first real step is done
+
+The reference forked to `~/Downloads/tinytitan-datacenter` at `bea4034` **builds clean on this node** with the
+toolchain this repository already pins:
+
+```
+swift build -c release   →   Build complete! (100.91 sec), 0 errors
+Apple Swift version 6.4 (swiftlang-6.4.0.34.1), arm64-apple-macosx27.0.0
+```
+
+That is the enabling result the last three rounds were missing, and it is worth stating what it means: the
+distributed engine does **not** need the 35B runtime reimplemented, because the 35B runtime compiles and runs
+here as it stands. What it needs is a transport and a shard plan, and this repository already has both designs.
+
+**What the fork provides, confirmed by running it:**
+
+| artifact | role |
+| --- | --- |
+| `TinyTitanCLI` | `--model <dir>` against a `.gturbo` model directory; expose `--expert-cache-slots`, `--rdadvise`, sampling and context flags |
+| `TinyTitanServer` | the long-running service |
+| `TinyTitanDecodeService` | the library holding the client/server boundary (`DecodeProtocol`, `DecodeUnixSocket`, `DecodeCommandQueue`, `DecodeServiceOutbox`) |
+| `TinyTitanRepack` | builds `.gturbo` from a checkpoint |
+| `tools/install_models.sh`, `tools/install_tinytitan.sh` | model installation |
+| `tools/server_launcher.sh` | the launcher the operator used, including the `--ram-budget` switch this project's reference number was measured with |
+
+**The immediate blocker is disk, not code.** This node has **9.1 GB** free and the 35B install is ~20 GB; the
+backup host has 16 GB. So the development path is a **small model first** — the fork's dense `qwen35-*` keys,
+which the source study showed exercise the tied-embedding path and which fit — to get a running
+client/server baseline and then build the LAN transport and shard plan against it. Scale to the 35B once the
+distribution is demonstrated, because the distribution is the part that does not exist anywhere yet and the
+single-node 35B number is already known to be 7 tok/s on identical hardware.
+
+**Order, unchanged from `D135`:** build (done) → a running single-node baseline on a model that fits → a TCP
+transport beside `DecodeUnixSocket` speaking the same `DecodeFrameCodec` frames → the shard plan as data,
+lifted from `D20` → measure across node1-4 toward 21+ tok/s.
