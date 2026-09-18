@@ -4671,3 +4671,47 @@ The reference is still one install away from the single-node measurement, but th
 scratch and **cannot fit on this node at the same time as its 67 GB source** — which is the decision that has
 been outstanding for many rounds and is now the only thing standing between this repository and the first
 half of its goal.
+
+## D149 — The client is not a connect swap: it *launches* the service, so a remote endpoint changes its lifecycle
+
+Two attempts at `DecodeServiceInferenceClient` have now been stopped before writing anything, and the second
+attempt found the reason the first was under-scoped. The record is the analysis, because it is what the next
+attempt needs and it is not a mechanical refactor.
+
+**What is actually there.** The client does not merely connect to a decode service — it **launches one**:
+`launchIndependentService()` builds a socket path, writes a launchd plist, bootstraps it with `/bin/launchctl`,
+then loops connecting to the socket it just created. `ensureProcess()` is "return the existing handles, or
+launch". So the transport is entangled with **process lifecycle**, not only with I/O.
+
+**Why that matters for a LAN transport.** Pointing this client at a service on another machine is not "call
+`DecodeTCPSocket.connect` instead":
+- there is **no local process to launch**, so `ensureProcess()` must connect directly rather than bootstrap a
+  helper — a behavioural branch, not a substitution;
+- `tearDownService` boots out a launchd **job**; for a remote service there is no job of ours to boot out, and
+  tearing down a label that was never created is at best a no-op and at worst a way to kill something else;
+- `sweepOrphanedServices` (line 596) sweeps leftover **launchd jobs by socket name** — inherently a local
+  Unix-socket concept with no remote analogue, so it must keep operating on local jobs only and not be widened.
+
+**The six call sites, measured rather than estimated** — the first attempt found these, and one of them was
+missed by hand:
+
+```
+237, 328, 502   tearDownService(label:socketPath:)   ← found by reading
+596             tearDownService(label:socketPath:)   ← inside sweepOrphanedServices
+565             the definition
+ 66             init(serviceURL:)  — knows nothing about a host, so a remote endpoint needs new parameters
+265-267         the sunPathCapacity guard, which becomes Unix-only
+276             the plist's --socket argument
+310             the connect
+```
+
+**What the change therefore is:** a `Transport` value (`.unixSocket(path:)` / `.tcp(host:port:)`); a **lifecycle**
+branch in `ensureProcess` that *does not launch* when the transport is remote; new init parameters to carry the
+remote endpoint; the `sunPathCapacity` guard made Unix-only rather than deleted; the plist arguments taken from
+the transport when there is one to launch; and `tearDownService` taking a transport so that only a Unix
+transport unlinks a file. Then a ~150 s release build and the app's tests.
+
+**Not attempted.** Two aborted patches established the shape and cost nothing — both used assert-guarded
+replacements that refuse to guess, so the file was never written and `git status` on it is empty. The honest
+position is that this is a design change to a client that manages processes, and it deserves to be made in one
+pass with the context to build and test it, not as a corner of a round spent watching an install.
