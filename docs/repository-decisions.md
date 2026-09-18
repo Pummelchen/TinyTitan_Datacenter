@@ -5190,3 +5190,33 @@ supports must say which reference figure it is being compared against. The refer
 non-monotonic — 5.164 tok/s at 1 GB, 6.019 at 2 GB, **7.075 at 3 GB**, 2.756 at 4 GB, the last collapsing
 because a 4 GB wired cache no longer fits in 8 GiB — so a run at the wrong slot count is not merely a different
 number, it is a **different point on a curve with a peak in it**.
+
+## D162 — The shard plan is now in the reference, building clean
+
+`D160` specified the port; it is done. `ShardPlan.swift` now lives in the fork's
+`sources/TinyTitanDecodeProtocol/` — the module that exists for **contracts between nodes**, which is exactly
+what a plan is — and the fork builds clean:
+
+```
+swift build -c release     Build complete! (98.16 sec), 0 errors, 0 warnings
+```
+
+**Why it is the module's business.** `D152` found the reference has no shard concept of any kind — a grep for
+`shardPlan|ShardPlan|shard-plan|nodeID|nodeId` returns nothing across the tree. A plan is not a runtime detail;
+it is the thing every node must agree on **before** a run, and `TinyTitanDecodeProtocol` is where this project
+already keeps the things two nodes must agree on: the frame codec, the commands, the events. Putting it there
+rather than in the engine is the same argument as `D135` — the service boundary is the right seam, and the plan
+belongs on the boundary side of it.
+
+**Carried over unchanged, with a provenance header recording where it came from** (this repository, MIT, `D20`):
+the flat `owners` array indexed by expert id so ownership cannot be doubled or dropped; plan-as-data; the
+`canonicalDigest` compared at bring-up so disagreeing nodes refuse to start; and `validate()` including the
+contiguous-shape check. Also carried over is a **deliberate absence** — there is no "node owns nothing" check,
+because a missing node always fails the shape check first and an idle node is a legitimate plan when a model has
+fewer experts than the cluster has nodes. The original records that the check existed until a test could not
+reach it, which is a good reason to leave it out.
+
+**What is still missing for a run:** nothing reads the plan yet. `D153` located the seam —
+`PreadExpertStreamer.planExpertsCached` decides what to fetch and `executeExpertCachePlan` fetches it — so the
+plan has to reach that decision, and the contribution exchange has to be built to `D154`/`D158`'s shape (full
+k=8 arrays, summed in slot order, once per step). This commit is the data contract; the consumer is next.
