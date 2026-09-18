@@ -7887,3 +7887,39 @@ opportunity is 51.5 ms of a 106 ms body.
 does not divide - but it says the per-layer term is **IO plus wait**, and the **IO does divide**: a node owning a
 quarter of the experts reads a quarter as much, so the 51.5 ms becomes ~12.9 ms and the wait that depends on it
 shrinks with it. **The term that `D224` treated as indivisible is mostly the read, and the read divides.**
+
+## D227 — The prefetch does not hide the read, and nothing in its tuning moves the layer body
+
+`D226` found the layer body exposed as **49% IO and 43% wait, end to end**, and left one contradiction: the trace says
+51.5 ms of per-layer read is exposed, while `D195` measured `PREFETCH_AHEAD=2` as **28% worse**. The layer trace
+answers it directly, because it separates `io_us` from `wait_us` and the knobs should move the first into the second.
+Node3, the reference install, 40 slots, 24 tokens:
+
+| config | tok/s | body | io | wait | cb1 |
+| --- | --- | --- | --- | --- | --- |
+| default | 7.233 | 2712 | 1186 | 1313 | 79 |
+| `PREFETCH_AHEAD=2` | 6.935 | 2729 | **1237** | 1275 | 82 |
+| `PREFETCH_MIN_MARGIN=0` | 7.269 | 2711 | 1185 | 1314 | 80 |
+| `PREFETCH_TRACE=1` | 7.107 | 2739 | 1301 | 1186 | 79 |
+
+**`PREFETCH_AHEAD=2` makes the IO worse and the body worse.** The requested lookahead does not move read time into
+the wait - it adds requests in flight against a path `D196` measured as **bandwidth-limited**, and `D203` measured
+at a **37% duty cycle**. So `D195`'s result is confirmed by a second, independent instrument, and the honest reading
+is not that the prefetch is mistuned but that **it is not doing the job the name implies.**
+
+**The body is invariant across every prefetch setting: 2711-2739 us.** Nothing in the prefetch surface changes what
+a layer costs. That is a strong statement and it is what makes `D226`'s 51.5 ms real rather than a measurement
+artefact: the engine has a prefetch ring, exposes the tuning for it, and the ring does not reduce the exposed read by
+a measurable amount at any setting.
+
+**What that means for the target, and it is the cleanest statement of the session.** The read is **47.4 ms** of the
+**106 ms** body (`io_us` 1186 x 40), it is **fully exposed**, and the machinery that exists to hide it does not. So
+the lever is not a setting - it is **structure**: read layer L+1's experts while layer L waits for its GPU, instead
+of reading layer L's while layer L waits for nothing. `D202` computed that overlapping reads, device and host is
+worth **7.5 -> 20.2 tok/s**, and this is the measurement that says the overlap does not currently happen and no knob
+supplies it.
+
+**And the four-node case inherits it directly.** A node owning a quarter of the experts has a quarter of that
+47.4 ms - **11.9 ms** - and every other per-layer term is unchanged. The read is the term that divides and it is
+also the term that is exposed, which is the same conclusion `D217` reached from the cache sweep, now with the
+engine's own timer behind it instead of a fit.
