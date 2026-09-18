@@ -1000,9 +1000,6 @@ kernel void moe_phase2_down_reduce_k8(
     constant uint& D [[buffer(6)]],
     constant uint& F [[buffer(7)]],
     device const uint* io_status [[buffer(8)]],
-    // D180: the peers' contributions to this layer's slots, laid out [d][8], fp32, zero where a peer owns
-    // nothing. NULL in every single-node run, where the branch below is not taken at all.
-    device const float* remote [[buffer(9)]],
     uint d [[threadgroup_position_in_grid]],
     uint sg_idx [[simdgroup_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]]
@@ -1025,14 +1022,7 @@ kernel void moe_phase2_down_reduce_k8(
 
     const float value = moe_int4_gemv_row_simd_dev_vec(
         dW, dS, dB, act_slot, d, FF, lane);
-    if (lane == 0) {
-        float p = float(routing_w[sg_idx]) * value;
-        // The peer's partial for THIS slot, added before the ordered sum below and not after it. Summing
-        // node-level results on the host instead would associate the additions differently, which is a
-        // different fp32 number: 1e8 + 1.0 - 1e8 is 0.0 while 1e8 - 1e8 + 1.0 is 1.0.
-        if (remote != nullptr) { p += remote[d * 8 + sg_idx]; }
-        partial[sg_idx] = p;
-    }
+    if (lane == 0) partial[sg_idx] = float(routing_w[sg_idx]) * value;
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     if (sg_idx == 0 && lane == 0) {

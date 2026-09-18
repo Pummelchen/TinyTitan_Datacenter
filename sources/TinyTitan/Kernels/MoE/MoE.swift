@@ -553,11 +553,7 @@ final class MoE {
         f: UInt32,
         topK: UInt32,
         ioStatus: MTLBuffer? = nil,
-        ioStatusOffset: Int = 0,
-        // D180: the peers' partials for this layer, laid out [d][8] fp32, zero where a peer owns nothing.
-        // `nil` on every single-node run, and the kernel's `remote != nullptr` guard then skips the add
-        // entirely - so the single-node bit pattern is untouched rather than merely unchanged on average.
-        remotePartials: MTLBuffer? = nil
+        ioStatusOffset: Int = 0
     ) throws {
         validate(routedBlobs: routedBlobs, topK: topK)
         var dimension = d
@@ -584,9 +580,6 @@ final class MoE {
         encoder.setBuffer(ioStatus ?? alwaysReadyIOStatus,
                           offset: ioStatus == nil ? 0 : ioStatusOffset,
                           index: 8)
-        // Left UNBOUND rather than bound to a zero buffer: an unbound device pointer is null in Metal, which
-        // is what the kernel tests, and it costs no allocation on the path that is not sharded.
-        if let remotePartials { encoder.setBuffer(remotePartials, offset: 0, index: 9) }
         // One simdgroup per expert slot. The kn kernel has no sg >= k guard
         // precisely because the launch width says k, so this must stay in
         // step with it: 32 lanes x k.
