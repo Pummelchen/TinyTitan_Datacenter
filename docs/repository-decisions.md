@@ -10048,3 +10048,51 @@ twenty-prompt run separates them**, and it is the first measurement in the plan.
 
 **No code is written against this.** The document is a proposal; every figure in it is measured or marked a
 projection, and section 12 records the objective as unmet.
+
+## D287 — The wire is still unmeasured, and node4's LAN egress is unreliable for the harness's own processes
+
+`D286`'s plan opens with three measurements before any engine work, and the third - true wire capacity with
+parallel streams - needs no code, so it was attempted first. **Three attempts, three invalid results, and the
+instrument was at fault each time rather than the wire.**
+
+**Attempt 1** used `nc -N`, which macOS's `nc` does not support: every stream died on
+`invalid tcp adaptive write timeout value` and the timing measured broken pipes at **19 GB/s**, which is memory
+speed. **Attempt 2** reported **14 GB/s** for a single 300 MB stream and `No route to host` for the parallel ones -
+stale receivers from attempt 1 still held the ports. **Attempt 3** verified the receiver was genuinely listening
+before sending anything, and produced the finding:
+
+    RECEIVER READY (1 streams on 9300..9300)
+      stream 0: [Errno 65] No route to host
+
+**And then the same failure on every port, including 22.** With node1's firewall reporting *disabled*, a stable
+route via `en0`, and ping succeeding to all three farm nodes, the pattern is:
+
+| from node4 (the harness's machine) | result |
+| --- | --- |
+| `ping` to the farm | **works** |
+| `ssh` to the farm | **works** |
+| **outbound TCP from a harness-spawned process to any port** | **EHOSTUNREACH** |
+| **inbound** to node4 on 22 | **works** |
+
+**That is the signature of macOS Local Network Privacy**, which grants system services and denies unpermitted
+applications - and `EHOSTUNREACH` is the documented result rather than a refusal. **So `D172` was right and `D285`
+over-corrected it.** `D285` measured `ping` and `nc -z 22`, saw both succeed, and declared the connectivity claim
+falsified; what it had actually measured was that *the paths macOS permits* work. **The connectivity claim was
+wrong in its details - the machine is on the LAN, dual-homed, and reaches the farm - and right in its conclusion:
+the harness cannot open arbitrary LAN connections to the farm.** Two readings of the same machine, both
+incomplete, each written down as a fact.
+
+**What this means for the designs.** `D286` treats the wire as a single measured number of 118 MB/s, and that
+number came from the earlier cluster runs, which travelled over the VPN because the node names resolve there.
+**The LAN has still never been measured**, and the 118 MB/s may be a VPN figure rather than a switch figure. That
+matters directly: **Design C lives or dies on whether the wire is materially faster than 118 MB/s**, and Design A's
+case is strengthened if it is not.
+
+**And node4 cannot be the fourth node** until either the permission is granted to the harness's process or the
+measurement and the run are driven from a farm node over its own LAN interfaces. **The second is available today**
+and needs no permission change: nodes 1-3 can measure and run against each other over the LAN addresses, and node4
+can orchestrate over the VPN as it already does.
+
+**The honest position on this round: no test in `D286`'s plan has produced a usable number yet**, and the two that
+were attempted taught only that the instruments were broken. **The wire measurement is still the first thing to
+get right, and it should be run between two farm nodes rather than from here.**
