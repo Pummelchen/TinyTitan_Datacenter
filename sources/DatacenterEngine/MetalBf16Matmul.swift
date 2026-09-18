@@ -70,6 +70,125 @@ public enum MetalBf16Matmul {
 
     /// `x` is `[rows, k]` and `w` is `[out, k]` of **little-endian bf16**, the layout the install stores and
     /// `InstallFile.decodeRaw` widens. The result is `[rows, out]`.
+    /// Whether the head is **mapped on the device once** rather than copied every step (`D115`), on by
+    /// default; `SHARD_HEAD_RESIDENT=0` restores the per-step copy so the two are compared on one binary.
+    public static var residentEnabled: Bool {
+        ProcessInfo.processInfo.environment["SHARD_HEAD_RESIDENT"] != "0"
+    }
+
+    /// A weight tensor mapped on the device and kept for the life of the run (`D115`).
+    ///
+    /// The head is **1.017 GB** and does not change between steps, but `matmul` below copies all of it into a
+    /// device buffer on **every call** — 31 blocks x 33.5 MB = 1.04 GB a step, for arithmetic that costs about
+    /// a millisecond. `head` measured 116 ms and almost none of it was the matrix.
+    ///
+    /// **`bytesNoCopy` over the payload the engine already holds**, so this is neither a copy nor extra
+    /// memory: the head is resident in the payload cache for the whole run, and mapping those pages is the
+    /// whole operation. The one condition `makeBuffer(bytesNoCopy:)` has is page alignment, and a pointer that
+    /// fails it falls back to a copying buffer rather than to a wrong answer. The `Data` is retained for the
+    /// same reason — a mapped pointer whose storage was released is a crash, not a slow read.
+    private struct ResidentWeight {
+        let buffer: any MTLBuffer
+        let keepAlive: Data?
+    }
+
+    private static let residentLock = NSLock()
+    nonisolated(unsafe) private static var residentWeights: [String: ResidentWeight] = [:]
+
+    /// Map `w` on the device once under `key`. Idempotent, and safe to call from several threads.
+    public static func upload(key: String, w: Data) throws {
+        guard !w.isEmpty else { return }
+        let pipeline = try Self.pipeline.current()
+        residentLock.lock()
+        defer { residentLock.unlock() }
+        guard residentWeights[key] == nil else { return }
+        let page = Int(getpagesize())
+        if let base = w.withUnsafeBytes({ $0.baseAddress }), Int(bitPattern: base) % page == 0,
+            let buffer = pipeline.device.makeBuffer(
+                bytesNoCopy: UnsafeMutableRawPointer(mutating: base), length: w.count,
+                options: .storageModeShared, deallocator: nil
+            )
+        {
+            residentWeights[key] = ResidentWeight(buffer: buffer, keepAlive: w)
+            return
+        }
+        guard let buffer = pipeline.device.makeBuffer(length: w.count, options: .storageModeShared) else {
+            throw Error.commandFailed("could not allocate \(w.count) bytes for resident weight \(key)")
+        }
+        w.withUnsafeBytes { source in
+            if let address = source.baseAddress {
+                buffer.contents().copyMemory(from: address, byteCount: w.count)
+            }
+        }
+        residentWeights[key] = ResidentWeight(buffer: buffer, keepAlive: nil)
+    }
+
+    /// Whether `key` is already mapped, so a caller can skip fetching a payload it no longer needs.
+    public static func isResident(key: String) -> Bool {
+        residentLock.lock()
+        defer { residentLock.unlock() }
+        return residentWeights[key] != nil
+    }
+
+    /// `matmul` against a weight **already on the device** (`D115`), at `offset` bytes into it.
+    ///
+    /// Same arithmetic, same kernel, same contract: the only difference is that the weight is not copied.
+    public static func matmulResident(
+        x: [Float], key: String, offset: Int, rows: Int, k: Int, out: Int
+    ) throws -> [Float] {
+        guard rows >= 0, k >= 0, out >= 0 else {
+            throw Error.shapeMismatch("negative shape \(rows)x\(k)x\(out)")
+        }
+        guard x.count == rows * k else {
+            throw Error.shapeMismatch("x has \(x.count) values, \(rows)x\(k) needs \(rows * k)")
+        }
+        let values = rows * out
+        guard values > 0 else { return [] }
+        if k == 0 { return [Float](repeating: 0, count: values) }
+        let pipeline = try Self.pipeline.current()
+        residentLock.lock()
+        let held = residentWeights[key]
+        residentLock.unlock()
+        guard let held else {
+            throw Error.commandFailed("resident weight \(key) was never uploaded")
+        }
+        guard offset >= 0, offset + out * k * 2 <= held.buffer.length else {
+            throw Error.shapeMismatch(
+                "resident weight \(key) has \(held.buffer.length) bytes, \(offset)+\(out * k * 2) needed"
+            )
+        }
+        return try Self.buffers.withBuffers(
+            [rows * k * 4, 0, values * 4], device: pipeline.device
+        ) { cached in
+            let xBuffer = cached[0], outBuffer = cached[2]
+            x.withUnsafeBytes { source in
+                if let base = source.baseAddress, rows * k > 0 {
+                    xBuffer.contents().copyMemory(from: base, byteCount: rows * k * 4)
+                }
+            }
+            var dims = SIMD4<UInt32>(UInt32(rows), UInt32(k), UInt32(out), 0)
+            guard let command = pipeline.queue.makeCommandBuffer(),
+                  let encoder = command.makeComputeCommandEncoder()
+            else { throw Error.commandFailed("could not make a command buffer") }
+            encoder.setComputePipelineState(pipeline.state)
+            encoder.setBuffer(xBuffer, offset: 0, index: 0)
+            encoder.setBuffer(held.buffer, offset: offset, index: 1)
+            encoder.setBuffer(outBuffer, offset: 0, index: 2)
+            encoder.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 3)
+            let tile = MetalBf16Matmul.tile
+            encoder.dispatchThreadgroups(
+                MTLSize(width: (out + tile - 1) / tile, height: rows, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: tile, height: 1, depth: 1)
+            )
+            encoder.endEncoding()
+            command.commit()
+            command.waitUntilCompleted()
+            if let error = command.error { throw Error.commandFailed("\(error)") }
+            let raw = outBuffer.contents().bindMemory(to: Float.self, capacity: values)
+            return Array(UnsafeBufferPointer(start: raw, count: values))
+        }
+    }
+
     public static func matmul(x: [Float], w: Data, rows: Int, k: Int, out: Int) throws -> [Float] {
         guard rows >= 0, k >= 0, out >= 0 else {
             throw Error.shapeMismatch("negative shape \(rows)x\(k)x\(out)")

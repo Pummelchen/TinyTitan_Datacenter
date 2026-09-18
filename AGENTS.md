@@ -210,6 +210,18 @@ contract is to reallocate its **whole set** when the request count changes, so e
 everything — **2.47 s/step against 0.92**, with the damage showing in `mix.gather`, a phase the change never
 touched. The largest phase is now `mix.gather` at **245 ms** — the expert read, which the page cache is not
 holding — and residency is the lever that remains.
+**Then the head stopped being copied, and the read wall got measured (`D115`).** `MetalBf16Matmul.matmul`
+copies its whole weight into a device buffer on **every call**, and the head is 1.017 GB called in 31 blocks —
+1.04 GB of copying a step for about a millisecond of arithmetic. It is now mapped once with
+`makeBuffer(bytesNoCopy:)` over the payload the engine already holds (neither a copy nor extra memory):
+`head` **116 -> 82 ms**, **+18%** on the step in four alternated pairs (0.757 s against 0.896), default
+**0.678 s, 1.476 tok/s**, RSS 2.3-2.5 GB. The key must name the **(tensor, row window)** pair — keyed on the
+name alone, node 1 reused node 0's head and `ShardedGenerateTests` produced the wrong tokens. And the read wall
+is now measured from four sides: the device's cold sequential rate is **1.65 GB/s** and the preload already
+beats it (1.82 GB/s cold, **20 GB/s warm**); the 582 MB/step of slabs is reused cross-step (43% at a 1 GiB
+cache, 53% at 1.5 GiB) but the anonymous memory costs more than it saves, in every configuration tried,
+**including with the page cache disabled** (61% hit rate, `attn.core` 209 ms against 150). 7 tok/s is **143
+ms/step** against a **238 ms** read and **440 ms** of everything else.
 
 ## Scope of this checkout
 

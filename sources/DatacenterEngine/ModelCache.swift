@@ -82,14 +82,26 @@ extension Qwen3_5Forward {
         // transient allocations, which the node answered with six gigabytes of swap and the disk watchdog.
         // One fetch, then cheap slices. `storedRows(named:range:)` over the whole slice is the same call a
         // block would make, so a source without a stored form simply falls through to the old path.
-        var storedHeadValue: StoredRows?
-        if MetalBf16Matmul.enabled, MetalBf16Matmul.isAvailable,
-            let whole = try upstream.storedRows(named: name, range: rows),
-            whole.dtype == "bf16", whole.width == hiddenSize
-        {
-            storedHeadValue = whole
-        }
-        let storedHead = storedHeadValue
+        // **The device copy is taken once** (`D115`). `resident` is `(key, stored)` when the head is mapped on
+        // the device; `stored` is only non-nil on the call that mapped it, so the fallback below stays
+        // available for a source with no stored form.
+        // **The key names the window, not the tensor** (`D115`). A sharded node holds only its own slice of
+        // the vocabulary, so keying on the name alone let node 2 reuse node 1's mapping and produce node 1's
+        // tokens — which is exactly what `ShardedGenerateTests` failed on the first time this was written. A
+        // mapped weight is a (tensor, row window) pair and the key has to say so.
+        let headKey0 = "\(name)#\(rows.lowerBound)..<\(rows.upperBound)"
+        let resident: (key: String, stored: StoredRows?)? = try {
+            guard MetalBf16Matmul.enabled, MetalBf16Matmul.residentEnabled, MetalBf16Matmul.isAvailable
+            else { return nil }
+            if MetalBf16Matmul.isResident(key: headKey0) { return (headKey0, nil) }
+            guard let whole = try upstream.storedRows(named: name, range: rows),
+                whole.dtype == "bf16", whole.width == hiddenSize
+            else { return nil }
+            try MetalBf16Matmul.upload(key: headKey0, w: whole.data)
+            return (headKey0, whole)
+        }()
+        let storedHead = resident?.stored
+        let headKey = resident?.key
         let stride = hiddenSize * 2
         logits.withUnsafeMutableBufferPointer { buffer in
             nonisolated(unsafe) let target = buffer.baseAddress!
@@ -97,6 +109,16 @@ extension Qwen3_5Forward {
                 let lower = rows.lowerBound + block * blockRows
                 let upper = min(lower + blockRows, rows.upperBound)
                 do {
+                    if let headKey {
+                        // The offset is into the mapped weight, so the slice arithmetic — `Data` slices keep
+                        // the parent's indices — never happens on this path.
+                        let product = try MetalBf16Matmul.matmulResident(
+                            x: x, key: headKey, offset: block * blockRows * stride,
+                            rows: 1, k: hiddenSize, out: upper - lower
+                        )
+                        for column in 0..<(upper - lower) { target[lower + column] = product[column] }
+                        return
+                    }
                     if let storedHead {
                         // The slice is a view of the cached payload: no copy, no decode. **`Data` slices keep
                         // the parent's indices**, so the window is offset from `startIndex` rather than from

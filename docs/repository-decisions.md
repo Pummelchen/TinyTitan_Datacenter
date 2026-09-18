@@ -3507,3 +3507,60 @@ the expert read — 582 MB a step that is a device read because the page cache i
 takes it to 7 tok/s, and this node's usable memory is why `D106` and `D113` both refused an anonymous cache
 that size. Getting there needs the expert working set to be resident in *clean, evictable* pages rather than
 in the process, which is a change to how the install is read, not to how it is multiplied.
+
+## D115 — The head was copied to the device every step, and the read wall is now measured from four sides
+
+**The head is mapped on the device once instead of copied every step.** `MetalBf16Matmul.matmul` copies the
+whole weight into a device buffer on **every call**, and the head is **1.017 GB** called in 31 blocks — 1.04 GB
+of copying a step for arithmetic that costs about a millisecond. It is now uploaded once with
+`makeBuffer(bytesNoCopy:)` **over the payload the engine already holds**: neither a copy nor extra memory, since
+the head is resident in the payload cache for the whole run and the operation is a mapping. The one condition
+that call has is page alignment, and a pointer that fails it falls back to a copying buffer rather than to a
+wrong answer. `SHARD_HEAD_RESIDENT=0` restores the per-step copy so the two are compared on one binary.
+
+| arm (4 alternated pairs, one binary) | per-step | median |
+| --- | --- | --- |
+| per-step copy | 0.991, 0.903, 0.884, 0.888 | 0.896 s |
+| **resident** | 0.779, 0.790, 0.724, 0.735 | **0.757 s** |
+
+`head` **116 -> 82 ms**, and the change is worth **+18%** on the step. Three default runs afterwards, digest
+`ed5e0328c087e4db…` in all: 0.674, 0.678, 0.697 s/step — median **0.678 s, 1.476 tok/s**, peak RSS
+2.28-2.53 GB.
+
+**The key has to name the window, not the tensor.** Keying the mapping on the tensor name let a sharded node
+reuse another node's head: `ShardedGenerateTests` failed with node 1 and node 2 producing **node 0's tokens**
+(`[14]` against the expected `[60]`), because a mapped weight is a *(tensor, row window)* pair and the name
+alone does not say which slice of the vocabulary it is. That is the `D111` lesson in a different place — a
+cache key that is coarser than the thing being cached is wrong in exactly the case the single node never
+exercises.
+
+**And the read wall, measured from four directions.** The decode step reads **582 MB of expert slabs** (320
+slabs x 1.819 MB). The device's own cold sequential rate is **1.65-1.67 GB/s** (two 2 GB `F_NOCACHE` sweeps),
+and the 16-task preload already beats it at **1.82 GB/s** cold — so the read is at the hardware, not at the
+code. Warm, the same bytes come back at **20 GB/s**, which is what makes residency the only lever:
+
+| slab cache | expert bytes/step | hit rate | step |
+| --- | --- | --- | --- |
+| 128 MiB | 679 MB | — | 0.713 s |
+| 1024 MiB | 333 MB | 43% | 1.038 s |
+| 1536 MiB | 273 MB | 53% | 1.187 s |
+
+**The reuse is real and the memory is not there.** At 1536 MiB every phase regresses — `mix.gather` 315,
+`attn.core` **284**, `head` **281**, `load` 97 — and `attn.core` and `head` never touch the slab cache. That
+is the signature of pressure, not of the cache. Disabling the kernel's buffer cache so that the slabs are the
+*only* consumer of those pages does not rescue it either: `SHARD_INSTALL_CACHED=0` with a 2048 MiB slab cache
+reaches a **61%** hit rate (284 MB/step) and still costs `attn.core` 209 ms against 150, for 0.824 s against
+**0.698**. And streaming the dense payload instead of holding it, re-measured after `D114`, is worse by more
+than it frees: **1.057 s/step** and 3.08 GB of reads a step against 0.712 s and 0.75 GB.
+
+**The arithmetic of the objective.** 7 tok/s is **143 ms a step**. The expert read alone is **238 ms** at the
+device's measured rate, and the phases that are not the read total **440 ms** — so a *free* read would still
+leave this step at ~2.3 tok/s. Closing the gap needs the expert working set resident in something the machine
+can afford, and this node cannot: the reference's own numbers collapse in the same place for the same reason
+("a 4 GB wired cache, the dense weights, the KV and the prompt cache no longer fit in 8 GiB, so the machine
+swaps"). Two caches of the same bytes — the kernel's and ours — do not add up to one that fits.
+
+**This is not recorded as a blocker.** The condition has been *established* this round, not *persisted*: the
+rounds before it were still finding wins (`D111` +35%, `D114` +27%), and the honest next step is to keep
+looking for them rather than to declare the floor. What is now on record is that closing the last 5x by
+optimising this execution structure has a measured wall in front of it, and that the wall is memory, not code.
