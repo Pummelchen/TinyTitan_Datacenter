@@ -6855,3 +6855,44 @@ arrangement changes that - which is `D183`'s conclusion arrived at from the othe
 **The fourteen rounds in one line.** The target needs the demand reads issued concurrently across layers, because
 one layer's compute cannot hide one expert's read; that is a change to the read issue path, worth up to 3x on the
 dominant term, and it is the only route the measurements support.
+
+## D201 — The technique DC-137 proposes is already proven in this codebase, and for the same reason
+
+Reading the decode path for `DC-137` turned up the repository's own account of applying exactly the change that
+decision proposes, to the same class of problem, with a measurement:
+
+    Encodes the shared dense MLP and commits it immediately.
+    It depends only on `routedX`, which `tailCB` produces, so it can be queued the moment `tailCB`
+    is committed -- before the router readback, not after it. Both sit on the same queue, so the GPU
+    runs this while the CPU is blocked waiting for `tailCB` to report the routing.
+    That ordering is the whole point. Encoding it after the readback left a measured 7.88 ms/token of
+    GPU idle in the `attn_tail_router -> shared_expert` transition -- 0.197 ms per layer of
+    command-buffer round trip during which the GPU had nothing queued, and the largest single
+    component of decode's idle time.
+        -- RealForwardRunner+Decode.swift:1292-1302
+
+**Three things follow, and the third changes what `DC-137` should say.**
+
+1. **The principle is established here, by measurement, not by analogy.** Work that depends only on data already
+   produced is queued **before** the CPU blocks on a readback, so the device works during the wait. The
+   repository found that ordering worth **7.88 ms/token** and called it the largest single component of decode's
+   idle time at the time.
+2. **It is 0.197 ms per layer**, which is the same order as the read figures `D200` works in: one expert read is
+   0.91 ms and one layer's device window is 1.05 ms. So the idle this session is chasing is of a size the
+   repository has moved before.
+3. **And it is already taken.** The 7.88 ms/token was **fixed**, so it is not part of the 97.4 ms `D198` measured.
+   What remains is a different mechanism: not a command-buffer round trip but the **I/O wait** for experts the
+   prefetch ring did not land. `DC-137`'s proposal - issue layer L's reads before L's attention - is therefore
+   **the right technique applied to the wrong stage**: the reads cannot be issued before the router readback,
+   because until the readback returns, the CPU does not know which experts the layer wants. The ring exists to
+   bridge exactly that gap, and `D200` shows it can bridge only one read per layer.
+
+**So `DC-137` as written is not the change.** The correct statement of the remaining lever is narrower and harder:
+**the CPU must be given something to do, or the device something to run, during the ~97 ms the disk is reading
+experts the ring could not predict** - and since the experts are genuinely unknown until the readback, the only
+sources of overlap are (a) more speculation, which `D197` measured as harmful, (b) work from a *different* layer
+or token, which is batching, or (c) reading the misses faster, which `D196` bounds at up to 3x on the read term.
+
+**Of those, (c) is the one that needs no new mechanism** - the demand set is known, it is simply read at 985 MB/s
+where the same reads achieve 1,940 - and it is where the next attempt belongs. `DC-137` is corrected rather than
+left to send the next session down a stage that cannot work.
