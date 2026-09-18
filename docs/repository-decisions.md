@@ -4535,3 +4535,28 @@ while continuing to ignore it for disk and for counters.
 What is established: the converter is at 13 of 26 shards with 8.1 GB of output written and 11 GB free, and it
 will most likely be stopped by the disk watchdog before it finishes. That is a **prediction from a rising
 series**, not a measurement, and it is labelled as one.
+
+## D145 — The LAN transport has exactly two call sites, and one Unix-only guard between them
+
+The next step after a tested transport is to put it *in the service*, and the reconnaissance for that is small
+enough to state exactly. `DecodeUnixSocket` is consumed in three places and only two of them open sockets:
+
+| call site | role |
+| --- | --- |
+| `sources/TinyTitanDecodeService/Entry.swift:18` | **server**: `try DecodeUnixSocket.listenAndAccept(path: socketPath)` |
+| `sources/TinyTitanApp/Core/Inference/DecodeServiceInferenceClient.swift:310` | **client**: `let handles = try DecodeUnixSocket.connect(path: socketPath)` |
+| `…DecodeServiceInferenceClient.swift:265-267` | a guard, `socketPath.utf8.count < DecodeUnixSocket.sunPathCapacity`, refusing a path longer than `AF_UNIX` allows |
+
+So the seam is **two socket-opens and one guard**, and the guard is the interesting one: an `AF_UNIX` path
+limit has no analogue on a TCP port, so it must become **transport-conditional** rather than deleted — the Unix
+behaviour stays exactly as it is, and a TCP endpoint is not asked to satisfy a constraint that does not apply
+to it. That is the same discipline `D142` used for `unlink`-before-bind and `chmod 0600`: the difference between
+the two transports belongs in the transport, not in a caller that has to know which one it holds.
+
+What this makes the next code step, in order: a transport choice at those two sites (a path for Unix, a
+`host:port` for TCP), the guard made conditional, and then an **end-to-end** test — a real `DecodeServiceCommand`
+frame crossing the TCP transport and coming back as a `DecodeServiceEvent` — which is the thing `D143`'s three
+transport tests deliberately do *not* cover, because they test the socket rather than the service on top of it.
+
+Not started. The converter still holds the disk (`D138`-`D144`), and this is a code change that should be
+tested at the service level rather than written and left untested.
