@@ -5669,3 +5669,44 @@ failures. `ssh -f -n 'nohup … &'` is what detaches reliably. A background proc
 **Still arithmetic on the compute side.** The 35.3 ms floor assumes perfect 4-way scaling, which `D87`/`D93` say
 is optimistic because the dense weights and the head are **replicated**. Nothing here is a sharded run — the
 exchange frames have not yet carried a contribution between nodes.
+
+## D173 — The exchange payload measured on the switch, and `D158`'s conclusion is right for the wrong reason
+
+`D172` measured the wired round trip (0.565 ms) and concluded that per-layer exchange was "comparable" to
+per-step. Measuring the **payload** corrects that — and it corrects it in the direction of `D158`'s original
+answer, while replacing its justification.
+
+A 1.97 MB payload — the size of one step's contributions at six non-owned slots per layer — round-tripped through
+node1 and timed from node2, **20 times**:
+
+```
+min 34.11 ms   median 34.20 ms   max 36.59 ms     (send + echo back)
+=> 115 MB/s bidirectional, matching D171's 118 MB/s
+=> one-way 1.97 MB = 16.7 ms
+```
+
+**Which makes the two shapes separable for the first time on real numbers:**
+
+| shape | latency | bytes | total | step | tok/s |
+| --- | --- | --- | --- | --- | --- |
+| **per-layer** (40×) | 40 × 0.565 = **22.6 ms** | 40 × 0.42 = 16.9 ms | **39.3 ms** | 74.6 ms | **13.4** |
+| **per-step** (1×) | 0.565 ms | **16.7 ms** | **17.3 ms** | 52.6 ms | **19.0** |
+
+**Per-step wins by 2.3×, which is `D158`'s conclusion — but every number in its reasoning was wrong.** `D158`
+said forty round trips cost ~600 ms and that this made per-layer "~4× *slower* than a single node". On the wire
+those forty round trips cost **22.6 ms**, and the term that actually decides the comparison is **16.7 ms of
+bytes**, which `D158` did not model at all. The right answer came from a latency bound that was 26× too high
+happening to point the same way as a bandwidth cost nobody had measured.
+
+**Why it matters beyond bookkeeping.** A conclusion that is right for the wrong reason is not reusable. `D158`'s
+justification would have forbidden per-layer exchange even where it *is* right — the same wire with a smaller
+payload, or a replicated plan that cuts the bytes per step while leaving the layer count alone. On the correct
+reasoning the rule is explicit: **per-layer costs a fixed 0.565 ms per layer that no plan can reduce, while
+per-step costs bytes that replication can.** That is a different design space, and it is the one to argue in.
+
+**One correction to `D172`.** It said per-layer was "close to the alternative" at 22.6 ms against 16.7 ms —
+comparing *latency* against *latency plus bytes*. Per-layer's total is **39.3 ms** against 17.3 ms. The earlier
+statement counted only the round trips and not the payload they carry.
+
+**No overlap is modelled in either row**, which is the lever both shapes leave on the table: 39.3 ms of per-layer
+exchange against a 35.3 ms compute floor is exactly the ratio that pipelining is meant to exploit.
