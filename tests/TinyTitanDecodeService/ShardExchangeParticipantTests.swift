@@ -144,24 +144,29 @@ struct ShardExchangeParticipantTests {
     #expect(buf.count == 16)
   }
 
-  // REMOVED: the two-slots-to-one-peer test crashes, and the bisection is the finding, not the test.
-  //
-  // The crash is `Swift/SliceBuffer.swift:317: Fatal error: Index out of bounds`, with a STUBBED transport - so
-  // it is in `contributions` and not on the wire, which is what the end-to-end failure could not separate. It
-  // needs ONE peer owning TWO slots, and that is exactly the case no test covered:
-  //
-  //   the passing test uses experts [1, 3]  -> owners 1 and 3 -> TWO peers, ONE slot each
-  //   the crashing case uses experts [1, 5] -> owner 1 twice  -> ONE peer,  TWO slots
-  //
-  // Every piece the crash could be in reads correctly on inspection - `row(at: 1)` is `values[4..<8]` on an
-  // eight-element reply, `out` has eight rows, and the stub supplies `dimensions: 4`. That means the fault is
-  // somewhere inspection does not reach, and the next step is a debugger rather than more reading: break on
-  // the slice, or replace `reply.row(at:)` with an explicit bounds-checked copy and see whether the crash
-  // becomes a thrown error that names the index.
-  //
-  // It is left out rather than shipped crashing, and it is recorded here because "one peer, two slots" is the
-  // ordinary case on four nodes - a peer owning several of a layer's eight routed experts - so this is not an
-  // edge case, it is the common path, and nothing currently exercises it.
+  /// One peer owning TWO of a layer's routed experts. On four nodes this is the ordinary shape - a peer owns a
+  /// quarter of the experts, so it will often own more than one of eight routed ones - and it is the shape that
+  /// crashed with `SliceBuffer: Index out of bounds` and no frame naming our code. It was bisected here, with a
+  /// stubbed transport, which cleared the wire and left `contributions`; this is the case back in the suite.
+  @Test func onePeerOwningTwoSlotsContributesBoth() throws {
+    let p = plan()
+    let dims = 4
+    // Experts 1 and 5 are both node 1's under round-robin over 8 experts and 4 nodes.
+    let transport = FakeTransport(
+      answers: [1: (slots: [1, 3], values: [1, 2, 3, 4, 5, 6, 7, 8])], node: 0, dims: dims)
+    let participant = ShardExchangeParticipant(plan: p, node: 0, transport: transport)
+    let rows = try participant.contributions(layer: 5, experts: [1, 5], slots: [1, 3],
+                                             activation: [0.5, 0.5, 0.5, 0.5], dims: dims)
+    #expect(rows.count == 8)
+    #expect(Array(rows[1]) == [1, 2, 3, 4])
+    #expect(Array(rows[3]) == [5, 6, 7, 8])
+    // And the kernel layout for the same reply.
+    let remote = try participant.remotePartials(layer: 5, experts: [1, 5], slots: [1, 3],
+                                                activation: [0.5, 0.5, 0.5, 0.5], dims: dims)
+    #expect(remote.count == dims * 8)
+    #expect(remote[0 * 8 + 1] == 1)
+    #expect(remote[3 * 8 + 3] == 8)
+  }
 
   @Test func aReplyForTheWrongLayerIsRefused() throws {
     struct WrongLayer: ShardTransport {

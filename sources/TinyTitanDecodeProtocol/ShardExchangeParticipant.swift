@@ -142,11 +142,24 @@ public struct ShardExchangeParticipant {
             }
             for (index, slot) in reply.slots.enumerated() {
                 guard slot >= 0, slot < ShardReduce.k8 else { throw Error.slotOutOfRange(slot) }
-                let row = reply.row(at: index)
+                guard let row = reply.row(at: index) else {
+                    // The reply does not carry a row for this slot. Reported as the shape mismatch it is, with
+                    // the numbers, rather than as the trap the slice used to be.
+                    throw Error.dimensionMismatch(expected: dims,
+                                                  got: index * reply.dimensions > reply.values.count
+                                                      ? 0 : reply.values.count - index * reply.dimensions)
+                }
                 guard row.count == dims else {
                     throw Error.dimensionMismatch(expected: dims, got: row.count)
                 }
-                for d in 0..<dims { out[slot][d] += row[d] }
+                // `row` is an ArraySlice, AND AN ARRAYSLICE KEEPS ITS PARENT'S INDICES. `reply.row(at: 1)` is
+                // `values[4..<8]`, so `row[0]` does not exist - reading it traps with
+                // `SliceBuffer.swift:317: Fatal error: Index out of bounds` and no frame naming this file. That
+                // is why only the SECOND slot ever crashed, and why every test with one slot per peer passed:
+                // index 0 gives a slice whose startIndex is 0, so the two spellings agree. Offsetting by
+                // `startIndex` is the fix, and it is the reason this bug survived twelve rounds of otherwise
+                // thorough exchange testing.
+                for d in 0..<dims { out[slot][d] += row[row.startIndex + d] }
             }
         }
         return out

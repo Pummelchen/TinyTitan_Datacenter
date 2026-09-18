@@ -57,7 +57,7 @@ struct ShardExchangeServerTests {
 
     #expect(reply.layer == 7)
     #expect(reply.slots == [3])
-    #expect(Array(reply.row(at: 0)) == Self.compute(layer: 7, experts: [200], activation: request.activation))
+    #expect(Array(try #require(reply.row(at: 0))) == Self.compute(layer: 7, experts: [200], activation: request.activation))
   }
 
   // NOTE: the wrong-width guard in `answer` is NOT covered here. It was exercised through a raw socketpair, and

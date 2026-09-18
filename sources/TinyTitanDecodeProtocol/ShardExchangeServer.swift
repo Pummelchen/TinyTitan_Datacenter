@@ -12,7 +12,9 @@ import Foundation
 /// already knows them, and the reason is here: the peer is not required to know or preserve slot identity, only to
 /// answer the experts it was asked about in sequence. A server that reordered its answers would land contributions
 /// on the wrong slots, and `D154` makes that a wrong number rather than an error.
-public final class ShardExchangeServer {
+/// unchecked-invariant: `boundPort` is written once by the serving thread and read afterwards, and a server
+/// serves one connection at a time; the same contract `ShardPeerSet` and `PreadExpertStreamer` carry.
+public final class ShardExchangeServer: @unchecked Sendable {
     /// Run the named experts over the activation and return one row of `dimensions` per expert, in the order
     /// asked. Injected so this type is testable without a model.
     public typealias Compute = (_ layer: Int, _ experts: [Int], _ activation: [Float]) throws -> [Float]

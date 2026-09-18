@@ -37,7 +37,7 @@ struct ShardExchangeTests {
         let decoded = try ShardExchange.decodeReply(from: try ShardExchange.encode(original))
         #expect(decoded == original)
         #expect(decoded.slots == [1, 3], "slot order is the reduce order and must survive the wire")
-        #expect(Array(decoded.row(at: 1)) == Array(original.values[2048..<4096]))
+        #expect(Array(try #require(decoded.row(at: 1))) == Array(original.values[2048..<4096]))
     }
 
     /// The size claim from `D165`/`D168`, asserted rather than assumed: a reply frame must be header + 4 bytes

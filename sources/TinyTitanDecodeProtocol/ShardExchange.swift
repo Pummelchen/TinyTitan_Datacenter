@@ -54,9 +54,18 @@ public enum ShardExchange {
             self.values = values
         }
 
-        /// The row for the `index`-th requested slot.
-        public func row(at index: Int) -> ArraySlice<Float> {
+        /// The row for the `index`-th requested slot, or `nil` if the reply is too short to have one.
+        ///
+        /// It returns an Optional rather than trapping because the arithmetic `index * dimensions` is the one
+        /// place in the exchange where a malformed reply becomes an out-of-bounds slice rather than an error.
+        /// The previous version did exactly that: `values[start..<(start + dimensions)]` on a reply that did not
+        /// carry that many values crashed the process with `Swift/SliceBuffer.swift:317: Fatal error: Index out
+        /// of bounds` and no frame naming any of our code. A receiver that checks is worth more than one that
+        /// trusts, and the caller reports the mismatch in its own terms.
+        public func row(at index: Int) -> ArraySlice<Float>? {
+            guard dimensions > 0, index >= 0 else { return nil }
             let start = index * dimensions
+            guard start >= 0, start + dimensions <= values.count else { return nil }
             return values[start..<(start + dimensions)]
         }
     }
