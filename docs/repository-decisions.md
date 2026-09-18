@@ -8821,3 +8821,38 @@ into specifying one call, and the specification is now complete: three buffers i
 and corrected twice, one plausible candidate rejected on its own naming, scope confirmed against the function
 boundaries rather than assumed, and the allocation hazard named from a precedent that cost this repository 2.7x once
 already.
+
+## D252 — The requesting half is built, and its failure behaviour is verified rather than assumed
+
+The call site the objective named as missing is landed on the fork's `distribution` branch: `encodeDecodeRoutedMoE`
+reads `outIndices`, widens `routedX`, calls `remotePartialsProvider`, copies the `[D * 8]` reply into a persistent
+buffer and passes it as `remotePartials` (`52e24d9`); the CLI supplies that provider from `--shard-plan`,
+`--shard-node` and `--shard-peers` (`9b072ce`); and both seams are `nil` by default, so no run without a plan takes
+a different path from the ones every measurement in this document was taken on.
+
+**Verified on node3 through the deployed binary rather than reasoned about:**
+
+| configuration | result |
+| --- | --- |
+| plan + unreachable peers | **exit 1**, `Connection refused` - fails loudly rather than falling back |
+| plan, no `--shard-peers` | provider `nil`, run completes at **7.151 tok/s** |
+| whole suite | **0 failure markers**, with `productionRoutedPipelineAndHitSplitMatchReference` passing |
+
+**And the round caught a claim that had outlived its fact.** The shard warning was written when the ownership filter
+was a benchmark-only path with no exchange behind it, and it printed `THE OUTPUT IS NOT A RESULT` whether or not
+peers were given. Once the requesting half landed that became wrong in one of the two cases - with peers the
+contributions arrive and the output **is** a result - and **a stale warning is worse than none, because it invites
+someone to discard a valid run or to trust an invalid one.** It now distinguishes the two (`7118a32`).
+
+**This is the third time in this session that a note outlived the fact it described**, after `D236`'s withdrawn
+ceiling and the exposed-IO claim of `D234`. The difference here is that it was caught by **running the code** rather
+than reading it - which is `D239`'s lesson arriving again, and the reason the last four rounds have each ended with a
+command rather than a conclusion.
+
+**What is left is the serving half.** `ShardExchangeServer` exists and is tested with its expert computation
+injected; the real `Compute` is not written. Its shape is settled - `fetchRoutedExperts` -> `makeRoutedArgumentBuffer`
+-> phase 1 -> a down projection -> readback - its cache-sharing is free because `fetchRoutedExperts(layer:experts:)`
+is the entry point the request path already uses, and **its silent-failure mode is written down before the code**:
+the existing down projection applies the routing weight, so a peer built on it would send `w * value` and the
+requester would multiply by `w` again - a wrong number the bit-exactness contract cannot catch, because each side is
+internally consistent. That is `D168`'s trap mirrored.
