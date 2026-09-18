@@ -9005,3 +9005,38 @@ test in this module polls the connect because the same race exists there.
 buffer's third argument, the module decision, the weight trap - all of those were found by reading and were correct
 when written. **The two defects that stopped the run were not in any of them: they were in the deployment and in the
 order two statements execute.** Reading finds what the code says; running finds what it does.
+
+## D258 — The distribution ran: three nodes, the exchange live, and node1 measured BELOW its single-node step
+
+The three-node run completed on node1 for the first time. Its log, end to end:
+
+    [shard] node 0 of 3, peers [1, 2] connected; expert contributions are being exchanged.
+    [stop=maxTokens prefill=5tok/1.77s new=48tok decode=6.77s tok/s=7.095]
+
+**7.095 tok/s at 48 tokens with the exchange live against node1's own single-node 7.61-7.77 at the same length and
+slots.** So the first measured distributed number of this session is **about 0.92x the single node** - not 3x, and
+not even 1x.
+
+**And it is the number the records predicted, from the other end.** `D239` showed that reading a quarter of the
+experts changes the step by nothing, so dividing the read buys nothing; `D235` and `D241` put the reachable speedup
+at whatever the *device* divides, about **1.12x expert-only**; and this run has three nodes rather than four, so its
+share of the routed MoE is smaller. **0.92x is inside what that arithmetic allows** - the exchange costs more than
+the divided kernel time saves, which is exactly the shape `D221` measured when it found the routed MoE to be
+**19.4 ms of a 137.0 ms step**.
+
+**The run is not clean, and saying so matters more than the number.** Only node1 completed: node2 and node3 were
+still in `serve` when they were read, so their tokens were never counted, and a three-node exchange in which one node
+finishes and two are still serving is not a three-node step. **One run, one node, no median, and three nodes instead
+of four - it is a first observation, not the measurement the objective asks for**, and it is recorded as
+`observation_only` in the sense `D38` gives that word.
+
+**What it does establish.** The exchange works end to end on real hardware: plans loaded, peers connected, servers
+answering, contributions arriving and folding into the phase-2 reduce, and a token stream produced - **the first time
+any of that has happened outside a test**. The two defects that stood in the way were both found by running rather
+than reading (`D257`), and one of them - the bundle - was a repeat of a mistake this session had already made.
+
+**What it does not establish.** Anything about four nodes, anything about a quiet farm, and anything about the
+serving node's cost, which `D257`'s caveat says will dominate: `remoteExpertValues` does `experts.count` encodes and
+blocking waits per request, so a peer's answer costs 85 experts' worth of dispatches a layer. **A down-only kernel
+writing `[expert][d]` in one pass is what removes that**, and until it exists a distributed run measures the serving
+node's dispatch pattern at least as much as it measures the plan.
