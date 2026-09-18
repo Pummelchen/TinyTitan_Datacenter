@@ -268,6 +268,19 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     var lastPredictedNext2Layer: [Int] = []
     // Persistent MoE scratch, allocated once; about 56 KiB at production shape.
     let moeActs: MTLBuffer       // [topK * FmoE] FP16
+
+    /// Ask a peer for its share of a layer's routed experts, in the kernel's `[d * 8 + slot]` layout.
+    ///
+    /// A **closure** rather than a stored participant, for two reasons. It keeps `TinyTitan` from depending on
+    /// `TinyTitanDecodeProtocol` - the engine has never depended on the distribution, and the whole measured record
+    /// in this repository rests on the single-node path being untouched (`D164`). And it is consistent with the two
+    /// seams already on this path: `ShardExchangeServer` takes its expert computation as a closure and
+    /// `PreadExpertStreamer` takes `ownedExpertFilter` as one, **both `nil` by default**.
+    ///
+    /// `nil` means unsharded, which is every run that is not given a plan. Arguments are
+    /// `(layer, experts, slots, activation-fp32, dims)`; the result is `dims * 8` floats, or `nil` when a peer
+    /// could not be reached - in which case the caller proceeds single-node rather than contributing a wrong sum.
+    var remotePartialsProvider: ((Int, [Int], [Int], [Float], Int) -> [Float]?)?
     /// Width-2 MTP verify scratch (B2 pair schedule): per-row activation and
     /// output buffers plus two persistent routed argument buffers, created on
     /// first verify. Per-row buffers are deliberately *separate allocations*,
