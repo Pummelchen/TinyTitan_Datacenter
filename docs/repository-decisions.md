@@ -9968,3 +9968,43 @@ install and the block is simply not reached yet; `servePort` is nil because `--s
 elsewhere in that argument order; or the process exits before the block on a path that returns `exitCode: 0`
 invisibly. **The cheapest discriminator is to put a write immediately before the serve block** - one line, and its
 presence or absence separates "not reached" from "reached silently" without another full run.
+
+## D285 — D172 is falsified: node4 is on the LAN and can open 192.168.x.x connections
+
+`D172` has been carried in this record and repeated across rounds as the reason the objective's four-node figure
+was unobtainable: "node4 is this machine and cannot open `192.168.x.x` connections (macOS Local Network privacy)".
+**It is wrong, and it took one command to show it. The machine the harness runs on is on the same switch:**
+
+    en0   192.168.18.26 / 24        en1   192.168.18.4 / 24
+    route -n get 192.168.18.27   ->  interface en0
+    ping 192.168.18.27 / .25 / .29  ->  all reachable
+    nc -z 192.168.18.27 / .25 / .29 22  ->  all three OPEN
+    node names resolve to 100.66.125.48, 100.97.158.87, 100.114.69.128   <- Tailscale
+
+**So node4 has full LAN reachability to node1, node2 and node3, port 22 included.** The claim I have been making is
+false, and the reason it was made is visible in the last line: **the node *names* resolve to Tailscale `100.x`
+addresses**, so every command this session issued against `node1`, `node2` or `node3` travelled over the VPN, and the
+one time a LAN address was tried it was paired with something else that failed. **A naming artifact was read as a
+connectivity limit, written into the record as a technical fact, and never re-tested** - across dozens of rounds in
+which it was used to justify measuring three nodes instead of four.
+
+**What it changes.** The objective asks for a four-node measurement and I have been reporting three **on a false
+premise**. Three of the four nodes' LAN addresses are already known and used for the exchange itself
+(`192.168.18.27`, `.25`, `.29`); the fourth is `192.168.18.26` and it answers. **Nothing in the engine prevented a
+four-node run; the run was prevented by my own claim about the machine.**
+
+**What it does not change, and this is the part that must be said plainly.** The measured result stands: the
+distribution is **0.85x** a single node, the ceiling on this design is **8.2 tok/s** against a target of 21, and
+`D239`, `D221` and `D272` are measurements of the model and the step rather than of the cluster's size. **A fourth
+node divides the same 19.4 ms of 137.0 ms a little further and does not approach 21** - `D235`'s arithmetic, which
+has not been falsified. So the correction is to the record and to the honesty of the claim, **not to the
+conclusion** - and the reason to make it loudly is that a false technical premise in a decision record is worse
+than a missing measurement, because every later round reasons from it.
+
+**And the habit it exposes is the same one five rounds have already caught**: I reached for a remembered explanation
+instead of a command. `D283` was taught the same lesson about comparing runs, and this is its twin about re-testing
+a claim that has stopped being questioned.
+
+**The immediate consequence is concrete:** node4 is a usable fourth node on `192.168.18.26`, and `--shard-node 3`
+with `/tmp/plan4.json` (64 experts each) over the LAN addresses is the four-node measurement the objective asked
+for. **It should be taken, and the earlier three-node figure labelled for what it is.**
