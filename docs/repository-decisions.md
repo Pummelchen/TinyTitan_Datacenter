@@ -6238,3 +6238,46 @@ Neither lever touches the host loop, which is where 98 ms of the 139.6 ms step l
 layer** of planning, encoding, dispatch and readback. Reaching 21 tok/s means **47.6 ms/step**, so the host loop
 has to fall by roughly 70 ms or overlap with device work it currently serialises behind. That is the work, and
 this round narrowed it rather than starting it.
+
+## D188 — D183 undercounted what divides: the host-side expert read is ~44% of the step, not zero
+
+`D183` divided the decode step by **GPU kernel** time and concluded that only the mixture — 13.2% — is per-node
+work that sharding can divide, bounding a four-node ratio at ~1.0-1.1x. `TINYTITAN_DECODE_IO_TRACE=1` shows the
+missing term, and it is the largest one:
+
+    [decode expert io] hits 3842 misses 958 (80.0% hit) 1.58 GiB = 101.0 MiB/token
+    decode 2.23 s / 16 tokens = 139.4 ms/step
+
+**101 MiB per token of expert reads.** The step is 139.4 ms and the device's cold sequential rate is ~1.65 GB/s,
+so the reads account for roughly **61 ms — about 44% of the step**. None of it appears in `[gpu by role]`, because
+it is a **host-side `pread`**, not a kernel: the GPU is idle while the host reads, which is exactly why `D182`
+measured only 20-33% device occupancy.
+
+**And it divides.** A node reads the experts **it owns**; that is the whole point of the plan. So the divisible
+fraction is not 13.2% but roughly
+
+    GPU mixture        13.2%
+    host expert reads  ~44%
+    ------------------------
+    divisible          ~57%
+
+which changes the arithmetic rather than the conclusion:
+
+    139.6 x (0.57/4 + 0.43) = 79.9 ms  ->  12.5 tok/s  (1.75x)
+
+and with `D173`'s measured 17.3 ms exchange, 97.2 ms -> **10.3 tok/s (1.44x)**.
+
+**So the four-node ceiling is ~1.4-1.75x, not ~1.0-1.1x** — better than `D183` said, and still short of the 3x
+the objective asks for.
+
+**What the miss rate means, checked against the model.** 8 routed experts x 40 layers = 320 experts per token, at
+1,769,472 B each = 566 MB if every one were cold. An 80.0% slot hit rate leaves 20% of 566 MB = **113 MB =
+108 MiB**, against the measured **101 MiB/token**. The two agree, which says the read volume is exactly the
+routed set times the miss rate and nothing else — so the only ways to move it are **a larger cache** (memory-
+bound, and `D178` measured the cliff at 4.53 GB), **replication** (4.53 GB for R = 64, `D179`), or **overlapping
+it with device work it currently serialises behind**.
+
+**The correction matters for where the work goes.** `D183` pointed at the head and at host overhead as the only
+levers. The read is twice the head, it is genuinely divisible, and overlapping it is the one change that helps
+the single node *and* the four-node ratio at once. That is the next thing to measure, and the measurement to beat
+is 139.4 ms/step with 101.0 MiB/token of it on the read path.
