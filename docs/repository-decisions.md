@@ -9871,3 +9871,36 @@ both are the same lesson: silence is indistinguishable from success and from fai
 **And the honest position on the round**: the flag is built and verified to serve, the port is verified free, and
 **the measurement `D278` asked for is still not taken** - because the serving node could not be observed to be up
 before its peers gave up. That is recorded as it stands.
+
+## D282 — Thirty seconds is not the load: the serve-only node never binds, and the log fix did not apply
+
+`D281` left one confound - eight seconds may be inside a cold 19 GB load - and one defect, the silence. This round
+addressed the defect and tested the confound, and both came back negative:
+
+    t=10s: 0 listeners    t=20s: 0    t=30s: 0
+    node3 log: empty
+
+**Thirty seconds is not the load.** The normal path reaches its own output in about two seconds and starts prefill
+by 1.5, so a node that has printed nothing and bound nothing after thirty is not slow - **it is not reaching the bind
+at all**, on the serve-only path.
+
+**And the log fix did not land.** The patch asserted on the text it was moving, the assertion failed, and the write
+never happened - so `file` was untouched, the build was of the unchanged tree, and the deployed binary is the silent
+one. **The assertion doing its job is the good half of that; the bad half is that the round's main change is still
+not in the tree**, and the deployed run measured the old binary for the third time in three rounds.
+
+**What is established, and it is narrower than it looks.** `--shard-serve-only` parses, the process starts, and it
+does not exit (`D280`: `EXIT=124` from a timeout). **What it does not do is listen** - and the empty log means it is
+also not following the ordinary path, which would have printed the shard lines and the prefill. **So the branch is
+taken and the bind is not reached**, which points at the point in `run` where the serve block sits relative to the
+model load: the runner is built before it, and if the install is opened lazily on first use rather than at
+construction, a serve-only node may be waiting on something that only the generation path would trigger.
+
+**That is a hypothesis with a specific test and it is not taken here.** The one-line change - move the "serving on
+port N" write above the branch - is what makes it testable at all, because it would show whether the block is
+entered. **It should be made first, in its own change, against the tree rather than against a regex.**
+
+**Three rounds, one measurement, still not taken.** `D278` asked whether an idle serving node answers a peer request
+in 0.5 ms or 2.95 ms, and that question has now cost a flag, a stale-port check, a listener check at three
+durations, and two failed patches. **The work is real; the progress on the objective is none**, and the record says
+so.
