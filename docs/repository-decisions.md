@@ -8393,3 +8393,43 @@ divides - which `D221` measured at **27.0 ms of a 137.0 ms step, 20%**. That is 
 
 **The build is real and stays.** The ownership filter is wired, warns on stderr, and is inert unless
 `--shard-plan` and `--shard-node` are both given - so every existing measurement and every default run is unaffected.
+
+## D240 — What the cache sweep measures is neither read volume nor miss count, and the filter narrows it to two candidates
+
+`D239` showed that reading a quarter of the experts changes the step by nothing, while `D217`/`D218` showed that a
+larger cache changes it by a third. Those two facts together eliminate the obvious explanations.
+
+  - **It is not read volume.** The ownership filter cuts the bytes read to a quarter - 64 of 256 experts - and the
+    step does not move: 128.2 -> 128.3 ms, 133.7 -> 134.5, 128.4 -> 128.5 across three pairs (`D239`).
+  - **It is not miss count.** The filter also cuts the number of demand misses, for the same reason and by a similar
+    factor - a node reading 64 experts at 40 slots is caching most of what it can be asked for - and the step still
+    does not move. `D220` fitted the step against misses at `step = 106.7 ms + 0.521 ms per miss` across the cache
+    sweep; **that fit is now known to be a correlation with the cache size rather than a cost of missing.**
+  - **It is not the read path.** `D196` measured the reads themselves at 1.94 GB/s at depth 1 and 2.94 at depth 8,
+    and `D227` showed no prefetch setting moves the body at all.
+
+**What is left is what the two experiments differ in.** The cache sweep changes **the size of the allocation and the
+number of distinct experts the streamer plans over**; the ownership filter changes **which experts are read** while
+leaving both of those at their 40-slot, 256-expert values. So the remaining candidates are:
+
+  1. **the per-layer planning work over the routed expert set** - `makeExpertCachePlan` runs over the candidates the
+     router named, and a bigger cache means more hits are classified and fewer are marked for fetch;
+  2. **the GPU-side residency bookkeeping** - `D214` found `fcntl`/`adviseRanges` at 4.9% of the decode thread, and
+     the advice volume scales with the miss set, not with the read volume.
+
+**Neither is measured, and the second one has a contradicting measurement already in the record** - `D215` turned the
+advice off entirely with `--rdadvise off` and found no effect. That leaves candidate 1, the per-layer planning
+work, as the one the sweep may actually have been measuring the whole time.
+
+**Why this matters more than it looks.** Every decision in this document that reasoned from the cache sweep - `D218`
+on the cache ceiling, `D219` on the 9.02 tok/s floor, `D220` on the miss model - is reasoning about **the cache
+size**, and the cache size is now known to be a proxy for something that is not the read and not the miss. **The
+measurements are all still correct**: 40 slots is genuinely the fastest configuration, 64 genuinely collapses into
+swap, and the floor of 9.02 tok/s is a real extrapolation of the curve as measured. **What is wrong is the causal
+story attached to them**, and `D220`'s 0.521 ms per miss should be read as 0.521 ms per **cache slot removed** rather
+than per miss.
+
+**The test is small and belongs with the next piece of work:** hold the cache at 40 slots and vary only the
+**candidate set the planner sees** - which the ownership filter already does, and which produced no effect - against
+varying the **cache allocation** while holding the candidate set. If the second moves the step and the first does
+not, the sweep was measuring the allocation and the whole family of decisions needs its wording corrected.
