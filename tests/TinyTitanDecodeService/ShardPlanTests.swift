@@ -157,3 +157,67 @@ struct ShardPlanOwnershipTests {
         #expect(plan.contains(expert: 9999) == false)
     }
 }
+
+/// Expert replication: the lever `D166` identified for reaching the throughput target without breaking
+/// bit-exactness. What must hold is that a replicated expert is **local everywhere** and therefore never on the
+/// wire, and that adding the field did not move the digest of a plan that does not use it.
+@Suite("Shard plan replication")
+struct ShardPlanReplicationTests {
+    private static func partitioned() -> ShardPlan {
+        ShardPlan.generate(family: "qwen3_5_moe", experts: 256, nodes: 4, distribution: .contiguous)
+    }
+
+    @Test("a replicated expert is local to every node and never queued for a peer")
+    func replicatedExpertNeverCrossesTheWire() throws {
+        let routed = [10, 100, 20, 200]     // nodes 0, 1, 0, 3
+        // Replicate 100 — node 1's expert — so nobody has to ask node 1 for it.
+        let plan = ShardPlan(
+            family: "qwen3_5_moe", experts: 256, nodes: 4, distribution: .contiguous,
+            owners: Self.partitioned().owners, replicated: [100]
+        )
+        try plan.validate()
+
+        for node in 0..<4 {
+            #expect(plan.isLocal(expert: 100, to: node), "a replicated expert is local on every node")
+        }
+        // Node 0 now computes slot 1 itself, so only the experts it neither owns nor replicates are remote.
+        #expect(plan.ownedSlots(amongRouted: routed, by: 0).map(\.slot) == [0, 1, 2])
+        #expect(plan.remoteSlots(amongRouted: routed, by: 0).keys.sorted() == [3])
+    }
+
+    /// The property that makes the field safe to add to a published format: a plan that does not use it must
+    /// encode exactly as it did before, or every existing plan would look like a disagreement at bring-up.
+    @Test("an unreplicated plan keeps the digest it had before the field existed")
+    func emptyReplicationDoesNotMoveTheDigest() throws {
+        let plan = Self.partitioned()
+        let json = try plan.canonicalJSON()
+        #expect(!String(decoding: json, as: UTF8.self).contains("replicated"),
+                "the key is omitted when empty, so the bytes — and the digest — are unchanged")
+        // And the decoding path still accepts a document that has no such key at all, which is what a plan
+        // written by the previous version of this type is.
+        let legacy = #"{"distribution":"contiguous","experts":256,"family":"qwen3_5_moe","nodes":4,"owners":\#(plan.owners),"schema":1}"#
+        let decoded = try JSONDecoder().decode(ShardPlan.self, from: Data(legacy.utf8))
+        #expect(decoded.replicated.isEmpty)
+        #expect(try decoded.canonicalDigest() == plan.canonicalDigest())
+    }
+
+    /// A replicated set is a *set*: two nodes listing the same experts in a different order must agree, or the
+    /// digest would report a disagreement that is not one.
+    @Test("the replicated set is canonicalised, so order does not change the digest")
+    func replicationIsOrderInsensitive() throws {
+        let owners = Self.partitioned().owners
+        let a = ShardPlan(family: "qwen3_5_moe", experts: 256, nodes: 4, distribution: .contiguous,
+                          owners: owners, replicated: [100, 50, 75])
+        let b = ShardPlan(family: "qwen3_5_moe", experts: 256, nodes: 4, distribution: .contiguous,
+                          owners: owners, replicated: [75, 100, 50])
+        #expect(a.replicated == [50, 75, 100])
+        #expect(try a.canonicalDigest() == b.canonicalDigest())
+    }
+
+    @Test("a replicated expert outside the model is refused")
+    func replicatedExpertMustExist() throws {
+        let plan = ShardPlan(family: "qwen3_5_moe", experts: 256, nodes: 4, distribution: .contiguous,
+                             owners: Self.partitioned().owners, replicated: [256])
+        #expect(throws: ShardPlan.Error.self) { try plan.validate() }
+    }
+}

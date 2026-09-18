@@ -55,12 +55,27 @@ public struct ShardPlan: Sendable, Equatable, Codable {
     /// Expert id → owning node. Length is `experts`, every value is in `0..<nodes`.
     public let owners: [Int]
 
+    /// Experts held by **every** node in addition to their owner.
+    ///
+    /// This exists to cut the exchange (`D166`): a node can only be asked for what it does not have, so a set
+    /// replicated everywhere removes those experts from the wire entirely. It is **not** a per-node choice —
+    /// every node must replicate the same set, or two nodes disagree about who computes what, which is exactly
+    /// what `canonicalDigest` exists to catch.
+    ///
+    /// **Replication, not quantisation, because quantisation breaks bit-exactness.** Sending a contribution at
+    /// lower precision would halve the bytes and change the arithmetic; a replicated expert is computed with the
+    /// same weights and adds nothing to the wire, so a sharded trace stays identical to a single-node one.
+    ///
+    /// Sorted and unique, so the digest is a function of the *set* rather than of how it was listed.
+    public let replicated: [Int]
+
     /// The schema version this build writes.
     public let schema: Int
 
     public init(
         family: String, experts: Int, nodes: Int,
-        distribution: ShardDistribution, owners: [Int], schema: Int = ShardPlan.schema
+        distribution: ShardDistribution, owners: [Int], schema: Int = ShardPlan.schema,
+        replicated: [Int] = []
     ) {
         self.family = family
         self.experts = experts
@@ -68,6 +83,45 @@ public struct ShardPlan: Sendable, Equatable, Codable {
         self.distribution = distribution
         self.owners = owners
         self.schema = schema
+        self.replicated = Array(Set(replicated)).sorted()
+    }
+
+    // MARK: - coding
+
+    /// **`replicated` is omitted when empty, so a plan without replication encodes byte-identically to the one
+    /// this type produced before the field existed** — and therefore keeps the same `canonicalDigest`. That
+    /// matters because the digest is what nodes compare at bring-up: adding a field must not make every existing
+    /// plan look like a disagreement. Schemas that predate the field decode with an empty set.
+    private enum CodingKeys: String, CodingKey {
+        case family, experts, nodes, distribution, owners, schema, replicated
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        family = try container.decode(String.self, forKey: .family)
+        experts = try container.decode(Int.self, forKey: .experts)
+        nodes = try container.decode(Int.self, forKey: .nodes)
+        distribution = try container.decode(ShardDistribution.self, forKey: .distribution)
+        owners = try container.decode([Int].self, forKey: .owners)
+        schema = try container.decode(Int.self, forKey: .schema)
+        replicated = ((try container.decodeIfPresent([Int].self, forKey: .replicated)) ?? []).sorted()
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(family, forKey: .family)
+        try container.encode(experts, forKey: .experts)
+        try container.encode(nodes, forKey: .nodes)
+        try container.encode(distribution, forKey: .distribution)
+        try container.encode(owners, forKey: .owners)
+        try container.encode(schema, forKey: .schema)
+        if !replicated.isEmpty { try container.encode(replicated, forKey: .replicated) }
+    }
+
+    /// Whether `node` can compute `expert` without asking anyone: it owns it, or everyone holds a copy.
+    public func isLocal(expert: Int, to node: Int) -> Bool {
+        guard owners.indices.contains(expert) else { return false }
+        return owners[expert] == node || replicated.contains(expert)
     }
 
     // MARK: - generating
@@ -133,6 +187,9 @@ public struct ShardPlan: Sendable, Equatable, Codable {
         guard experts > 0 else { throw Error.noExperts }
         guard owners.count == experts else {
             throw Error.expertCountMismatch(declared: experts, found: owners.count)
+        }
+        for expert in replicated where expert < 0 || expert >= experts {
+            throw Error.unknownNode(expert: expert, node: expert, nodes: nodes)
         }
         for (expert, node) in owners.enumerated() where node < 0 || node >= nodes {
             throw Error.unknownNode(expert: expert, node: node, nodes: nodes)
@@ -223,7 +280,7 @@ extension ShardPlan {
     /// The order of the result follows the routed order, which is the slot order.
     public func ownedSlots(amongRouted routed: [Int], by node: Int) -> [(slot: Int, expert: Int)] {
         routed.enumerated().compactMap { slot, expert in
-            owners.indices.contains(expert) && owners[expert] == node ? (slot, expert) : nil
+            isLocal(expert: expert, to: node) ? (slot, expert) : nil
         }
     }
 
@@ -237,9 +294,9 @@ extension ShardPlan {
         var grouped: [Int: [(slot: Int, expert: Int)]] = [:]
         for (slot, expert) in routed.enumerated() {
             guard owners.indices.contains(expert) else { continue }
-            let owner = owners[expert]
-            guard owner != node else { continue }
-            grouped[owner, default: []].append((slot, expert))
+            // A replicated expert is computed locally, so it never reaches a peer's queue.
+            guard !isLocal(expert: expert, to: node) else { continue }
+            grouped[owners[expert], default: []].append((slot, expert))
         }
         return grouped
     }
