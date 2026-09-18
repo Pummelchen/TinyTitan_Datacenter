@@ -3008,3 +3008,52 @@ round's plan started from, now with a measurement saying why it is the only rema
 The switch is `SHARD_EXPERT_PREDICT=1`, the default is off (`D89` and `D98` set the same precedent: a measured
 loss is not a default), and `prefetchPredicted(force:)` plus `waitForPrefetch()` exist so the mechanism stays
 tested rather than rotting behind a switch nobody can turn on in a test.
+
+## D106 — The packed slab cache works, and loses: this node's constraint is memory
+
+`D105` ended with the lever stated precisely: the device is saturated, so a read must be **avoided** rather than
+hidden, and the way to avoid it is to hold the slabs in their **packed** form — four bits per weight rather than
+the thirty-two the decoder produces, which is four times as many slabs per byte. `InstallFile.SlabCache` is that
+cache: expert row ranges keyed by tensor and range, holding the concatenated `codes + scales + zeros` exactly as
+they were read, with a hit skipping all three `pread`s. It is built, tested and measured. **It works, and the
+default is zero, because on this node it loses.**
+
+**The measurement**, one binary, 8-step cached decode, load average 2.66–3.01, digest `89d654ff54b0fd03` in
+**every** arm:
+
+| slab budget | slab hit rate | disk per step | `mix.read` | `load` | `head` | step |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0 MB (default) | 0.0% | 1.08 GB | 0.754 s | **0.363 s** | **0.261 s** | **1.735 s** |
+| 512 MB | **0.0%** | 1.08 GB | 0.867 s | 0.65 s | — | 2.097 / 2.130 s |
+| 768 MB | 36.1% | 0.73 GB | 0.628 s | 0.650 s | 0.348 s | 2.022 s |
+| 1024 MB | 45.0% | **0.65 GB** | **0.544 s** | 0.591 s | 0.411 s | 1.931 s |
+
+**The cache does exactly what it was designed to do.** At 1 GB it serves **45%** of the expert slabs from memory
+and takes the read from **1.08 GB to 0.65 GB per step**, which is a **0.21 s** cut in `mix.read` — the first time
+anything in this session has moved the *bytes* rather than the seconds. And the step still gets **worse**.
+
+**Why, and this is the result.** The saving is more than spent elsewhere: `load` nearly doubles (0.363 → 0.591) and
+`head` grows by half (0.261 → 0.411), on a machine swapping 1.94 GB of 3.07. It is the same signature as `D89`
+("the resident fp32 arrays cost more elsewhere than they saved: `head` +0.20, `attn.core` +0.27"), and it is now
+the **fourth** time this engine has reached this verdict — `D89`'s decoded-weight cache, `D98`'s fp32 expert bank,
+`D105`'s prefetch, and this. Four different mechanisms, four losses, one cause:
+
+> **This node's binding constraint is memory.** Buying a saturated device with RAM costs more elsewhere than it
+> saves, so every "cache more of it" route on an 8 GB Mac mini has now been measured and closed.
+
+That does not make the cache wrong; it makes it wrong *here*. The mechanism is validated by its own hit rate and
+byte counters, the values are bit-identical, and `SHARD_SLAB_CACHE_MB` is the knob for a node with headroom — the
+same disposition `D89` and `D98` were given. What it closes is the *route*: **a bigger cache is not how this
+engine reaches 7 tok/s on this machine.**
+
+**What it leaves open, and where the next work goes.** The read can still be *avoided* without spending memory —
+by not materialising the fp32 slab in the first place (`DC-120`), which is the unpack and the 6.5 GB/step of
+`Float` this repository allocates and discards per token. That is the remaining CPU-side lever and it costs no
+residency. Beyond it the arithmetic is unchanged and worth restating plainly: the reference reaches 7.075 tok/s
+with a 3 GB cache on comparable hardware, which cannot fit beside this engine's **fp32** weights on an 8 GB node —
+so the difference between the two designs is the format the weights are held in, and that is a GPU/int4 change
+rather than a caching one.
+
+One incidental fix in the same round: `ReadState.addUnpack` was written in `D94` and **nothing called it**, so the
+unpack counter was still an unguarded `+=` shared with the fan-out. It is routed through the guarded method now,
+and the cache's hit path uses it too.

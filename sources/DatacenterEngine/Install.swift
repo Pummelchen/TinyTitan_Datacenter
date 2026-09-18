@@ -46,10 +46,26 @@ public struct PayloadCacheMetrics: Sendable, Equatable {
     /// What the cache is holding, in bytes.
     public var bytesHeld = 0
 
-    public init(bytesRead: Int = 0, hits: Int = 0, bytesHeld: Int = 0) {
+    /// The **packed slab** cache's counters (`DC-120`), reported here rather than in a second struct because a
+    /// caller asks one question of both: how much of this run's payload had to come off the device.
+    ///
+    /// `slabHits` are expert row ranges served from memory **without touching the disk at all**, which is the
+    /// quantity `D105` identified as the lever — the device is saturated, so the only way to make the read
+    /// cheaper is not to make it.
+    public var slabHits = 0
+    public var slabMisses = 0
+    public var slabBytesHeld = 0
+
+    public init(
+        bytesRead: Int = 0, hits: Int = 0, bytesHeld: Int = 0,
+        slabHits: Int = 0, slabMisses: Int = 0, slabBytesHeld: Int = 0
+    ) {
         self.bytesRead = bytesRead
         self.hits = hits
         self.bytesHeld = bytesHeld
+        self.slabHits = slabHits
+        self.slabMisses = slabMisses
+        self.slabBytesHeld = slabBytesHeld
     }
 }
 
@@ -165,6 +181,13 @@ public struct InstallFile: WeightSource {
         /// which can only mean a tensor was asked for twice; this is what names it.
         var payloadRequests: [String: Int] = [:]
         /// The cache's budget, read once from the environment so a measurement is a series of processes.
+        /// `SHARD_SLAB_CACHE_MB`, the packed slab cache's budget (`DC-120`). **Zero by default**, like every other
+        /// cache in this engine: a measurement decides, and `D89`/`D98`/`D105` all ended with a default of zero
+        /// after the measurement disagreed with the reasoning.
+        static let slabCacheBudgetValue = InstallFile.slabCacheBudget(
+            environment: ProcessInfo.processInfo.environment
+        )
+
         static let payloadCacheBudgetValue = InstallFile.payloadCacheBudget(
             environment: ProcessInfo.processInfo.environment
         )
@@ -211,6 +234,57 @@ public struct InstallFile: WeightSource {
     /// The whole-tensor payload cache (`DC-106`). A **class**, because `InstallFile` is a struct and a
     /// cache is state that outlives one call — the same reason `ReadState` is one. Least-recently-used,
     /// bounded in bytes, and holding the payload exactly as stored.
+    /// The **packed** slab cache (`DC-120`): expert row ranges, held as the bytes they were read as.
+    ///
+    /// `PayloadCache` below holds *whole tensors* and cannot help here — a stacked expert tensor is gigabytes, and
+    /// the unit of reuse is one expert's row range, not the tensor. This holds those ranges keyed by name and
+    /// range **as stored**: four bits per weight rather than the thirty-two the decoder produces, so a byte budget
+    /// buys four times as many slabs as a cache of `[Float]` would.
+    ///
+    /// A hit skips the three `pread`s altogether, which is the point: `D105` measured the device as **saturated**
+    /// by `D101`'s fan-out, so a read cannot be hidden, only avoided.
+    ///
+    /// Locked, because the reader is called from the expert fan-out (`D101`) and the head's blocks (`D102`).
+    final class SlabCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private let budget: Int
+        private var payloads: [String: Data] = [:]
+        private var order: [String] = []
+        private var bytes = 0
+        private var hits = 0
+        private var misses = 0
+
+        init(budget: Int) { self.budget = budget }
+
+        func value(for key: String) -> Data? {
+            guard budget > 0 else { return nil }
+            lock.lock(); defer { lock.unlock() }
+            guard let payload = payloads[key] else { misses += 1; return nil }
+            hits += 1
+            order.removeAll { $0 == key }
+            order.append(key)
+            return payload
+        }
+
+        func store(_ payload: Data, named key: String) {
+            guard budget > 0, payload.count <= budget else { return }
+            lock.lock(); defer { lock.unlock() }
+            if payloads[key] == nil { bytes += payload.count }
+            payloads[key] = payload
+            order.removeAll { $0 == key }
+            order.append(key)
+            while bytes > budget, let victim = order.first {
+                order.removeFirst()
+                bytes -= payloads.removeValue(forKey: victim)?.count ?? 0
+            }
+        }
+
+        var metrics: PayloadCacheMetrics {
+            lock.lock(); defer { lock.unlock() }
+            return PayloadCacheMetrics(slabHits: hits, slabMisses: misses, slabBytesHeld: bytes)
+        }
+    }
+
     final class PayloadCache {
         let budget: Int
         private var payloads: [String: Data] = [:]
@@ -246,6 +320,7 @@ public struct InstallFile: WeightSource {
 
     private let state = ReadState()
     private let payloadCache = PayloadCache(budget: ReadState.payloadCacheBudgetValue)
+    private let slabCache = SlabCache(budget: ReadState.slabCacheBudgetValue)
 
     /// Whether to verify each slab's digest **on every read**. Off by default, and that default is a
     /// measurement: on the real 35 B model the verification cost **21.04 s of a 39.8 s forward**, 82%
@@ -271,7 +346,9 @@ public struct InstallFile: WeightSource {
     /// The whole-tensor payload counters — the instrument `DC-106` is accepted against.
     public var payloadCacheMetrics: PayloadCacheMetrics {
         PayloadCacheMetrics(
-            bytesRead: state.payloadBytesRead, hits: payloadCache.hits, bytesHeld: payloadCache.bytes
+            bytesRead: state.payloadBytesRead, hits: payloadCache.hits, bytesHeld: payloadCache.bytes,
+            slabHits: slabCache.metrics.slabHits, slabMisses: slabCache.metrics.slabMisses,
+            slabBytesHeld: slabCache.metrics.slabBytesHeld
         )
     }
 
@@ -395,6 +472,16 @@ public struct InstallFile: WeightSource {
     ///
     /// The stacked expert banks never reach here: they are read a row range at a time, so 18 GB of experts
     /// cannot fill this. `InstallCacheTests` asserts that rather than trusting it.
+    /// The slab cache's budget in bytes, from `SHARD_SLAB_CACHE_MB` when it is sane.
+    ///
+    /// Refused rather than clamped, for the reason `bankBudgetBytes` gives: a budget nobody could hold is a node
+    /// that swaps, and a silent clamp hides the typo that caused it.
+    static func slabCacheBudget(environment: [String: String]) -> Int {
+        guard let raw = environment["SHARD_SLAB_CACHE_MB"], let megabytes = Int(raw) else { return 0 }
+        guard megabytes >= 0, megabytes <= 1 << 20 else { return 0 }
+        return megabytes * 1_048_576
+    }
+
     static func payloadCacheBudget(environment: [String: String]) -> Int {
         let defaultMegabytes = 1024
         guard let raw = environment["SHARD_DENSE_CACHE_MB"], let megabytes = Int(raw) else {
@@ -477,6 +564,16 @@ public struct InstallFile: WeightSource {
         let codesPerRow = entry.padded_columns / 2
         let codesBytes = totalRows * codesPerRow
         let scalesBytes = totalRows * groupsPerRow * 4
+        // `DC-120`: a packed row range that has been read before is served from memory, and the three `pread`s
+        // below are skipped entirely. The key is the tensor and the range, because that is what the expert provider
+        // asks for and what the router repeats.
+        let slabKey = "\(name)#\(range.lowerBound)-\(range.upperBound)"
+        if let cached = slabCache.value(for: slabKey) {
+            let hitUnpackStarted = DispatchTime.now().uptimeNanoseconds
+            let decoded = try Self.dequantizeInt4(cached, entry: entry, rowCount: payloadRows)
+            state.addUnpack(seconds: Double(DispatchTime.now().uptimeNanoseconds &- hitUnpackStarted) / 1e9)
+            return decoded
+        }
         let codes = try readCounted(
             offset: entry.offset + first * codesPerRow, byteCount: payloadRows * codesPerRow
         )
@@ -540,7 +637,8 @@ public struct InstallFile: WeightSource {
         } else {
             decoded = try Self.dequantizeInt4(payload, entry: entry, rowCount: payloadRows)
         }
-        state.unpackSeconds += Double(DispatchTime.now().uptimeNanoseconds &- unpackStarted) / 1e9
+        state.addUnpack(seconds: Double(DispatchTime.now().uptimeNanoseconds &- unpackStarted) / 1e9)
+        slabCache.store(payload, named: slabKey)
         return decoded
     }
 

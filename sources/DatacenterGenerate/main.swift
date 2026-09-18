@@ -255,6 +255,10 @@ do {
         metrics["plan_digest"] = sharded.planDigest
     }
     metrics["install_bytes_read_total"] = forward.sourceBytesRead
+    // `DC-120`'s packed slab cache, so an A/B reports its own hit rate rather than inferring it from the seconds.
+    metrics["slab_cache_hits"] = payloadMetrics.slabHits
+    metrics["slab_cache_misses"] = payloadMetrics.slabMisses
+    metrics["slab_cache_bytes_held"] = payloadMetrics.slabBytesHeld
     // The split inside the largest phase (`D100`). `mix.read` is ~50% of a decode step and it is read +
     // unpack; which half dominates decides whether the next work is hiding I/O or fusing the dequantise, and
     // no amount of arithmetic can tell the two apart.
