@@ -208,3 +208,43 @@ public struct ShardPlan: Sendable, Equatable, Codable {
 
     public func count(ownedBy node: Int) -> Int { owners.filter { $0 == node }.count }
 }
+
+// MARK: - ownership, as the engine needs it
+
+extension ShardPlan {
+    /// The routed experts `node` owns, **with the slot each one occupies in the routed order**.
+    ///
+    /// The slot is returned rather than implied because the reduction is **slot-ordered**: `D154` found the
+    /// reference's phase-2 reduce is a fixed k = 8 kernel that zero-pads unused slots, so a node's contribution
+    /// to a token is only correct if each expert's result lands in the slot the router gave it. Returning a
+    /// filtered `[Int]` would lose the positions, and renumbering them would silently produce a different —
+    /// still plausible-looking — answer.
+    ///
+    /// The order of the result follows the routed order, which is the slot order.
+    public func ownedSlots(amongRouted routed: [Int], by node: Int) -> [(slot: Int, expert: Int)] {
+        routed.enumerated().compactMap { slot, expert in
+            owners.indices.contains(expert) && owners[expert] == node ? (slot, expert) : nil
+        }
+    }
+
+    /// The routed experts `node` does **not** own, with their slots, grouped by the node that does.
+    ///
+    /// This is the complement of `ownedSlots` and the thing an exchange needs: one entry per peer, each holding
+    /// the slots that peer must produce. Grouping here rather than at the transport keeps the decision about
+    /// *who owns what* in the plan, which is the only artifact every node agrees on — a transport that worked it
+    /// out for itself would be a second source of truth.
+    public func remoteSlots(amongRouted routed: [Int], by node: Int) -> [Int: [(slot: Int, expert: Int)]] {
+        var grouped: [Int: [(slot: Int, expert: Int)]] = [:]
+        for (slot, expert) in routed.enumerated() {
+            guard owners.indices.contains(expert) else { continue }
+            let owner = owners[expert]
+            guard owner != node else { continue }
+            grouped[owner, default: []].append((slot, expert))
+        }
+        return grouped
+    }
+
+    /// A routed expert id outside `0..<experts` is a plan/model disagreement, and it must be caught rather than
+    /// indexed into: `owners[expert]` would trap, which is how a wrong plan becomes a crash instead of an error.
+    public func contains(expert: Int) -> Bool { owners.indices.contains(expert) }
+}
