@@ -90,9 +90,19 @@ public struct Generation {
     /// measured rather than assumed. Nil means **no cache**, not a cache that held nothing.
     public let layerCache: LayerCacheMetrics?
 
+    /// What the expert bank did, or nil when the model never asked for an expert (`DC-119`).
+    ///
+    /// The three columns the reference implementation reports and this engine did not: how many requests the
+    /// bank served from memory, how many it had to read, and how many elements that was. Nil means **not a
+    /// mixture run**, not an empty bank.
+    public let experts: ExpertProviderMetrics?
+    /// The bank's budget in bytes, so a hit rate can be read beside the size that produced it.
+    public let expertBudgetBytes: Int?
+
     public init(
         prompt: [Int], generated: [Int], secondsPerStep: [Double], captured: [TraceWriter.Tensor],
-        margins: [Float] = [], profile: ProfileReport? = nil, layerCache: LayerCacheMetrics? = nil
+        margins: [Float] = [], profile: ProfileReport? = nil, layerCache: LayerCacheMetrics? = nil,
+        experts: ExpertProviderMetrics? = nil, expertBudgetBytes: Int? = nil
     ) {
         self.margins = margins
         self.prompt = prompt
@@ -101,5 +111,7 @@ public struct Generation {
         self.captured = captured
         self.profile = profile
         self.layerCache = layerCache
+        self.experts = experts
+        self.expertBudgetBytes = expertBudgetBytes
     }
 }

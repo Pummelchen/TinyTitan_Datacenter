@@ -178,7 +178,14 @@ public struct Qwen3_5Forward: ForwardPass {
 
     /// The budget, from `SHARD_EXPERT_BANK_MB` when it is sane.
     static func bankBudgetBytes(environment: [String: String]) -> Int {
-        let defaultMegabytes = 512
+        // **Zero, because the measurement says a bank this size cannot hit** (`D98`). On the 35 B-A3B a
+        // decode token asks for 773 slices of **12.5 MB**, so one token's working set is 387 slices per
+        // projection — **4.83 GB**, ~9.66 GB for both — against a 537 MB bank: the reuse distance is nine
+        // times the capacity, and the alternated A/B measured **0.0% hits with identical elements read at
+        // 0, 512 and 1024 MB**, with the bank *on* slower in both pairs (4.020/4.132 -> 4.236/4.139). The
+        // knob stays because the prefetch ring will want storage and because a node with headroom may want
+        // to test it; the default does not pretend.
+        let defaultMegabytes = 0
         guard let raw = environment["SHARD_EXPERT_BANK_MB"], let megabytes = Int(raw) else {
             return defaultMegabytes * 1_048_576
         }
@@ -215,6 +222,46 @@ public struct Qwen3_5Forward: ForwardPass {
         )
     }
 
+    /// `SHARD_EXPERT_SLOTS=<n>` in the bank's terms.
+    ///
+    /// The old knob meant *experts per layer, per projection* — a capacity, not a budget — so its equivalent
+    /// ceiling for a bank shared by the whole generation is that many slices for every layer and both
+    /// projections. Kept because a measurement may still want to sweep slots rather than bytes.
+    static func sliceCap(environment: [String: String], shape: MixtureShape, layers: Int) -> Int {
+        // `expertSlots` is the arithmetic the budget already means, so deriving the cap from it keeps the two
+        // from disagreeing: an explicit `SHARD_EXPERT_SLOTS` wins, and otherwise the cap is whatever the byte
+        // budget works out to. Two slices per slot, because a slot holds a fused gate/up and a down.
+        Self.slotCapacity(environment: environment, shape: shape, layers: layers) * max(1, layers) * 2
+    }
+
+    /// The expert bank for the whole generation (`DC-119`), created on first use and kept.
+    ///
+    /// **The lifetime is the change.** The store this replaces was built inside the layer-load path and
+    /// dropped with the layer's weights, so a hit was possible only between two requests inside one layer
+    /// load — and `D31`'s "hit rate 0 at every size" was that lifetime, not the workload. A forward is one
+    /// generation in both CLIs, so keeping the bank here is exactly the lifetime the reference gives its
+    /// cache, and it means a prompt's expert reads warm the bank for the tokens that follow.
+    ///
+    /// Lazy because the budget applies to a mixture's geometry: a dense model never asks, so it never pays.
+    private let expertBankBox = ExpertBankBox()
+
+    func expertBank(shape: MixtureShape) -> ExpertBank {
+        let environment = ProcessInfo.processInfo.environment
+        return expertBankBox.bank(
+            budgetBytes: Self.bankBudgetBytes(environment: environment),
+            sliceCap: Self.sliceCap(environment: environment, shape: shape, layers: config.numLayers)
+        )
+    }
+
+    /// What the bank did over this forward, or nil when the model never asked for an expert.
+    ///
+    /// Nil means **not a mixture run**, not "a bank that held nothing" — the same distinction `Generation`
+    /// draws for the layer cache and the profiler (`D88`).
+    public var expertBankMetrics: ExpertProviderMetrics? { expertBankBox.created?.metrics }
+
+    /// The bank's budget as configured, for the metrics block.
+    public var expertBankBudgetBytes: Int? { expertBankBox.created?.budgetBytes }
+
     /// Whether to time the forward's phases. Immutable, so Swift 6's concurrency checking is satisfied
     /// and a profile cannot change under a running forward. `SHARD_PROFILE=1` turns it on.
     public static let profilingEnabled = ProcessInfo.processInfo.environment["SHARD_PROFILE"] == "1"
@@ -235,7 +282,34 @@ public struct Qwen3_5Forward: ForwardPass {
     /// disagreed with the reference's own record — a broken instrument rather than a finding.
     public static let tracingInternals = ProcessInfo.processInfo.environment["SHARD_TRACE_INTERNALS"] == "1"
 
-    /// The feed-forward half of a decoder layer. The reference branches inside its decoder
+    /// The generation's expert bank, held by reference because `Qwen3_5Forward` is a **struct**.
+///
+/// A struct cannot own a lazily created cache, and making the forward `mutating` would ripple through every
+/// caller and the `ForwardPass` protocol for no gain. One small box keeps the bank's lifetime equal to the
+/// forward's — which is the generation — without pretending the forward is mutable. The lock is here rather
+/// than in `ExpertBank` because the *creation* is what needs to happen once; `ExpertBank` guards its own
+/// contents.
+private final class ExpertBankBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var bank: ExpertBank?
+
+    func bank(budgetBytes: Int, sliceCap: Int) -> ExpertBank {
+        lock.lock()
+        defer { lock.unlock() }
+        if let existing = bank { return existing }
+        let created = ExpertBank(budgetBytes: budgetBytes, sliceCap: sliceCap)
+        bank = created
+        return created
+    }
+
+    var created: ExpertBank? {
+        lock.lock()
+        defer { lock.unlock() }
+        return bank
+    }
+}
+
+/// The feed-forward half of a decoder layer. The reference branches inside its decoder
     /// layer between `Qwen3_5MLP` and `Qwen3_5SparseMoeBlock`, and so does this.
     enum FeedForward {
         case dense(gate: [Float], up: [Float], down: [Float])
@@ -283,12 +357,11 @@ public struct Qwen3_5Forward: ForwardPass {
             // this model is 3.2 GB in fp32, so the layer keeps a provider that reads one
             // expert's row range on demand and a bounded cache in front of it.
             let stacked = StackedExpertProvider(source: source, gateUpName: gateUpName, downName: downName)
+            // One slice bank for the whole generation, with this layer as its face (`DC-119`). The layer
+            // index is part of the key, so a slice never crosses layers and the entries are still per-layer
+            // — what changed is that they survive the layer load that fetched them.
             let cache = ExpertSlotCache(
-                upstream: stacked,
-                capacity: Self.slotCapacity(
-                    environment: ProcessInfo.processInfo.environment, shape: try mixtureShape(),
-                    layers: config.numLayers
-                )
+                upstream: stacked, bank: expertBank(shape: try mixtureShape()), layer: index
             )
             feedForward = .mixture(
                 MixtureWeights(

@@ -257,7 +257,9 @@ extension Qwen3_5Forward {
         return Generation(
             prompt: prompt, generated: generated, secondsPerStep: seconds, captured: result.tensors,
             margins: margins, profile: ProfileReport.combined(reports),
-            layerCache: layerCacheBudgetBytes > 0 ? layerWeights.metrics : nil
+            layerCache: layerCacheBudgetBytes > 0 ? layerWeights.metrics : nil,
+            experts: expertBankMetrics,
+            expertBudgetBytes: expertBankBudgetBytes
         )
     }
 

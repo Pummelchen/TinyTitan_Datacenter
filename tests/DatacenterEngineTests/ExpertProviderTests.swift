@@ -166,7 +166,9 @@ final class ExpertProviderTests: XCTestCase {
             gateUp: stack(experts: 8, width: 2 * 16 * 32), down: stack(experts: 8, width: 32 * 16)
         )
         let counting = CountingExpertProvider(upstream: arrays)
-        let cache = ExpertSlotCache(upstream: counting, capacity: 2)
+        let cache = ExpertSlotCache(
+            upstream: counting, bank: ExpertBank(budgetBytes: 1 << 20, sliceCap: 2), layer: 0
+        )
 
         // Expert 0, twice: the second is a hit that never reaches the source.
         _ = try cache.gateUp(expert: 0, shape: shape)
@@ -210,7 +212,8 @@ final class ExpertProviderTests: XCTestCase {
             let provider: any ExpertWeightProvider
             if let capacity {
                 provider = ExpertSlotCache(
-                    upstream: ArrayExpertProvider(gateUp: gateUp, down: down), capacity: capacity
+                    upstream: ArrayExpertProvider(gateUp: gateUp, down: down),
+                    bank: ExpertBank(budgetBytes: 1 << 20), layer: 0
                 )
             } else {
                 provider = ArrayExpertProvider(gateUp: gateUp, down: down)

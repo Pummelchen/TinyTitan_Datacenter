@@ -238,6 +238,19 @@ do {
         "dense_payload_cache_hits": payloadMetrics.hits,
         "dense_payload_bytes_held": payloadMetrics.bytesHeld,
     ]
+    // `DC-119`: the expert bank in the bank's own terms — how many requests it served from memory, how many
+    // it had to read, and how many elements that was — so a hit rate can be read beside the budget that
+    // produced it. The reference implementation reports the same three columns, and without them "the cache
+    // helped" is an assurance rather than a number.
+    if let experts = generation.experts {
+        metrics["expert_requests"] = experts.requests
+        metrics["expert_hits"] = experts.hits
+        metrics["expert_misses"] = experts.misses
+        metrics["expert_hit_rate"] = experts.hitRate
+        metrics["expert_elements_read"] = experts.elementsRead
+        metrics["expert_peak_resident_slices"] = experts.peakResidentExperts
+        metrics["expert_bank_budget_bytes"] = generation.expertBudgetBytes ?? 0
+    }
     if let sharded {
         metrics["plan_digest"] = sharded.planDigest
     }

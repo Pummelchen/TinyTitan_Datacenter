@@ -2667,3 +2667,52 @@ value, so the trace digest is the check). Then the head and the CPU matmul shape
 re-measured and batched one command buffer per layer, then asynchronous expert prefetch on top of a bank worth
 prefetching into. Every step is measured on one binary with the conditions alternated (`D62`) and the load
 recorded, and **7 tok/s is the gate**: no cluster measurement resumes before it.
+
+## D98 — The expert bank works, and it proved that capacity is not the lever on this node
+
+`D97` read this engine's **0% expert hit rate** as a lifetime defect: `ExpertSlotCache` was constructed inside the
+layer-load path and dropped with the layer's weights, so a generation asking for the same expert on the next
+token asked a store that no longer existed. That was correct, and `DC-119` fixed it — `ExpertBank` holds slices
+for the **whole generation**, byte-budgeted and least-recently-used, with a per-projection cap and peak (the
+meaning the old metric had, and M1's gate reads it), and it reports hits, misses, elements read and resident
+peak into `metrics.json` for the first time. Seven new tests pin the semantics, including the two that matter
+for safety: a slice never crosses a layer and never crosses a projection. 233 Swift tests pass.
+
+**Then the measurement refused the conclusion.** Five alternated 24-step decodes on the real 35 B-A3B, one
+binary, the bank's budget as the only variable:
+
+| bank | s/step | hits | elements read |
+| --- | --- | --- | --- |
+| 0 MB | 4.132 | 0.0% | 29,192.4M |
+| 512 MB | 4.139 | 0.0% | 29,192.4M |
+| 1024 MB | 4.335 | 0.0% | 29,192.4M |
+| 0 MB (again) | 4.020 | 0.0% | 29,192.4M |
+| 512 MB (again) | 4.236 | 0.0% | 29,192.4M |
+
+**Zero hits at every size, and byte-for-byte the same bytes read.** The bank was demonstrably working — its
+resident peak was 43 slices per projection at 512 MB — and the arithmetic says why it could not hit: a decode
+token asks for **773 slices**, at **12.5 MB per slice**, so one token's working set is **387 slices per
+projection = 4.83 GB**, about **9.66 GB for both projections**, against a 537 MB bank. The **reuse distance is
+nine times the capacity**, so every reuse has long been evicted. A bank that could hit this model across tokens
+would need 10-20 GB, and this node has 8.
+
+So the default budget is **0**, exactly as `D89` set the layer cache to 0 when it measured that on this node it
+loses — and the bank on was slightly *slower* in both alternated pairs, which is what 43 slices of residency buy
+when nothing hits. The knob stays, because the prefetch ring will want storage and a node with headroom may
+want to test it; the default does not pretend. `D31`'s "hit rate 0 at every size" was therefore right about the
+**workload** as well as the lifetime, and the lifetime fix is what made the two distinguishable at all — the old
+metric could not tell them apart.
+
+**What this redirects the work to.** The bytes have to be read either way, so the levers are not capacity:
+
+1. **Hide the reads** (`DC-121`): the reference's `ExpertPrefetchRing` stages the *next* token's likely experts
+   into raw slots while the current token computes, and adopts them only if the router selects them. That is
+   where its 8-21% hidden I/O comes from, and — as an inference, not a measurement — it is most likely what its
+   60-85% "expert hit" column counts too, because a pure cache on this class of model at 1-3 GB gives the same
+   ~0% that we measured.
+2. **Cut the latency of the misses** (`DC-118`): 773 reads per step issued one at a time, where the reference
+   fans them across threads.
+3. **Cut the per-token compute** (`DC-120`): the dequantise-then-matmul path, on the CPU, with the GPU off.
+
+The order of the remaining work is unchanged; what changed is that each of those three is now supported by a
+measurement rather than by analogy with the sister project.

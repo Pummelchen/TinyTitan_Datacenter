@@ -156,69 +156,77 @@ public struct ExpertProviderMetrics: Sendable, Equatable {
     }
 }
 
-/// A bounded cache of expert slices, with the counters M1's gate needs.
+/// The expert provider one layer sees, backed by the generation's bank.
 ///
-/// The policy is written down rather than implied, because each choice is visible in the
-/// arithmetic or in the timings:
+/// This was a bounded per-layer cache, and the doc comment it replaced admitted the consequence in its own
+/// words: "a generation asks for the same experts again on the next token only if the layer is still
+/// resident, which it is not". `DC-119` moved the *store* to `ExpertBank`, whose lifetime is the generation,
+/// and left this type as the per-layer face of it — so the provider protocol, the mixture's call sites and
+/// the sharded path are all unchanged, and the only thing that is different is that a slice fetched for
+/// layer 17 on one token can still be there on the next.
 ///
-/// - **exactly the requested expert is fetched**, never a neighbourhood: prefetching neighbours
-///   would read bytes the model did not ask for, and on a 1,500 MB/s SSD the bytes are the
-///   budget;
-/// - **eviction is least-recently-used**, and the capacity is in *experts*, so the resident
-///   bytes are `capacity × (2·intermediate·hidden + hidden·intermediate) × 4`;
-/// - **the counters are part of the type**, because "the cache helped" is a claim that has to
-///   be reproducible.
-///
-/// The cache belongs to one layer: the forward pass builds it as it loads the layer and drops
-/// it with the layer's other weights, which is the "per-layer ID→slot bank" the design calls
-/// for. That is also why a hit is possible at all inside a single token — several of the
-/// token's chosen experts can repeat across positions, and a generation asks for the same
-/// experts again on the next token only if the layer is still resident, which it is not.
+/// The counters now come from the bank, because with a shared store a per-layer count would answer a
+/// question nobody asked ("did *this* layer hit?" rather than "did the generation hit?"). `metrics` is
+/// therefore the same snapshot from every layer, which is what a measurement wants.
 public final class ExpertSlotCache: ExpertWeightProvider {
     private let upstream: any ExpertWeightProvider
-    private let capacity: Int
-    private var gateUpSlots: [Int: [Float]] = [:]
-    private var downSlots: [Int: [Float]] = [:]
-    private var gateUpOrder: [Int] = []
-    private var downOrder: [Int] = []
+    private let bank: ExpertBank?
+    private let layer: Int
+
+    /// What **this layer** was asked for, and what this layer had to read.
+    ///
+    /// Per layer rather than the bank's total, deliberately: `ForwardResult.expertMetrics` carries one entry
+    /// per mixture layer and a caller sums them, so a shared snapshot here would be counted forty times over.
+    /// The generation-wide totals live on the bank and reach `metrics.json` through `Generation.experts`.
     public private(set) var metrics = ExpertProviderMetrics()
 
-    public init(upstream: any ExpertWeightProvider, capacity: Int) {
-        precondition(capacity >= 1, "a cache with no slots is not a cache")
+    public init(upstream: any ExpertWeightProvider, bank: ExpertBank?, layer: Int) {
         self.upstream = upstream
-        self.capacity = capacity
-    }
-
-    private func fetch(
-        _ slots: inout [Int: [Float]], _ order: inout [Int], _ expert: Int,
-        _ load: () throws -> [Float]
-    ) rethrows -> [Float] {
-        metrics.requests += 1
-        if let cached = slots[expert] {
-            metrics.hits += 1
-            order.removeAll { $0 == expert }
-            order.append(expert)
-            return cached
-        }
-        metrics.misses += 1
-        let loaded = try load()
-        slots[expert] = loaded
-        order.append(expert)
-        metrics.elementsRead += loaded.count
-        if order.count > capacity {
-            let evicted = order.removeFirst()
-            slots.removeValue(forKey: evicted)
-        }
-        metrics.peakResidentExperts = max(metrics.peakResidentExperts, slots.count)
-        return loaded
+        self.bank = bank
+        self.layer = layer
     }
 
     public func gateUp(expert: Int, shape: MixtureShape) throws -> [Float] {
-        try fetch(&gateUpSlots, &gateUpOrder, expert) { try upstream.gateUp(expert: expert, shape: shape) }
+        guard let bank else {
+            metrics.requests += 1
+            metrics.misses += 1
+            let values = try upstream.gateUp(expert: expert, shape: shape)
+            metrics.elementsRead += values.count
+            return values
+        }
+        let outcome = try bank.gateUp(layer: layer, expert: expert) {
+            try upstream.gateUp(expert: expert, shape: shape)
+        }
+        count(outcome)
+        return outcome.values
     }
 
     public func down(expert: Int, shape: MixtureShape) throws -> [Float] {
-        try fetch(&downSlots, &downOrder, expert) { try upstream.down(expert: expert, shape: shape) }
+        guard let bank else {
+            metrics.requests += 1
+            metrics.misses += 1
+            let values = try upstream.down(expert: expert, shape: shape)
+            metrics.elementsRead += values.count
+            return values
+        }
+        let outcome = try bank.down(layer: layer, expert: expert) {
+            try upstream.down(expert: expert, shape: shape)
+        }
+        count(outcome)
+        return outcome.values
+    }
+
+    private func count(_ outcome: ExpertBank.Outcome) {
+        metrics.requests += 1
+        if outcome.wasHit {
+            metrics.hits += 1
+        } else {
+            metrics.misses += 1
+            metrics.elementsRead += outcome.elementsLoaded
+        }
+        // The ceiling is the bank's, not this layer's: with a shared store a per-layer peak would be a number
+        // nobody can act on, and M1's gate reads this field to check the budget is respected.
+        metrics.peakResidentExperts = max(metrics.peakResidentExperts, outcome.residentPeak)
     }
 }
 

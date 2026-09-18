@@ -41,7 +41,12 @@ final class ExpertSlotCacheTests: XCTestCase {
 
     private func bank(capacity: Int) -> (ExpertSlotCache, CountingProvider) {
         let provider = CountingProvider(shape: shape)
-        return (ExpertSlotCache(upstream: provider, capacity: capacity), provider)
+        // A generous byte budget and an explicit per-projection cap, so this exercises the *capacity* rule
+        // rather than the byte rule.
+        return (ExpertSlotCache(
+            upstream: provider,
+            bank: ExpertBank(budgetBytes: 1 << 20, sliceCap: capacity), layer: 0
+        ), provider)
     }
 
     private func touch(_ cache: ExpertSlotCache, _ expert: Int) throws {
