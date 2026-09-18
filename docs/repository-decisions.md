@@ -4161,3 +4161,38 @@ policy edit itself is correct and stays recorded in `D127`; it is simply not a s
 documentation checks plus `swift test --no-parallel`, and a commit message may only claim what was run in the
 same command that produced the commit. Running a subset and calling it "the gates" is how a green claim stops
 meaning anything, and this session has now done it twice.
+
+## D133 — The controlled A/B `D128` asked for: wiring is a net loss at a large bank, and the small bank is a local optimum
+
+`D128` inferred, from counters, that the pinned bank was what slowed the reads at 1024 MiB, and named the
+measurement that would settle it: an alternated A/B at a **fixed** bank size with wiring on and off. Run here,
+three alternated pairs, 20 steps each, `SHARD_SLAB_CACHE_MB=1024` throughout:
+
+| `SHARD_SLAB_WIRED` | per-step | median | expert bytes/step | read (thread-summed) |
+| --- | --- | --- | --- | --- |
+| **0** (unwired) | 0.637, 0.666, 0.645 | **0.645 s** | 365 MB | 1717 ms |
+| 1 (wired) | 0.702, 0.701, 0.701 | 0.701 s | 365 MB | 1863 ms |
+
+**Same bytes, 8.7% slower when wired.** That is the inference confirmed as a measurement: `mlock` is what makes
+the larger bank slower, not the bank's size, and the read time itself rises (1717 -> 1863 ms) exactly as the
+page-cache-help explanation predicts. The three wired runs are also *unusually* tight (0.701, 0.701, 0.702),
+which is what a memory-pressure effect looks like when it is the dominant term rather than noise.
+
+**And the second half is the more useful one, because it closes a line of work.** Unwired at 1024 MiB gives
+**0.645 s** — which halves the expert bytes read (365 against 727 MB/step) and yet only *ties* the 128 MiB wired
+default's 0.639-0.648 s measured in `D122`. So the 128 MiB wired default is a **local optimum**: it matches a
+bank using eight times the memory. Halving the reads buys nothing at this point, which means the expert read is
+**not** what the step is currently limited by — contradicting the framing this session has carried since `D115`,
+where `<mix.gather>` 245 ms of 626 ms was read as "the read is the floor".
+
+**Which corrects `D129`'s hope as well.** That entry expected the ~676 MB freed by an int4 head to help by
+enlarging what the machine can cache. This measurement says a larger bank does not help *even when it hits*, so
+the freed memory's value is **not** as cache. Its value is headroom — less pressure, which `D128` identified as
+what slows the reads — and the head's own arithmetic in bytes. That is a narrower claim than `D129` made, and it
+is the one the evidence supports.
+
+**What is therefore left to explain is the phase nobody has explained:** `attn.core` (119-150 ms), `mix.read` +
+`mix.down` (~135 ms), `load` (~55 ms) and `head` (~50 ms) total roughly 360-390 ms against a 143 ms target, and
+the read that was supposed to dominate turns out not to. The next measurement should be a sub-mark inside
+`preloadPacked` and `SlabCache` — the trace noted there is none — so the read, the lock, the eviction scan and
+the fan-out can be told apart instead of inferred from a single phase mark.
