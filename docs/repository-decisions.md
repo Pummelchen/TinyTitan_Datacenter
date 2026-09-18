@@ -6987,3 +6987,34 @@ small, `D179`), the read path in all its forms (`D187`, `D193`, `D196`, `D197`, 
 that one layer's 1.05 ms cannot, and `D202` gives the arithmetic - all three phases overlapped is **20.2 tok/s**,
 and with the read at depth 8, **23.8**. A draft head is what makes the overlap possible; it is a different project
 from this one, and it is now the *only* one the measurements point at.
+
+## D204 — The last draft-free alternative is checked and absent: no n-gram or lookup decoder
+
+`D203` concluded that 21 tok/s needs speculative decoding and therefore a draft head, which this install does not
+have. One draft-free method remained to check, because this codebase has n-gram machinery and a test for it:
+**prompt-lookup / n-gram speculative decoding**, which drafts from the context itself and needs no trained head.
+
+**It is not what the n-gram code here is.** `ngram_table.bin` is a **model artifact** in the PLE family -
+`PLEBlock`, `PLEConstants`, and the repacker's `--share-ngram-table` option, which links an existing table rather
+than producing a draft - and it is **not present in the qwen36 install**, whose manifest contains zero occurrences
+of `ngram` alongside the zero of `mtp`, `draft`, `nextn` and `eagle` (`D187`). There is no lookup decoder in the
+runtime: the n-gram reader is `TinyTitanRepack`'s, not the generation path's.
+
+**So every draft-free route is now closed by inspection as well as by measurement**, and the conclusion of
+twenty-two rounds is unchanged and complete:
+
+    to reach 21 tok/s on this engine, the draft head is the requirement, and it does not exist here
+
+**What would have to be true for each remaining option**, so the decision is a real one rather than a preference:
+
+* **Produce a draft head.** The route the measurements point at, and the composition bounds its ceiling at
+  **20.2-23.8 tok/s** (`D202`). It is a training or conversion project, not a tuning one, and it needs the base
+  model's MTP weights, which the published snapshot this install came from does not carry.
+* **Renegotiate the target** to what this engine does - a **measured 7.5 tok/s** - which `D186` already did once
+  for the sharding target.
+* **Change the engine** to one whose step is device-bound rather than serialised; `D84`/`DC-107` already recorded
+  that this repository's own engine was too, and that it measured 1.36x across four nodes rather than 3x.
+
+Nothing in the measurements supports a fourth option, and no further measurement is outstanding: the composition
+closes exactly (`D202`), every term is measured independently, and every lever has been closed by measurement or
+by inspection.
