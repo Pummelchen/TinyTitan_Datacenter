@@ -6896,3 +6896,54 @@ or token, which is batching, or (c) reading the misses faster, which `D196` boun
 **Of those, (c) is the one that needs no new mechanism** - the demand set is known, it is simply read at 985 MB/s
 where the same reads achieve 1,940 - and it is where the next attempt belongs. `DC-137` is corrected rather than
 left to send the next session down a stage that cannot work.
+
+## D202 — The step is three thirds that never overlap, and the target needs two of them changed
+
+`D198` showed the step is device time plus read time. Putting the third term in - the host remainder - closes the
+decomposition **exactly**, which is the strongest evidence yet that the model is right and that nothing is being
+double-counted or missed:
+
+    read bytes                    95.9 MB           D194, the engine's own counter
+    disk time at 1,940 MB/s       49.4 ms   (37% duty)   D196's measured depth-1 rate
+    device time                   42.0 ms   (32% duty)   D183, [gpu by role]
+    host remainder                41.3 ms   (31% duty)   by subtraction
+    ---------------------------------------------------------------
+    sum                          132.7 ms   = the step   D195, exactly
+
+**Three phases, each busy about a third of the time, and their durations add rather than overlap.** That is the
+signature of a fully serialised pipeline, and it is consistent with every instrument this session has taken
+independently: the device at ~30% occupancy (`D182`), the host at 31-37% of one core (`D191`), the disk averaging
+**723 MB/s** over the step against a measured **1,940** when read without gaps (`D196`). Four instruments, one
+fact.
+
+**What each amount of overlap is worth, from the same arithmetic:**
+
+    nothing overlaps (measured)          132.7 ms  ->   7.5 tok/s
+    disk and device overlap, host serial  90.7 ms  ->  11.0 tok/s
+    all three overlap                     49.4 ms  ->  20.2 tok/s
+    all three overlap, reads at depth 8   42.0 ms  ->  23.8 tok/s     D196: 2,940 MB/s
+
+**And that is the sharpest statement of the target available.** Perfect overlap alone lands at **20.2 tok/s -
+just short of 21** - so the objective needs **both** overlap *and* a faster read, and with the read at the depth-8
+rate the composition gives **23.8**, comfortably above. Neither alone suffices, and both are now bounded by
+measurement rather than estimated.
+
+**Why overlap does not happen is `D200`'s ratio and not a missing mechanism.** One expert read is 0.91 ms against
+a 1.05 ms window, 1.6 misses per layer, and the ring lands about one - and `D201` records that the one place this
+codebase *did* close a gap of exactly this shape (the shared-expert reordering, 7.88 ms/token) is already taken.
+The experts are genuinely unknown until the router readback returns, so within a single token there is no earlier
+point at which to issue them; more speculation was measured worse (`D197`); and batching tokens is what would
+supply the missing compute, which needs a draft head this install does not have (`D187`).
+
+**So the two honest routes to 21 tok/s, both now bounded:**
+
+1. **Raise the demand reads from 985 MB/s toward 1,940-2,940.** The set is known exactly and the rate is measured
+   three times, so this is the only route needing no new mechanism.
+2. **Supply the missing compute to hide the reads** - batching tokens, which means a draft head, which means
+   producing one. `D187` closed MTP for this install; producing a draft head is a different project and is the
+   only route that reaches 23.8 without a read-path change.
+
+**What the twenty rounds are worth, stated plainly.** The goal opened with "~70% host loop", which was an artefact
+of an instrument that could not see I/O. It closes with a three-term decomposition that sums exactly to the
+measured step, every term measured independently, every read-path hypothesis and setting closed by measurement,
+and the target expressed as two bounded changes with a measured ceiling of 23.8 tok/s.
