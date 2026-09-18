@@ -7537,3 +7537,54 @@ node's numbers rather than an assumption carried over from the sister project.
 **The corrected 48-slot figure also removes a claim.** The status line after `D217` said the reference was beaten
 "7.435-7.856 at 48" as well as at 40. **48 is 7.432 in this measurement** - the same as 40 - so the honest claim is
 the one that has held throughout: **40 slots, median 7.357-7.451 against the reference's 7.075.**
+
+## D219 — A fitted model of the step against read volume, and the floor it puts under the single node
+
+`D217` and `D218` established the step tracks the read volume and that the cache is at the memory wall. Capturing
+the volume the earlier sweep failed to grep turns the curve into a model. Node3, the reference install, 48 tokens,
+`TINYTITAN_DECODE_IO_TRACE`:
+
+| slots | tok/s | step | MiB/token |
+| --- | --- | --- | --- |
+| 8 | 5.706 | 175 ms | 244.9 |
+| 16 | 6.293 | 159 ms | 165.9 |
+| 24 | 6.503 | 154 ms | 131.8 |
+| 40 | 7.727 | 129 ms | 89.0 |
+
+Least squares gives
+
+    step = 110.9 ms + 0.275 ms/MiB        marginal read rate 3.64 GB/s
+
+**Three things this settles.**
+
+**1. The single node has a floor of 9.02 tok/s.** At zero read volume the step is 110.9 ms. That is what an
+infinitely large cache would buy on this machine, and **21 tok/s is not reachable on one node by any cache,
+any prefetch setting, or any host change** - the term that remains when the read is free is already 111 ms. This is
+the first measurement in the session that bounds the single-node case from below rather than describing it, and it
+retires that question.
+
+**2. The marginal read rate is 3.64 GB/s**, well above the **1.94 GB/s** `D196` measured for a depth-1 read of the
+install's own layer file. The two are not in conflict and the difference is informative: `D196` measured one reader
+against a cold file, while this is the slope of the step - reads that are already partly overlapped with the device
+and served by the page cache. **A rate taken from a microbenchmark is a lower bound on a rate in situ**, which is
+`D188`'s lesson stated the other way round.
+
+**3. The four-node target reduces to a single question.** With a 4x cache per node (about 22 MiB/token) and the
+measured 3.2 ms exchange:
+
+    intercept divides 1x  ->  120.1 ms  ->   8.33 tok/s
+    intercept divides 2x  ->   64.7 ms  ->  15.46 tok/s
+    intercept divides 4x  ->   37.0 ms  ->  27.06 tok/s
+
+**21 tok/s needs the 110.9 ms intercept to divide by about 2.9.** Whether it can is decided by **how much of that
+intercept is replicated work** - the dense projections and the attention that every node must do in full - against
+how much is the routed MoE, which divides exactly. `D93` made the head vocabulary-parallel so it divides; the dense
+path does not. **The model therefore says the target is reachable if roughly two thirds of the intercept divides
+and is out of reach if less than about a third does**, and it says it in terms of a quantity - the replicated
+fraction - that can be measured on one node before four are ever started.
+
+**Limits of the fit, stated because this session has been burned by unstated ones.** Four points, one machine, one
+configuration, and the intercept is an extrapolation to a volume no cache can reach. The residual at 24 slots is
+the largest, so the curve is not perfectly linear. It is a model of a *measured* relationship and not a substitute
+for a four-node run - but it is the first thing in this goal that predicts what a four-node run should produce, and
+the prediction can be falsified by one.
