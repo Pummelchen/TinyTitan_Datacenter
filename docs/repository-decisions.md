@@ -5620,3 +5620,52 @@ engineering grounds rather than on a latency number taken from the wrong machine
 **What remains arithmetic.** The compute floor is still 141.3/4 with perfect scaling, which this repository's own
 history says is optimistic (`D87`, `D93`: dense weights and the head are replicated). No overlap is modelled. And
 these are **ping and socket measurements, not a sharded run** — the exchange frames have not crossed the switch.
+
+## D172 — The wired farm measured end to end: 0.565 ms RPC, and the service runs on a farm node built here
+
+`DC-129` cleared, `DC-130` closed. With the farm's SSH keys working (username is the node name), the measurement
+was taken **on the cluster, with the actual decode service**, not with ping and not to `macbook-ab`.
+
+**The service built on node4 runs on node1**, and node2 reaches it over the switch:
+
+```
+node1: TinyTitanDecodeService --host 192.168.18.27 --port 46005   (LISTEN)
+node2: lan_decode_probe.py 192.168.18.27 46005 '{"unload": ...}'
+       -> reply {"kind":"unloaded","generationID":"00000000-...-000000000009", ...}
+```
+
+A release binary built on one farm node runs unchanged on another — same toolchain, `Xcode 27.0`, `arm64` — so
+**the cluster does not need four builds**. Then the RPC latency, 40 real command→event round trips:
+
+| | median | min | p90 | max |
+| --- | --- | --- | --- | --- |
+| **node2 → node1, wired switch** | **0.565 ms** | 0.401 | 0.713 | 2.260 |
+| node4 → macbook-ab, Wi-Fi (`D158`) | 14.992 ms | 7.615 | 18.458 | 21.969 |
+
+**26.5× faster**, and this is the application round trip with framing, decoding and a real service reply — not
+ping. `D155`'s 7.3 ms and `D158`'s 15.0 ms were both taken against the **one Wi-Fi machine in the farm**, and
+every throughput and latency conclusion since has inherited that error.
+
+**What it means for the design, which is the point:**
+
+```
+compute floor (141.3/4)                     35.3 ms
++ 40 per-layer exchanges x 0.565 ms    ->   57.9 ms   ->  17.3 tok/s
++ one per-step exchange of 1.97 MB     ->   52.0 ms   ->  19.2 tok/s
+target                                       47.6 ms   ->  21.0 tok/s
+```
+
+Two readings. **Per-layer exchange is viable** — 22.6 ms against the per-step exchange's 16.7 ms, so the shape
+`D158` ruled out as "~4× slower than a single node" is in fact *close to the alternative*, and it needs no
+whole-step buffering and pipelines with the layer that produced it. **And the target is still above both rows**,
+which puts the replication of `D166`/`D168` back on the critical path: at 118 MB/s, `R = 64` (116 MB/node) is what
+closes the last few milliseconds.
+
+**One operational trap, found by doing it.** `setsid` **does not exist on macOS**, so a start scripted with it
+fails silently — the service never launched and the first two attempts to measure looked like connection
+failures. `ssh -f -n 'nohup … &'` is what detaches reliably. A background process started with a bare
+`nohup … &` over ssh survives its session only briefly.
+
+**Still arithmetic on the compute side.** The 35.3 ms floor assumes perfect 4-way scaling, which `D87`/`D93` say
+is optimistic because the dense weights and the head are **replicated**. Nothing here is a sharded run — the
+exchange frames have not yet carried a contribution between nodes.
