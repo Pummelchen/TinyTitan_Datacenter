@@ -1663,16 +1663,20 @@ extension RealForwardRunner {
         // reader can tell how much of a layer's read actually sits on the critical path instead of inferring it
         // from `io_us` alone. `D226` read `io_us` as fully exposed and `D233` showed that was unproven - the total
         // and the exposed figure differ by whatever the completion clock covered.
-        var layerExposedIo: UInt64 = 0
+        // `nil` means the overlap clock had not seen exactly the predicted number of completions, which is NOT the
+        // same as "nothing was exposed" - `D237` found three records were spent reading that nil as a zero. The
+        // trace prints `exposed_io_us=-1` in that case, so a reader can tell "measured zero" from "not measured".
+        var layerExposedIo: Int64 = -1
         if missCount > 0 && eventLoad == nil {
             totalMissIoNanos &+= layerIo
             if let latest = completionClock?.latest(expected: expectedOverlapCompletions) {
                 let overlapEnd = max(tIoStart, latest)
-                if overlapEnd < tIoStart + layerIo {
-                    layerExposedIo = tIoStart + layerIo - overlapEnd
-                    totalExposedIoNanos &+= layerExposedIo
-                }
+                layerExposedIo = overlapEnd < tIoStart + layerIo
+                    ? Int64(tIoStart + layerIo - overlapEnd) : 0
+                totalExposedIoNanos &+= UInt64(max(0, layerExposedIo))
             }
+        } else {
+            layerExposedIo = 0
         }
         if let predictivePrefetch, L + Self.prefetchAhead < cfg.numLayers {
             let target = L + Self.prefetchAhead
@@ -1826,7 +1830,7 @@ extension RealForwardRunner {
             print("TinyTitan layer pos=\(position) L=\(L) "
                 + "body_us=\((now - tBodyStart) / 1000) "
                 + "wait_us=\(waitNanos / 1000) io_us=\(layerIo / 1000) "
-                + "exposed_io_us=\(layerExposedIo / 1000) "
+                + "exposed_io_us=\(layerExposedIo < 0 ? "-1" : "\(layerExposedIo / 1000)") "
                 + "cb1_us=\((tWait - tCb1Start) / 1000) "
                 + "cb2_us=\((now - tCb2Start) / 1000) "
                 + "gpu_attn_us=\(Int(attnUs)) gpu_tail_us=\(Int(tailUs)) "
