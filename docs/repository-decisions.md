@@ -8102,3 +8102,47 @@ reference having been measured at any particular length: the curve is above 7.07
 where the curve has not yet reached its peak and the attention term has not yet grown; a four-node run will have to
 name its length to be comparable with it. **The prediction to test is therefore a curve and not a number**: about
 **19.4 tok/s near 24-32 tokens**, falling as the generation lengthens.
+
+## D233 — The read is not shown to be fully exposed: the engine already tracks the exposed part and the CLI does not print it
+
+`D226` and `D227` concluded that the expert read is **fully exposed** - 47.4 ms of the 106 ms layer body, with the
+prefetch doing nothing - and `D228` built a four-node projection on it. Checking what the engine actually measures
+before anything is built on that:
+
+    let layerIo = eventLoad == nil ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tIoStart : 0
+    if missCount > 0 && eventLoad == nil {
+        totalMissIoNanos &+= layerIo
+        if let latest = completionClock?.latest(expected: expectedOverlapCompletions) {
+            let overlapEnd = max(tIoStart, latest)
+            if overlapEnd < tIoStart + layerIo {
+                totalExposedIoNanos &+= tIoStart + layerIo - overlapEnd      // <- the EXPOSED part
+
+**The engine separates `totalIoNanos` from `totalExposedIoNanos`, and the layer trace prints `io_us = layerIo`,
+which is the TOTAL.** So the 1186-1287 us per layer that `D226` read as exposed read time is **total read time with
+an unknown fraction already overlapped**, and the fraction is tracked in a counter the trace does not print.
+
+**And that counter is not reachable from the CLI.** `totalExposedIoNanos` is reported only by
+`TinyTitanServer/Core/ServerInference.swift`, which publishes it as a per-request metric. The CLI has no equivalent
+line, so the one number that would settle how much of the read is exposed **cannot be read from the tool this
+session has been measuring with**.
+
+**What this invalidates and what it does not.**
+
+  - **It invalidates the specific claim "fully exposed".** `D226` saw `io_us` 1287 against a `wait_us` 1148 and
+    concluded the two were sequential. They may be; but the trace does not show it, and the engine's own accounting
+    says part of the IO sits inside the completion-clock window.
+  - **It leaves `D227`'s finding intact**: the prefetch settings do not move the layer body at all. That was measured
+    by changing settings and watching the body, not by reading `io_us`, and it stands.
+  - **It weakens `D228`'s projection in one direction only.** "Overlap the read" was worth 2.9 tok/s at four nodes on
+    the assumption that all 47.4 ms was exposed. If part already overlaps, the remaining prize is smaller - and the
+    `attention sharding` line (16.35 vs 14.33) is unaffected, being computed from kernel times.
+
+**This is the ninth self-correction in this session and it is the third of the same species**: a quantity read off an
+instrument that measures something *adjacent* to the question. `D212` profiled the idle thread, `D224` shape-matched
+a subtraction, and this read a **total** where the **exposed** figure was wanted - and in each case the engine or the
+tooling already held the right number somewhere else. **The pattern is worth stating as a rule: before concluding
+from a counter, find out what it counts.**
+
+**The concrete fix is small and it belongs in the engine rather than in a decision:** have `TINYTITAN_LAYER_TRACE`
+print the exposed fraction it already computes, so the next attempt at this question starts from the right number
+instead of from a subtraction.
