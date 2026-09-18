@@ -9306,3 +9306,46 @@ wire is wrong or the arithmetic is**, and nothing so far has compared the two.
 **And the goal's number is now genuinely close to measurable**: node2 at 6.715 against 7.6 single-node is 0.88x, from
 a run in which two of three peers were still failing. **One correctness fix and one clean run, and the exchange has
 its first real measurement** - against the ~1.12x the records predict.
+
+## D266 — The NaN is not a buffer lifetime: the fetched views are the same bank slots
+
+`D265` listed four candidates for the NaN and put the buffer lifetime of `fetchRoutedExperts` first, because a
+streaming read that returns transient staging would explain the symptom exactly. **Checking it eliminates it:**
+
+    fetchRoutedExperts(plan:)      -> beginFetchRoutedExperts(plan:).completion()
+    beginFetchRoutedExperts        -> streamer.beginExpertCachePlan(plan.cachePlan, eventDriven:)
+    makeExpertViews                -> TensorView(buffer: entry.buffer, offset: entry.offset, ...)
+
+**The views are built from the cache-plan buffers** - the same persistent bank slots `routedExpertBuffers(for:)`
+returns, by the same helper. They are not staging, they are not transient, and holding them across an encode and a
+wait is what the MoE path itself does. **The first candidate is wrong**, and it was the one with the best story.
+
+**That leaves the arithmetic, and the list is now short and specific.**
+
+  1. **The eight-slot one-hot.** The same expert sits in all eight slots and `remoteWeight` is `[1,0,0,0,0,0,0,0]`,
+     so the reduce should pick one term. `f` is derived as `remoteActs.length / 2 / 8`, which is correct only if
+     `remoteActs` is exactly `8 * moeIntermediateSize` fp16 - it is, but **a derivation that happens to be right is
+     not the same as a value that is checked**, and this one is the kind that would fail silently if the allocation
+     ever changed.
+  2. **The activation.** The requester sends `routedX`, `[D]` fp16 widened to fp32 and back. The peer feeds it as
+     `x:`. If the requester's expert saw a *different* buffer - it saw `routedX` too (`D248`) - the two agree. If it
+     saw something with the shared expert already folded in, they do not, and the result is a plausible-looking
+     wrong number rather than a NaN. **A NaN is a stronger signal than that**: it suggests an uninitialised or
+     mis-sized read rather than a different-but-finite input.
+  3. **The slot index.** The peer's reply row is placed by the requester at the slot the request named, and the peer
+     returns rows in the order asked. **If the peer returns the right value for the wrong expert**, the requester
+     sums it into the wrong slot - finite, wrong, and not NaN.
+
+**And the NaN is the thing to follow, because it is the one symptom that is not ambiguous.** A NaN logit row means a
+NaN reached the residual stream, which means one contribution was NaN - and of the candidates only an uninitialised
+read produces NaN rather than a finite wrong value. **`remoteActs`, `remoteY` and `remoteResidual` are allocated in
+`init` and `remoteResidual` is zeroed; `remoteActs` and `remoteY` are NOT.** If the peer's phase-1 leaves a slot
+unwritten - because the one-hot weights seven slots out but phase 1 still writes all eight **from the same expert**,
+which it does - the only unwritten memory is beyond what `f` addresses. **Unless `f` is larger than the buffer:**
+
+    remoteActs.length / 2 / 8  =  8 * FmoE * 2 / 2 / 8  =  FmoE      <- correct
+    but the kernel is told f = FmoE and writes topK * f = 8 * FmoE  <- which fits exactly
+
+**So the arithmetic is consistent and the NaN must come from the data.** The next step is the comparison `D265`
+named - call `remoteExpertValues` for one expert on one node and check it against the same expert computed locally -
+and it is now the only thing left that can distinguish "the wire is wrong" from "the arithmetic is wrong".
