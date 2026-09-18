@@ -2716,3 +2716,42 @@ metric could not tell them apart.
 
 The order of the remaining work is unchanged; what changed is that each of those three is now supported by a
 measurement rather than by analogy with the sister project.
+
+## D99 — Threading the element-wise passes, and reverting a matmul that moved bits
+
+`D97` listed five gaps; the cheapest was not the expert bank (`D98` proved that) but the two passes still paying a
+single core for work that is independent per element. `D94` had threaded the int4 unpack and measured 2.4x;
+this extends the same idea to `decodeRaw` and records what happened when it was tried on the matmul.
+
+**What is threaded.** `decodeRaw` converts bf16/fp16/fp32 payloads to fp32, and it is a **map**: every element
+is a pure function of its own bytes. Splitting it into disjoint ranges cannot change a value, so it is the
+cheapest parallelism in the engine — and it is the LM head's 508-million-element conversion on every token,
+plus the dense layer's norms and routers. One knob now covers it and `D94`'s unpack (`DecodeThreads`;
+`SHARD_DECODE_THREADS=1` restores the single-threaded behaviour, which is how the A/B attributes its win on one
+binary rather than across builds, `D62`).
+
+**Measured**, alternated, one binary, four runs on the real 35 B-A3B, 8-step decode:
+
+| threads | s/step | `load` | trace digest |
+| --- | --- | --- | --- |
+| 1 | 4.119 / 4.162 | 1.097 / 1.096 | `89d654ff54b0fd03` |
+| 8 | **3.448 / 3.465** | **0.360 / 0.356** | `89d654ff54b0fd03` |
+
+**0.242 → 0.290 tok/s**, and the digest is identical in every arm — which is the property that matters, not the
+seconds. The load average is recorded beside it (2.98), as this repository requires of any timing.
+
+**What was reverted, and why that is the point.** The same treatment looks obviously applicable to
+`Ops.orderedMatmulVectorized`: every output is its own dot product over `k`, so splitting `(row, column block)`
+across threads changes *which thread* accumulates and not the order — the rule `D63` states for the GPU. The
+version was written, and **it moved bits**. The repository's own comparison caught it — a reused-buffer test
+that had been passing since `D9` — so the function is the original single-threaded body **verbatim** and the
+attempt is recorded in `DC-122` rather than shipped. The likely cause is a hypothesis, not a finding: bounding
+each block by its own `last` moves the four-wide grouping and the scalar tail relative to a single
+`out`-bounded loop, for shapes where `out % 4 != 0` or where the tail lands inside a block. The next attempt
+starts from the contract grid and a bit-for-bit test, not from the timings.
+
+**Where the step stands.** `mix.read` is now the top phase at **1.71-1.77 s of 3.45 s (50%)**, followed by
+`head` 0.51, `attn.core` ~0.5 and `mix.gateup` ~0.22. The distance to 7 tok/s is ~24x, and the remaining work is
+the list `D97` and `D98` converged on: fuse the dequantise into the matmul so the fp32 slice is never
+materialised (`DC-120`), hide the reads behind compute (`DC-121`), and thread the matmul once it can be shown
+to preserve the contract order (`DC-122`).

@@ -512,25 +512,53 @@ public struct InstallFile: WeightSource {
         }
     }
 
+    /// Decode `count` elements with `transform`, across threads when the work warrants it (`D99`).
+    ///
+    /// This is a **map**: every element is a pure function of its own bytes, so splitting it into disjoint
+    /// ranges cannot change a value — which is why this is the cheapest parallelism in the engine and why
+    /// `decodeRaw`'s callers (the LM head's bf16 weights, above all) were paying a single core for a
+    /// 508-million-element conversion on every token.
+    private static func mapElements(
+        count: Int, into values: inout [Float], _ transform: @escaping @Sendable (Int) -> Float
+    ) {
+        guard DecodeThreads.wantsParallelism(work: count) else {
+            for index in 0..<count { values[index] = transform(index) }
+            return
+        }
+        let stride = max(1, (count + DecodeThreads.count - 1) / DecodeThreads.count)
+        let blocks = (count + stride - 1) / stride
+        // `body` needs no `nonisolated(unsafe)`: it is `@Sendable` already, and the only unsafe part is the
+        // destination pointer below, whose ranges are disjoint by construction.
+        let body = transform
+        values.withUnsafeMutableBufferPointer { out in
+            nonisolated(unsafe) let destination = out.baseAddress!
+            DispatchQueue.concurrentPerform(iterations: blocks) { block in
+                let first = block * stride
+                let last = min(first + stride, count)
+                for index in first..<last { destination[index] = body(index) }
+            }
+        }
+    }
+
     static func decodeRaw(_ data: Data, dtype: String, elementCount: Int) throws -> [Float] {
         var values = [Float](repeating: 0, count: elementCount)
         try data.withUnsafeBytes { raw in
-            let base = raw.baseAddress!
+            nonisolated(unsafe) let base = raw.baseAddress!
             switch dtype {
             case "bf16":
-                for index in 0..<elementCount {
+                Self.mapElements(count: elementCount, into: &values) { index in
                     let word = base.loadUnaligned(fromByteOffset: index * 2, as: UInt16.self)
-                    values[index] = Float(bitPattern: UInt32(UInt16(littleEndian: word)) << 16)
+                    return Float(bitPattern: UInt32(UInt16(littleEndian: word)) << 16)
                 }
             case "fp16":
-                for index in 0..<elementCount {
+                Self.mapElements(count: elementCount, into: &values) { index in
                     let word = base.loadUnaligned(fromByteOffset: index * 2, as: UInt16.self)
-                    values[index] = Float(Float16(bitPattern: UInt16(littleEndian: word)))
+                    return Float(Float16(bitPattern: UInt16(littleEndian: word)))
                 }
             case "fp32":
-                for index in 0..<elementCount {
+                Self.mapElements(count: elementCount, into: &values) { index in
                     let word = base.loadUnaligned(fromByteOffset: index * 4, as: UInt32.self)
-                    values[index] = Float(bitPattern: UInt32(littleEndian: word))
+                    return Float(bitPattern: UInt32(littleEndian: word))
                 }
             default:
                 throw Error.badHeader("unknown stored dtype '\(dtype)'")
@@ -630,13 +658,7 @@ public struct InstallFile: WeightSource {
     /// made of. It ran on **one core of an eight-core machine**. The rows are independent, so the loop is
     /// spread; `SHARD_DECODE_THREADS=1` selects the single-threaded path, which is how the two are compared on
     /// one binary rather than across builds (`D62`).
-    public static let decodeThreadCount: Int = {
-        if let raw = ProcessInfo.processInfo.environment["SHARD_DECODE_THREADS"],
-           let count = Int(raw), count >= 1 {
-            return count
-        }
-        return max(1, ProcessInfo.processInfo.activeProcessorCount)
-    }()
+    public static let decodeThreadCount: Int = DecodeThreads.count
 
     static func dequantizeInt4(_ data: Data, entry: Entry, rowCount: Int? = nil) throws -> [Float] {
         let layout = try int4Layout(entry: entry, rowCount: rowCount, payloadBytes: data.count)
