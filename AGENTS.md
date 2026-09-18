@@ -391,7 +391,7 @@ python3 tools/run_all_gates.py
 python3 tools/check_markdown_links.py --verbose
 
 # The documentation's own numbers, against the suites' actual output
-python3 tools/check_status_claims.py --swift-tests 266 --swift-skipped 0 --python-tests 427
+python3 tools/check_status_claims.py --swift-tests 266 --swift-skipped 0 --python-tests 428
 
 # The provenance position: no copied code, and no NOTICE to carry
 python3 tools/check_provenance.py
@@ -581,6 +581,14 @@ any failure.
   and it presented as a **2.7x slowdown in a phase the change never touched** (`mix.gather` at 1079 ms) rather
   than as an allocation. A shared cache's sizing assumption belongs in the cache, or the callers need separate
   caches; and when a change makes everything slower, suspect the thing that is *shared* (`D114`).
+- **"The gates" is not four commands, and twice in one session a commit claimed otherwise.** The four
+  *documentation* checks (`check_status_claims`, `check_markdown_links`, `check_provenance`,
+  `check_documented_commands`) are what a doc-only change needs, and running them alone is how `D124` shipped
+  with **three failing tests in `tools/test_check_provenance.py`** — it changed the checker and not the
+  checker's fixture. The gate set is `swift test --no-parallel` **and** `python3 -m unittest discover -s tools`
+  **and** those four, and a commit message may only claim a result that was read in the same command that
+  produced the commit. Running a subset and calling it "the gates" is how a green claim stops meaning
+  anything (`D132`).
 - **A pipe hides the exit status of the thing you are testing, and it has now happened three times in one
   session.** `swift test | tail` on a failing suite; `datacenter-generate … | tail -3` on a run whose *token
   line* was the thing being verified; and `run_m3_gate.py … | tail` on a gate that had **crashed** — each

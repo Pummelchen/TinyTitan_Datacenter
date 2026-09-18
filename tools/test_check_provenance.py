@@ -31,6 +31,13 @@ class ProvenanceTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         (self.root / "sources").mkdir()
+        # The licence and notice material a taken file must travel with is now **required** by the gate
+        # (`D124`), whether or not a file has been taken. The fixture has to carry it, or these tests are
+        # asserting a repository state the gate no longer accepts.
+        material = self.root / "third_party" / "TinyTitan"
+        material.mkdir(parents=True)
+        (material / "LICENSE").write_text("Apache License, Version 2.0\n")
+        (material / "NOTICE").write_text("TinyTitan\n")
         (self.root / NOTICES).write_text(GOOD_NOTICES)
         (self.root / "sources" / "Engine.swift").write_text(
             "// Copyright (c) 2026 André Borchert\n// MIT\nstruct Engine {}\n"
@@ -52,6 +59,16 @@ class ProvenanceTests(unittest.TestCase):
         problems, _ = check(self.root)
         self.assertGreaterEqual(len(problems), 3, problems)
         self.assertTrue(all("no longer mentions" in problem for problem in problems), problems)
+
+    def test_the_licence_and_notice_material_is_required(self) -> None:
+        """Staged before the first file is taken, and required from then on (`D124`).
+
+        The review this replaced could only observe that nothing had been taken yet; the gate now demands the
+        material that makes taking safe. Removing it must therefore fail even when no source file is derived.
+        """
+        (self.root / "third_party" / "TinyTitan" / "NOTICE").unlink()
+        problems, _ = check(self.root)
+        self.assertTrue(any("NOTICE is missing" in problem for problem in problems), problems)
 
     def test_a_third_party_copyright_line_is_noticed(self) -> None:
         # The line is assembled at runtime on purpose. Written literally, this fixture is a file under

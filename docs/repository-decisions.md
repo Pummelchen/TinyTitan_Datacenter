@@ -4123,3 +4123,41 @@ read; and the manifest fields the reader needs to know which layout it is lookin
 sections moved must say so rather than be inferred. The reader then needs `packedRows` to return one contiguous
 range per expert, which is a change to `InstallFile.int4RowsPayload` and its offsets — and every one of those
 must be verified against the 21.7 GB install this engine already reads before any of it is trusted.
+
+## D132 — Three tests had been failing since `D124`, and the reason I did not see it
+
+**This is a correction of my own process, and it is the second time in this session that I reported a gate as
+green when it was not.**
+
+`D124` changed `tools/check_provenance.py` to **require** the Apache-2.0 licence and notice material under
+`third_party/TinyTitan/`, and it changed `THIRD_PARTY_NOTICES.md`. It did not touch
+`tools/test_check_provenance.py`, whose fixture builds a synthetic root containing only `sources/` and the
+notices file — so three tests began failing the moment that commit landed:
+
+- `test_the_repository_as_it_stands_passes`
+- `test_a_notices_file_that_lost_its_content_fails`
+- `test_this_repositorys_own_copyright_is_allowed`
+
+They went unnoticed because the four checks I had been calling "the gates" — `check_status_claims`,
+`check_markdown_links`, `check_provenance`, `check_documented_commands` — are the **documentation** gates. The
+Python suite is `python3 -m unittest discover -s tools`, it is documented in `AGENTS.md` under "Build and run",
+and it was not in the loop I was running. `D124`'s commit message claimed all four gates were green, which was
+true of the four it ran and misleading about the repository.
+
+**Fixed** by making the fixture carry the material the gate now requires, and by adding
+`test_the_licence_and_notice_material_is_required`, which pins the new behaviour rather than relaxing the old
+assertion — a test that only ever passes is not evidence. The Python suite is now **428 tests, OK (2 expected
+failures)**, and the documented count moved 427 -> 428 in `AGENTS.md` and the wiki, which
+`check_status_claims.py` immediately demanded.
+
+**And one change was made and unmade this round.** `quant.head.lm` and `quant.token.embedding` were set to
+`int4-affine` (`D127`) and then **reverted**: the Python suite showed a fourth failure,
+`test_check_milestones.InstallVerificationTests.test_a_sound_install_verifies`, because that test's **fixture
+install** stores the embedding at bf16 and the policy now demanded int4-affine. The fixture is generated, so
+that change belongs with the single rebuild (`D131`) and the fixture regeneration rather than ahead of it. The
+policy edit itself is correct and stays recorded in `D127`; it is simply not a standalone change.
+
+**The rule this adds to the loop:** the gate set is `python3 -m unittest discover -s tools` **plus** the four
+documentation checks plus `swift test --no-parallel`, and a commit message may only claim what was run in the
+same command that produced the commit. Running a subset and calling it "the gates" is how a green claim stops
+meaning anything, and this session has now done it twice.
