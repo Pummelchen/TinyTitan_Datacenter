@@ -9069,3 +9069,39 @@ single-node test that calls `remoteExpertValues` directly, not a rerun on the fa
 **What this does not change.** The client side is proven: plans, peers, servers, contributions and a token stream, all
 on real hardware. **What is unproven is the answer**, and until it is proven the 0.92x of `D258` is a measurement of a
 run in which two of the three nodes did not survive it.
+
+## D260 — The serve path needs the down-only kernel: the kernels are hard-wired to eight slots, so the cheap option is impossible
+
+`D259` left the served nodes dying silently and named the serving path as the suspect. The crash report settles it in
+one stack, and the precondition settles the design:
+
+    MoE.makeRoutedArgumentBuffer(routedBlobs:topK:routedBufferOffsets:)
+    RealForwardRunner.remoteExpertValues(layer:experts:activation:dims:)
+    ShardExchangeServer.answer(_:)  ->  ShardExchangeServer.serve(connections:)
+
+and the trap is
+
+    private func validate(routedBlobs: [MTLBuffer], topK: UInt32) {
+        precondition(topK == UInt32(maxStreamedExperts))      // <- 8, not 1
+        precondition(routedBlobs.count == Int(topK))
+    }
+
+**`topK` must equal `maxStreamedExperts`** - which is `topKExperts`, eight - so the "one expert at a time with
+`topK: 1`" design in `remoteExpertValues` **cannot work**. The kernels address a fixed eight-slot bank; there is no
+sub-batch. That is why the process took a `SIGTRAP` rather than throwing: `precondition` is not an error a `Compute`
+can report, it is a trap that takes the process with it, which is exactly what `D259` predicted a silent death would
+look like.
+
+**And it kills the cheap option.** `35b286a` offered two ways to get a per-expert down output: a down-only kernel, or
+`experts.count` single-slot phase-2 encodes with unit weights. **The second is impossible**, because phase 2 also
+validates `topK == 8` and would reduce all eight slots. So:
+
+  * **the down-only kernel is not the clean alternative, it is the only one** - a `.metal` source writing
+    `[expert][d]` from the eight-slot bank, plus its PSO and its Swift encode;
+  * **and `remoteExpertValues` as written cannot be fixed by adjustment.** It is wrong at the level of its premise,
+    which is why it passed every gate: no gate executes a `precondition` on a path nothing calls.
+
+**What the last four rounds have been, in one line each.** `D257`: found two defects by running. `D259`: noticed the
+one path with no test, and predicted a silent death. `D260`: the crash report named it, and the precondition said the
+design was wrong rather than the code. **Every one of those four was a thing that could only be learned by executing
+the thing** - and the method this session used for its measurements was, until the run, not applied to its own work.
