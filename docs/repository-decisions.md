@@ -7632,3 +7632,57 @@ cannot divide, and `D202` sizes the MoE-versus-replicated split at **18.4 agains
 **If that ratio holds for the whole intercept, roughly 56% of it divides**, which lands between the 2x and 4x rows:
 about **17 tok/s** - short of 21, and **the first prediction of the four-node result this session can state as a
 number with its arithmetic shown.**
+
+## D221 — The replicated fraction is 57% of the GPU and it does not divide: the four-node case is bounded at 10.5-15.4 tok/s
+
+`D220` said the target hinges on how much of the intercept is replicated work and that it can be measured on one
+node. `TINYTITAN_KERNEL_STATS` is that measurement. Node3, the reference install, 40 slots, 16 tokens - every
+decode kernel is `x600` or `x15`, which is 40 layers times 15 decode tokens:
+
+    attn_norm_qkv                 338.1 ms  x600    replicated
+    shared_expert                 119.9 ms  x600    replicated
+    attn_tail_router              106.8 ms  x600    replicated
+    head_logits                   144.3 ms  x15     divides (vocabulary-parallel, D93)
+    moe_phase1_miss_fixup_phase2  104.7 ms  x410    divides
+    moe_phase1_hit                101.3 ms  x410    divides
+    moe_phase1_2_routed            84.5 ms  x190    divides
+    busy 1111 ms of 3586 ms span (31% occupied)
+
+Per decode token:
+
+    replicated (attention, shared expert, router)   37.7 ms   CANNOT divide
+    routed MoE                                      19.4 ms   divides
+    head                                             9.6 ms   divides
+    ----------------------------------------------
+    GPU busy                                        66.6 ms
+    non-GPU intercept, 106.7 - 66.6                 40.1 ms
+
+**The replicated work is 57% of the GPU and it is the whole obstacle.** The `shared_expert` at 119.9 ms is
+notable on its own - it is 1.8x the size of the routed MoE kernels that the four-node plan exists to divide, and
+being shared it is read and computed on every node by definition. The attention projections at 338.1 ms are the
+single largest kernel in the engine and are replicated for a different reason: the plan shards experts, not
+attention.
+
+**The four-node projection, in the same form as `D219` and `D220`:**
+
+    non-GPU intercept does NOT divide    95.2 ms  ->  10.51 tok/s
+    non-GPU divides 2x                   75.2 ms  ->  13.31 tok/s
+    non-GPU divides 4x                   65.1 ms  ->  15.35 tok/s
+
+**Best case 15.35 tok/s, and the reason is arithmetic rather than pessimism**: the floor is 37.7 ms of replicated
+GPU plus 3.2 ms of exchange before any division at all, and 21 tok/s needs a 47.6 ms step. **Even dividing every
+other term to zero leaves 40.9 ms, or 24.4 tok/s - and the head, the routed MoE and the misses cannot all be free.**
+The target is not reachable by sharding experts on this engine, and this is the measurement that says so - after
+`D217` and `D219` had made it look reachable by attributing the whole intercept to the read.
+
+**The earlier ~1.0-1.1x ceiling was right by accident.** `D183` and `D188` put sharding at 1.0-1.1x from a
+17.3 ms exchange cost that was **5.4x too high** (`D208`), and the goal asked for that to be tested rather than
+defended. Testing it produced: the exchange is cheap; the reads do divide and the misses nearly vanish; and the
+**replicated kernels are what the ratio is actually made of** - a term those decisions did not name and `D202` did
+not separate. **The ceiling was defended for the wrong reason and survives for the right one.**
+
+**What would change it, stated so the number is falsifiable rather than final.** The 37.7 ms is replicated GPU for
+*this* configuration. It falls if attention is sharded as well - the plan currently shards experts only, and
+`attn_norm_qkv` at 338.1 ms is the largest single kernel; if the GQA heads were split across nodes the way the head
+was made vocabulary-parallel in `D93`, the term that bounds the result would divide. **That is a second kind of
+sharding this repository has never built**, and it is now the only route to 21 tok/s this budget can see.
