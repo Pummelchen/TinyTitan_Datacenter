@@ -811,6 +811,14 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         // the weight (D168). A peer that applied it too would be counted twice, silently.
         let weights = self.remoteWeight.contents().bindMemory(to: Float.self, capacity: 8)
         for slot in 0..<8 { weights[slot] = slot == 0 ? 1.0 : 0.0 }
+
+        // ZERO THE SCRATCH. `remoteResidual` was zeroed and these two were not, and the phase-1 kernel can return
+        // WITHOUT WRITING `acts`: `if (!moe_io_ready(io_status)) return;` in the Metal source (D267). A scratch
+        // buffer read before it is written is a defect whether or not it is what produced the NaN, so this is
+        // correct on its own merits - and it discriminates: if the NaN becomes a finite wrong number the kernel is
+        // not writing, and if it survives the values are being written and are wrong.
+        memset(self.remoteActs.contents(), 0, 8 * cfg.moeIntermediateSize * MemoryLayout<Float16>.stride)
+        memset(self.remoteY.contents(), 0, D * MemoryLayout<Float>.stride)
         memset(self.remoteResidual.contents(), 0, D * MemoryLayout<Float>.stride)
         self.moeHitActiveSlots = try buf(cfg.topKExperts, MemoryLayout<UInt32>.size, label: "decode.moeHitActiveSlots")
         self.moeMissActiveSlots = try buf(cfg.topKExperts, MemoryLayout<UInt32>.size, label: "decode.moeMissActiveSlots")
