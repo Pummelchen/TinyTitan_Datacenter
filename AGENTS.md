@@ -182,6 +182,14 @@ dense int4**) now come from their stored form through the fused kernel, so the f
 payload cache already held — visible only in the byte counter (reads 8.46 -> 14.28 GB). The step is now
 **1.087 s, 0.920 tok/s**; the attention projections (~1 GB of fp32 a step, the same change), the 640
 synchronous dispatches, and the expert read are what remain.
+**Then the attention projections, and a smaller cache (`D112`).** The four int4 attention projections are
+**1.02 GB of fp32 a step** and are now multiplied from their stored form like the GDN three (`load`
+**119 -> 54 ms**, step **1.087 -> 1.025 s**). And the slab cache's optimum moved **down** once the kernel was
+caching the same slabs in clean, evictable pages: three alternated pairs put **128 MiB at 0.930 s against
+256 at 0.957**, with 64/96/128/192 flat between 96 and 128 — while **zero is worse than every non-zero size**
+(1.595 s), because `preloadPacked` declines with no cache and the fan-out disappears. Default 128 MiB. The
+step is **0.984 s, 1.016 tok/s**, peak RSS **2.57-2.67 GB**; 63% of it is now the expert path, and one command
+buffer per layer instead of one wait per expert is the next lever.
 
 ## Scope of this checkout
 

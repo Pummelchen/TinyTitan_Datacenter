@@ -395,10 +395,25 @@ private final class ExpertBankBox: @unchecked Sendable {
 
         let isFullAttention = byRole[.attnQ] != nil
         if isFullAttention {
+            var packedAttention: [TensorRole: PackedInt4Rows] = [:]
             for role in [TensorRole.attnQ, .attnK, .attnV, .attnO, .attnQNorm, .attnKNorm] {
+                // **The four int4 projections come from their stored form when the source has one** (`D112`).
+                // They are 1.02 GB of fp32 a step across the ten full-attention layers, and the fused kernel
+                // widens them in registers, so the array is never built. The two norms are fp32 and tiny and
+                // stay decoded. Same rule as the GDN three: an empty array means the packed form is
+                // authoritative, and `projection` is the only reader of either.
+                if MetalInt4Matmul.enabled, [.attnQ, .attnK, .attnV, .attnO].contains(role),
+                    let name = byRole[role], let packed = try source.packedTensor(named: name)
+                {
+                    packedAttention[role] = packed
+                    weights[role] = []
+                    continue
+                }
                 weights[role] = try load(role)
             }
-            return DecodedLayer(weights: weights, gdn: nil, feedForward: feedForward)
+            return DecodedLayer(
+                weights: weights, gdn: nil, feedForward: feedForward, packedWeights: packedAttention
+            )
         }
         var gdnWeights: [TensorRole: [Float]] = [:]
         var packedGDN: [TensorRole: PackedInt4Rows] = [:]
@@ -428,7 +443,9 @@ private final class ExpertBankBox: @unchecked Sendable {
             packedInQKV: packedGDN[.linearInQKV], packedInZ: packedGDN[.linearInZ],
             packedOut: packedGDN[.linearOut]
         )
-        return DecodedLayer(weights: weights, gdn: gdn, feedForward: feedForward)
+        return DecodedLayer(
+            weights: weights, gdn: gdn, feedForward: feedForward, packedWeights: packedGDN
+        )
     }
 
     /// The Gated DeltaNet's geometry, assembled from the IR's configuration.
@@ -591,7 +608,8 @@ private final class ExpertBankBox: @unchecked Sendable {
                 )
             } else {
                 mixed = try attention(
-                    normed, weights: layer.weights, length: length, tables: tables, mask: mask
+                    normed, weights: layer.weights, packed: layer.packedWeights,
+                    length: length, tables: tables, mask: mask
                 )
             }
             profiler?.mark("attn.core")
@@ -696,9 +714,35 @@ private final class ExpertBankBox: @unchecked Sendable {
         )
     }
 
+    /// A projection's product, from the **stored** form when the layer has one (`D112`).
+    ///
+    /// `weights[role]` is empty exactly when `packed[role]` is set: the decode it would hold is the cost this
+    /// avoids, and this is the only reader of either. If the device refuses the shape, the stored bytes are
+    /// decoded on the CPU rather than multiplying nothing — an empty array must never reach
+    /// `Ops.orderedMatmul`, where it would index out of bounds rather than fail quietly.
+    private func projection(
+        x: [Float], role: TensorRole, weights: [TensorRole: [Float]],
+        packed: [TensorRole: PackedInt4Rows], rows: Int, k: Int, out: Int
+    ) -> [Float] {
+        if MetalInt4Matmul.enabled, let stored = packed[role], (weights[role] ?? []).isEmpty {
+            if let product = try? MetalInt4Matmul.matmul(
+                payload: stored.payload, entry: stored.entry, rowCount: stored.payloadRows, x: x, rows: rows
+            ), product.count == rows * out {
+                return product
+            }
+            if let decoded = try? InstallFile.dequantizeInt4(
+                stored.payload, entry: stored.entry, rowCount: stored.payloadRows
+            ) {
+                return MetalMatmul.ordered(x: x, w: decoded, rows: rows, k: k, out: out)
+            }
+        }
+        return MetalMatmul.ordered(x: x, w: weights[role]!, rows: rows, k: k, out: out)
+    }
+
     func attention(
-        _ hidden: [Float], weights: [TensorRole: [Float]], length: Int,
-        tables: (cos: [Float], sin: [Float]), mask: [Float]
+        _ hidden: [Float], weights: [TensorRole: [Float]],
+        packed: [TensorRole: PackedInt4Rows] = [:],
+        length: Int, tables: (cos: [Float], sin: [Float]), mask: [Float]
     ) throws -> [Float] {
         let heads = config.numAttentionHeads
         let kvHeads = config.numKeyValueHeads
@@ -707,8 +751,8 @@ private final class ExpertBankBox: @unchecked Sendable {
         let scaling = Float(1) / Float(headDim).squareRoot()
         let rotary = tables.cos.count / max(length, 1)
 
-        let projected = MetalMatmul.ordered(
-            x: hidden, w: weights[.attnQ]!, rows: length, k: config.hiddenSize, out: heads * headDim * 2
+        let projected = projection(
+            x: hidden, role: .attnQ, weights: weights, packed: packed, rows: length, k: config.hiddenSize, out: heads * headDim * 2
         )
         var query = [Float](repeating: 0, count: length * heads * headDim)
         var gate = [Float](repeating: 0, count: length * heads * headDim)
@@ -721,11 +765,11 @@ private final class ExpertBankBox: @unchecked Sendable {
                 }
             }
         }
-        var key = MetalMatmul.ordered(
-            x: hidden, w: weights[.attnK]!, rows: length, k: config.hiddenSize, out: kvHeads * headDim
+        var key = projection(
+            x: hidden, role: .attnK, weights: weights, packed: packed, rows: length, k: config.hiddenSize, out: kvHeads * headDim
         )
-        let value = MetalMatmul.ordered(
-            x: hidden, w: weights[.attnV]!, rows: length, k: config.hiddenSize, out: kvHeads * headDim
+        let value = projection(
+            x: hidden, role: .attnV, weights: weights, packed: packed, rows: length, k: config.hiddenSize, out: kvHeads * headDim
         )
 
         query = rmsNorm(query, weight: weights[.attnQNorm]!, rows: length * heads, width: headDim, eps: eps)
@@ -760,8 +804,8 @@ private final class ExpertBankBox: @unchecked Sendable {
 
         var gated = [Float](repeating: 0, count: mixer.count)
         for index in 0..<mixer.count { gated[index] = mixer[index] * Ops.sigmoid(gate[index]) }
-        return MetalMatmul.ordered(
-            x: gated, w: weights[.attnO]!, rows: length, k: heads * headDim, out: config.hiddenSize
+        return projection(
+            x: gated, role: .attnO, weights: weights, packed: packed, rows: length, k: heads * headDim, out: config.hiddenSize
         )
     }
 
@@ -775,7 +819,9 @@ private final class ExpertBankBox: @unchecked Sendable {
     ///
     /// `keys` and `values` are `[position, kvHead, headDim]` and are extended in place.
     func attentionStep(
-        _ hidden: [Float], weights: [TensorRole: [Float]], tables: (cos: [Float], sin: [Float]),
+        _ hidden: [Float], weights: [TensorRole: [Float]],
+        packed: [TensorRole: PackedInt4Rows] = [:],
+        tables: (cos: [Float], sin: [Float]),
         keys: inout [Float], values: inout [Float], cachedLength: Int
     ) throws -> [Float] {
         let heads = config.numAttentionHeads
@@ -785,8 +831,8 @@ private final class ExpertBankBox: @unchecked Sendable {
         let scaling = Float(1) / Float(headDim).squareRoot()
         let rotary = tables.cos.count
 
-        let projected = MetalMatmul.ordered(
-            x: hidden, w: weights[.attnQ]!, rows: 1, k: config.hiddenSize, out: heads * headDim * 2
+        let projected = projection(
+            x: hidden, role: .attnQ, weights: weights, packed: packed, rows: 1, k: config.hiddenSize, out: heads * headDim * 2
         )
         var query = [Float](repeating: 0, count: heads * headDim)
         var gate = [Float](repeating: 0, count: heads * headDim)
@@ -796,11 +842,11 @@ private final class ExpertBankBox: @unchecked Sendable {
                 gate[head * headDim + index] = projected[(head * headDim) * 2 + headDim + index]
             }
         }
-        var key = MetalMatmul.ordered(
-            x: hidden, w: weights[.attnK]!, rows: 1, k: config.hiddenSize, out: kvHeads * headDim
+        var key = projection(
+            x: hidden, role: .attnK, weights: weights, packed: packed, rows: 1, k: config.hiddenSize, out: kvHeads * headDim
         )
-        let value = MetalMatmul.ordered(
-            x: hidden, w: weights[.attnV]!, rows: 1, k: config.hiddenSize, out: kvHeads * headDim
+        let value = projection(
+            x: hidden, role: .attnV, weights: weights, packed: packed, rows: 1, k: config.hiddenSize, out: kvHeads * headDim
         )
 
         query = rmsNorm(query, weight: weights[.attnQNorm]!, rows: heads, width: headDim, eps: eps)
@@ -848,8 +894,8 @@ private final class ExpertBankBox: @unchecked Sendable {
 
         var gated = [Float](repeating: 0, count: mixer.count)
         for index in 0..<mixer.count { gated[index] = mixer[index] * Ops.sigmoid(gate[index]) }
-        return MetalMatmul.ordered(
-            x: gated, w: weights[.attnO]!, rows: 1, k: heads * headDim, out: config.hiddenSize
+        return projection(
+            x: gated, role: .attnO, weights: weights, packed: packed, rows: 1, k: heads * headDim, out: config.hiddenSize
         )
     }
 

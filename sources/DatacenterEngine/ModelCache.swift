@@ -233,7 +233,7 @@ extension Qwen3_5Forward {
                 )
             case .attention(var keys, var values, let length):
                 mixed = try attentionStep(
-                    normed, weights: layer.weights, tables: tables,
+                    normed, weights: layer.weights, packed: layer.packedWeights, tables: tables,
                     keys: &keys, values: &values, cachedLength: length
                 )
                 cache.layers[index] = .attention(keys: keys, values: values, length: length + 1)

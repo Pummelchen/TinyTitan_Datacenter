@@ -3369,3 +3369,47 @@ else.
 The attention projections (`attn.q/k/v/o`, a further 1.02 GB of fp32 a step) are the same change as the GDN
 three and are the next one; after that the dispatch count and the expert read are what stand between this and
 the objective.
+
+## D112 — The attention projections were the same change, and the slab cache got smaller once the kernel cached too
+
+**The four int4 attention projections now come from their stored form**, exactly as the GDN three did in
+`D111`. `attn.q`, `attn.k`, `attn.v` and `attn.o` are **1.02 GB of fp32 a step** across the ten
+full-attention layers, and `Qwen3_5Forward.projection` — the sequence path and the cached path both — now
+multiplies the packed bytes with `MetalInt4Matmul`. `DecodedLayer` carries a `packedWeights` map beside the
+arrays, a role in that map has an **empty** `[Float]` twin, and the projection helper is the only reader of
+either: if the device refuses the shape it decodes the stored bytes on the CPU rather than letting an empty
+array reach `Ops.orderedMatmul`, where it would index out of bounds rather than answer zeros.
+
+| | `load` | step | tok/s |
+| --- | --- | --- | --- |
+| after `D111` | 119 ms | 1.087 s | 0.920 |
+| after the attention four | **54 ms** | **1.025 s** | 0.975 |
+
+`load` is now only the bf16 and fp32 tensors — norms, `in_a`/`in_b`/`conv`, the router and the shared
+experts — which are small and are read directly by the CPU.
+
+**And the slab cache's optimum moved down, because the kernel is now caching the same slabs.** `D110` swept
+it with the device bypassed and found 256 MiB best. `D111` turned the **buffer cache** on, which holds those
+slabs in *clean, evictable* pages rather than anonymous memory, and the trade changed: three alternated pairs
+put **128 MiB at 0.930 s against 256 MiB at 0.957**, and a finer sweep found 64/96/128/192 at 0.951, 0.943,
+0.944, 0.953 — flat between 96 and 128. The default is **128 MiB**. **Zero is worse than every non-zero size**
+(1.595 s), which is worth stating because it looks like it should be the cheapest: with no cache at all
+`preloadPacked` declines, so the *fan-out* disappears and the loop reads every slab itself, one at a time.
+
+**Result.** Three runs, digest `ed5e0328c087e4db…` in all: 0.997, 0.984, 0.957 s/step — median **0.984 s,
+1.016 tok/s**, from 0.682 at the top of `D111`'s round and 0.230 when the operator re-scoped the work. Peak
+RSS is **2.57-2.67 GB**, lower than before either change, because less is resident and less is built. 266
+Swift tests, 0 failures.
+
+The step is now 63% expert path:
+
+| phase | ms/step |
+| --- | --- |
+| `mix.gather` | 274 — the read, at ~1.9 GB/s |
+| `mix.read` + `mix.down` | 346 — 640 synchronous fused dispatches and their payload copies |
+| `attn.core` | 150 |
+| `head` | 118 |
+| `load` | 55 |
+
+The next lever is the dispatch count: one command buffer per layer instead of one wait per expert is the
+structure the sister project uses, and the kernel can now support it.

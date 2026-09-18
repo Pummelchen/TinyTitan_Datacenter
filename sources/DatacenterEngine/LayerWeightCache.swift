@@ -11,6 +11,25 @@ struct DecodedLayer {
     let gdn: GatedDeltaNetWeights?
     let feedForward: Qwen3_5Forward.FeedForward
 
+    /// The int4 projections in their **stored** form, when the source had one (`D112`).
+    ///
+    /// A role in here has an **empty** `weights` entry, because the decode it would hold is the cost this
+    /// avoids. `Qwen3_5Forward.projection` and `GatedDeltaNet.projection` are the only readers of either, and
+    /// both refuse to multiply an empty array.
+    let packedWeights: [TensorRole: PackedInt4Rows]
+
+    /// `packedWeights` defaults to empty so a caller that has no stored form — a test fixture, an array-backed
+    /// source — constructs a layer exactly as it did before (`D112`).
+    init(
+        weights: [TensorRole: [Float]], gdn: GatedDeltaNetWeights?,
+        feedForward: Qwen3_5Forward.FeedForward, packedWeights: [TensorRole: PackedInt4Rows] = [:]
+    ) {
+        self.weights = weights
+        self.gdn = gdn
+        self.feedForward = feedForward
+        self.packedWeights = packedWeights
+    }
+
     /// The bytes this layer occupies as fp32 reals, counted rather than estimated.
     ///
     /// Counted, because the budget has to be a measurement: the same arithmetic spelled out as

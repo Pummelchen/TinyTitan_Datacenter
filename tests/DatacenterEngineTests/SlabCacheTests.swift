@@ -59,7 +59,11 @@ final class SlabCacheTests: XCTestCase {
         // 256/512/768/1024 MiB found the step worse above 256 (1.465, 1.467, 1.483, 1.667 s) because the
         // resident bytes cost more in memory pressure than the reads they save. The unit is bytes, which the
         // first version of this default got wrong by returning the bare literal `256`.
-        XCTAssertEqual(InstallFile.slabCacheBudget(environment: [:]), 256 << 20, "the default is 256 MiB")
+        // **128 MiB, re-measured after the buffer cache was turned on** (`D112`): three alternated pairs put
+        // 128 at 0.930 s against 256 at 0.957, because the kernel's own cache holds the same slabs in clean,
+        // evictable pages. Zero is worse than any non-zero size — `preloadPacked` declines with no cache, so
+        // the fan-out disappears.
+        XCTAssertEqual(InstallFile.slabCacheBudget(environment: [:]), 128 << 20, "the default is 128 MiB")
         XCTAssertEqual(InstallFile.slabCacheBudget(environment: ["SHARD_SLAB_CACHE_MB": "512"]), 512 << 20)
         XCTAssertEqual(InstallFile.slabCacheBudget(environment: ["SHARD_SLAB_CACHE_MB": "0"]), 0)
         // Refused rather than clamped, like every other budget in this engine: a budget nobody could hold is a node

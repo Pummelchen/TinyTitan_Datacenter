@@ -571,12 +571,16 @@ public struct InstallFile: WeightSource {
     /// Refused rather than clamped, for the reason `bankBudgetBytes` gives: a budget nobody could hold is a node
     /// that swaps, and a silent clamp hides the typo that caused it.
     static func slabCacheBudget(environment: [String: String]) -> Int {
-        // **256 MiB by default** (`D110`). It was zero until the packed expert path existed to use it: a hit
-        // skips the three `pread`s and, with the fused kernel, the fp32 slab as well. 256 is not arbitrary —
-        // the swap sweep measured 256, 512, 768 and 1024 MiB and the step got *worse* above 256 (1.465, 1.467,
-        // 1.483, 1.667 s), because the resident bytes cost more in memory pressure than the reads they save.
-        // That is `D106`'s verdict on a cache this node cannot afford, and it is why the default is the
-        // smallest size that pays rather than the largest that fits.
+        // **128 MiB by default.** Two measurements put it there, and the second changed the answer. `D110`
+        // swept 256/512/768/1024 with the device still bypassed and found 256 best (1.465, 1.467, 1.483,
+        // 1.667 s), because the resident bytes cost more in memory pressure than the reads they save — that is
+        // `D106`'s verdict on a cache this node cannot afford, and it is why the default is the smallest size
+        // that pays rather than the largest that fits. `D112` turned the kernel's buffer cache on (`D111`),
+        // which caches the same slabs in *clean, evictable* pages instead of anonymous ones, and the optimum
+        // moved down: three alternated pairs put **128 at 0.930 s against 256 at 0.957**, and a finer sweep
+        // found 64/96/128/192 at 0.951, 0.943, 0.944, 0.953 — flat between 96 and 128. **Zero is worse than
+        // any of them** (1.595 s) for a reason worth keeping: with no cache at all `preloadPacked` declines,
+        // so the fan-out disappears and the loop reads every slab itself.
         // **The unit is bytes**, and the first version of this line returned the bare literal `256` — a
         // 256-**byte** budget, which refused every 1.2 MB slab. The default then looked like a cache that
         // never held anything while the env-var path, which multiplies, worked: `slab_cache_bytes_held` was 0
@@ -585,7 +589,7 @@ public struct InstallFile: WeightSource {
         // **Absent and invalid are different answers.** An unset knob takes the measured default; a knob that
         // is set to something unparseable or out of range is **refused** as zero, because a silent fallback
         // hides the typo that caused it — the same rule the bank's budget and every other budget here follow.
-        guard let raw = environment["SHARD_SLAB_CACHE_MB"] else { return 256 * 1_048_576 }
+        guard let raw = environment["SHARD_SLAB_CACHE_MB"] else { return 128 * 1_048_576 }
         guard let megabytes = Int(raw), megabytes >= 0, megabytes <= 1 << 20 else { return 0 }
         return megabytes * 1_048_576
     }
