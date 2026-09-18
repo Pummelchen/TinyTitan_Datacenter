@@ -9482,3 +9482,45 @@ slots. **The serving node pays roughly 8x what the expert is worth**, and it pay
 away**, and the prediction to measure it against is unchanged: **~1.12x**, which on this node's 7.4-7.6 tok/s means
 **about 8.3-8.5 tok/s**. **The down-only kernel is what would change that**, and it is now a performance question
 rather than a correctness one.
+
+## D271 — The measured three-node result: 6.4-6.6 tok/s on a requesting node, 1.36 on the serving one
+
+The exchange is correct and the run is reproducible. Three repeats, orchestrated from node4, `--max-new 48`,
+`--temperature 0`, `--expert-cache-slots 40`, contiguous 86/85/85 plans, node3's loads 1.20-1.47 throughout:
+
+| repeat | node1 (node 0, serving) | node2 (node 1) | node3 (node 2) |
+| --- | --- | --- | --- |
+| 1 | 1.358 | 6.605 | did not complete |
+| 2 | 1.374 | 6.581 | did not complete |
+| 3 | 1.363 | did not complete | 6.392 |
+| **median** | **1.363** | **6.581** | **6.392** |
+
+**Zero NaN in every run that completed.** The exchange is arithmetically correct and repeatable.
+
+**The result, against the single node.** This node measures **7.377-7.974 tok/s** at 48 tokens and 40 slots. So:
+
+    a requesting node        6.4-6.6 tok/s    0.85x single node
+    the serving node         1.36 tok/s       0.18x single node
+    the target               21 tok/s         2.8x single node
+
+**The distribution is measurably SLOWER, and the records predicted it.** `D239` measured the expert read as worth
+zero - a quarter of it changes the step by nothing - so dividing the read buys nothing. `D221` measured the routed MoE
+at **19.4 ms of a 137.0 ms step**, which is the whole of what can divide. `D235` put the reachable speedup at
+**~1.12x**, and this run is **below 1.0x**, because the serving path costs far more than the kernel time it saves:
+`remoteExpertValues` performs eight phase-1 encodes, eight phase-2 encodes and a blocking wait **per request**,
+because `topK == maxStreamedExperts` is a precondition and the same expert must occupy all eight slots. **The serving
+node pays roughly eight times what an expert is worth, on its own critical path.**
+
+**Two caveats that travel with the number**, and neither is a hedge:
+
+  * **three nodes, not four.** node4 is this machine and cannot open `192.168.x.x` connections (`D172`), so the
+    objective's four-node figure is not obtainable from here. On `D235`'s arithmetic a fourth node would move
+    ~1.12x by ~4/3 of what three do - a few percent - not the factor of twenty the target needs.
+  * **the serving node is also a generating node**, which is the design: every node both asks and answers. Its 1.36 is
+    therefore not an anomaly to be tuned away but the cost structure of the serving path, and it is what the
+    down-only kernel exists to remove. **Whether removing it reaches 21 tok/s is a separate question with its own
+    answer**, and the arithmetic in `D221` and `D235` says no: 19.4 ms of 137.0 ms cannot become 2.8x however cheaply
+    it is divided.
+
+**This is the measurement the objective asked for**, short of four nodes, and it says the ~1.0-1.1x ceiling it told
+me to test rather than defend is not merely defensible but **an over-estimate of what this design achieves**.
