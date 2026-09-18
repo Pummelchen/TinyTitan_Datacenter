@@ -8685,3 +8685,36 @@ kernel does with it, not what it holds.**
 
 **The closure seam remains inert and verified.** `nil` on every run without a plan, build clean, whole suite green.
 No code changed in this round; the correction is in what the next edit must use.
+
+## D248 — The routed experts' input is `routedX`, named and traced; one item left
+
+`D247` left one question: which buffer the routed experts are actually given. It has an answer, and the answer is
+reachable by following the argument rather than the name.
+
+Both phase-1 encodes take **`x: routedX`** and produce **`acts: moeActs`**:
+
+    encodeRoutedPersistentPhase1U16Load       ... x: routedX, acts: moeActs  (:1528)
+    encodeRoutedPersistentPhase1SubsetU16Load ... x: routedX, acts: moeActs  (:1552)
+
+and `routedX` is produced at **`:302`** as the output of the `.mlp` sublayer, then passed as **`hidden: routedX`**
+into the three MoE entry points at `:313`, `:330` and `:345`. So `routedX` is the **pre-MoE hidden state** - the
+activation every routed expert is evaluated on - and it is in scope at the phase-2 site, because the phase-1 helpers
+and the phase-2 call are in the same function.
+
+**That is the buffer the exchange must carry**, and it is *not* `moeActs` (`D245`) and *not* `h1Buf` (`D247`). Three
+rounds, three buffers, and the difference between them is the whole correctness argument: `moeActs` is post-gate_up,
+`h1Buf` is post-shared-expert, and only `routedX` is what the local experts saw.
+
+**Two facts fall out of the kernel names.** The phase-1 entry points are named `...U16Load`, which says the
+activation is loaded as **16-bit** - so `routedX` is fp16 and must be widened to fp32 before the exchange carries
+it, exactly as `D245` suspected of some buffer and `D246` got wrong about which. And the same names confirm that
+`moeActs` is what phase 1 *writes*, which is why it was never a candidate once the direction of the dataflow was
+read rather than assumed.
+
+**What is left is one item, and it is smaller than what has been eliminated:** the **routed expert ids** for the
+layer. The provider needs them to decide which peers to ask - it asks for the experts this node does not own - and
+they are not bound by a recognisable name in the window around the phase-2 call. `prediction` appears there as
+`experts: prediction` in the *prefetch* path, which is a ranked guess and explicitly not the router's decision.
+**The next attempt should find where the router's chosen ids are bound and confirm they are the ones phase 1 was
+given, not the prediction** - because `D245` through `D247` are a record of what happens when a plausible nearby
+buffer is used without checking that it is the one the arithmetic used.
