@@ -20,11 +20,19 @@ public struct PackedInt4Rows: Sendable {
     public let payload: Data
     public let entry: InstallFile.Entry
     public let payloadRows: Int
+    /// The tensor's name when this is a **whole dense tensor** rather than an expert's row range (`D116`).
+    ///
+    /// It is the identity of a weight that does not change between steps, which is what lets
+    /// `MetalInt4Matmul` map it on the device once instead of copying it on every call. A row range of a
+    /// stacked expert tensor leaves this nil: those bytes are staged by the slab cache and may be evicted, so
+    /// a mapping of them would dangle.
+    public let key: String?
 
-    public init(payload: Data, entry: InstallFile.Entry, payloadRows: Int) {
+    public init(payload: Data, entry: InstallFile.Entry, payloadRows: Int, key: String? = nil) {
         self.payload = payload
         self.entry = entry
         self.payloadRows = payloadRows
+        self.key = key
     }
 }
 
@@ -820,8 +828,14 @@ public struct InstallFile: WeightSource {
         let entry = try entry(name)
         guard entry.dtype == "int4", entry.shape.count >= 2 else { return nil }
         let data = try payload(entry)
+        // **The key is content-addressed, not just the name** (`D116`). A name is unique within one install
+        // and says nothing across two: mapping `linear.in_qkv` from one install and then reading it for
+        // another would answer with the first one's weights, which is the `D115` bug — a key coarser than the
+        // thing it caches — one level further out. The manifest already carries the payload's digest, so the
+        // key says exactly which bytes are mapped.
         return PackedInt4Rows(
-            payload: data, entry: entry, payloadRows: entry.shape.dropLast().reduce(1, *)
+            payload: data, entry: entry, payloadRows: entry.shape.dropLast().reduce(1, *),
+            key: "\(name)#\(entry.sha256.prefix(16))"
         )
     }
 

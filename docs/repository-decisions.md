@@ -3564,3 +3564,41 @@ swaps"). Two caches of the same bytes — the kernel's and ours — do not add u
 rounds before it were still finding wins (`D111` +35%, `D114` +27%), and the honest next step is to keep
 looking for them rather than to declare the floor. What is now on record is that closing the last 5x by
 optimising this execution structure has a measured wall in front of it, and that the wall is memory, not code.
+
+## D116 — The dense projections were copied to the device 130 times a step, and the key is content-addressed
+
+`MetalInt4Matmul.matmul` copies a payload's three sections — codes, scales, zeros — into device buffers **on
+every call**. `D115` fixed that for the head; the same defect was sitting in the dense path, which is called
+**130 times a step** (the Gated DeltaNet's three projections and attention's four, across forty layers).
+That is **865 MB of copying a step for weights that never change**. `packedTensor` hands over the *whole*
+tensor, whose three sections are contiguous in the order the kernel wants, so one mapping covers all three and
+each dispatch addresses them by offset: `setBuffer(buffer, offset: codeBytes, index: 1)` and so on.
+
+| | `attn.core` | step | tok/s |
+| --- | --- | --- | --- |
+| `D115` | 146 ms | 0.678 s | 1.476 |
+| mapped | **118 ms** | **0.647-0.665 s** | **1.51-1.55** |
+
+Three runs, digest `ed5e0328c087e4db…` in all, peak RSS 1.49-2.52 GB. `bytesNoCopy` over the payload the
+install holds, so again it is neither a copy nor extra memory; a payload whose address is not page-aligned
+falls back to a copying buffer, and the `Data` is retained because a mapped pointer whose storage was released
+is a crash rather than a slow read.
+
+**Only a whole dense tensor may be mapped, and the key has to say which bytes.** Two asymmetries are load
+bearing:
+
+- **An expert's row range must never be mapped.** Those bytes come from the slab cache and can be evicted
+  between steps, so a mapping of them would dangle. `PackedInt4Rows.key` is therefore nil for a row range and
+  set only by `packedTensor` — the accessor that returns a whole dense tensor — and the resident path is
+  unreachable from the expert path by construction rather than by discipline.
+- **The key is content-addressed: `name#sha256-prefix`.** A tensor name is unique within one install and says
+  nothing *across* two. Keying on the name alone would let a second install read the first one's weights, which
+  is `D115`'s bug — a key coarser than the thing it caches — one level further out, and this time with no
+  sharded test to catch it. The manifest already carries each payload's digest, so the key names exactly the
+  bytes that are mapped.
+
+**Where this leaves the objective.** The step is **0.65-0.67 s, about 1.5 tok/s**, from 0.230 when the operator
+re-scoped the work. The four measured phases are `mix.gather` **247** (the expert read, at the device's own
+rate), `attn.core` **119**, `head` **83**, `mix.read` **81**, `mix.down` **52**, `load` **51**. The read is
+still the floor and still the thing residency would fix, and `D115` measured from four sides that this node
+cannot afford the cache that would hold it.

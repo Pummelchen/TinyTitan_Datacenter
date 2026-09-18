@@ -725,6 +725,22 @@ private final class ExpertBankBox: @unchecked Sendable {
         packed: [TensorRole: PackedInt4Rows], rows: Int, k: Int, out: Int
     ) -> [Float] {
         if MetalInt4Matmul.enabled, let stored = packed[role], (weights[role] ?? []).isEmpty {
+            if let key = stored.key {
+                // **The whole tensor is mapped once** (`D116`). These are the same bytes on every step of the
+                // run, and copying them into device buffers 130 times a step was 865 MB of copying for
+                // weights that never change. A failed upload falls through to the copying path rather than
+                // answering nothing.
+                if !MetalInt4Matmul.isResident(key: key) {
+                    try? MetalInt4Matmul.upload(
+                        key: key, payload: stored.payload, entry: stored.entry, rowCount: stored.payloadRows
+                    )
+                }
+                if let product = try? MetalInt4Matmul.matmulResident(x: x, key: key, rows: rows),
+                    product.count == rows * out
+                {
+                    return product
+                }
+            }
             if let product = try? MetalInt4Matmul.matmul(
                 payload: stored.payload, entry: stored.entry, rowCount: stored.payloadRows, x: x, rows: rows
             ), product.count == rows * out {

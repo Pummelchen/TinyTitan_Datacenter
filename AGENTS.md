@@ -222,6 +222,14 @@ beats it (1.82 GB/s cold, **20 GB/s warm**); the 582 MB/step of slabs is reused 
 cache, 53% at 1.5 GiB) but the anonymous memory costs more than it saves, in every configuration tried,
 **including with the page cache disabled** (61% hit rate, `attn.core` 209 ms against 150). 7 tok/s is **143
 ms/step** against a **238 ms** read and **440 ms** of everything else.
+**Then the dense projections got the head's fix (`D116`).** `MetalInt4Matmul.matmul` copies a payload's three
+sections per call, and the dense path is called **130 times a step** — **865 MB of copying for weights that
+never change**. `packedTensor` hands over the whole tensor, so one `bytesNoCopy` mapping covers all three
+sections and each dispatch addresses them by offset: `attn.core` **146 -> 118 ms**, step **0.678 -> 0.65-0.67
+s**, about **1.5 tok/s**. Two asymmetries are load-bearing: an **expert's row range must never be mapped**
+(those bytes come from the evictable slab cache, so a mapping would dangle — `key` is set only by
+`packedTensor`), and the **key is content-addressed** (`name#sha256-prefix`), because a name is unique within
+one install and says nothing across two — `D115`'s bug one level out.
 
 ## Scope of this checkout
 

@@ -429,6 +429,22 @@ public enum GatedDeltaNet {
         x: [Float], rows: Int, k: Int, out: Int, values: [Float], packed: PackedInt4Rows?
     ) -> [Float] {
         if MetalInt4Matmul.enabled, let packed, values.isEmpty {
+            if let key = packed.key {
+                // **The whole tensor is mapped once** (`D116`). These are the same bytes on every step of the
+                // run, and copying them into device buffers 130 times a step was 865 MB of copying for
+                // weights that never change. A failed upload falls through to the copying path rather than
+                // answering nothing.
+                if !MetalInt4Matmul.isResident(key: key) {
+                    try? MetalInt4Matmul.upload(
+                        key: key, payload: packed.payload, entry: packed.entry, rowCount: packed.payloadRows
+                    )
+                }
+                if let product = try? MetalInt4Matmul.matmulResident(x: x, key: key, rows: rows),
+                    product.count == rows * out
+                {
+                    return product
+                }
+            }
             if let product = try? MetalInt4Matmul.matmul(
                 payload: packed.payload, entry: packed.entry, rowCount: packed.payloadRows, x: x, rows: rows
             ), product.count == rows * out {

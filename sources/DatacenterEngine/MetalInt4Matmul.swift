@@ -266,6 +266,122 @@ public enum MetalInt4Matmul {
         }
     }
 
+    /// Whole dense tensors mapped on the device once, kept for the life of the run (`D116`).
+    ///
+    /// `matmul` copies a payload's three sections into device buffers **on every call**, and the dense
+    /// projections are called **130 times a step** — the Gated DeltaNet's three and attention's four across
+    /// forty layers, **865 MB of copying a step** for weights that never change. `packedTensor` hands over the
+    /// whole tensor, whose sections are contiguous in the order the kernel wants, so one mapping covers all
+    /// three and each dispatch addresses them by offset.
+    ///
+    /// This is the head's fix (`D115`) applied where the bytes already live: **`bytesNoCopy` over the payload
+    /// the install holds**, so it is neither a copy nor extra memory. A payload whose address is not
+    /// page-aligned falls back to a copying buffer rather than to a wrong answer, and the `Data` is retained
+    /// because a mapped pointer whose storage was released is a crash, not a slow read.
+    private struct ResidentSlab {
+        let buffer: any MTLBuffer
+        let layout: InstallFile.Int4Layout
+        let keepAlive: Data?
+    }
+
+    private static let residentLock = NSLock()
+    nonisolated(unsafe) private static var residentSlabs: [String: ResidentSlab] = [:]
+
+    /// Map a whole dense payload on the device once under `key`. Idempotent and thread-safe.
+    public static func upload(key: String, payload: Data, entry: InstallFile.Entry, rowCount: Int?) throws {
+        guard !payload.isEmpty else { return }
+        let layout = try InstallFile.int4Layout(entry: entry, rowCount: rowCount, payloadBytes: payload.count)
+        let pipeline = try Self.pipeline.current()
+        residentLock.lock()
+        defer { residentLock.unlock() }
+        guard residentSlabs[key] == nil else { return }
+        let page = Int(getpagesize())
+        if let base = payload.withUnsafeBytes({ $0.baseAddress }), Int(bitPattern: base) % page == 0,
+            let buffer = pipeline.device.makeBuffer(
+                bytesNoCopy: UnsafeMutableRawPointer(mutating: base), length: payload.count,
+                options: .storageModeShared, deallocator: nil
+            )
+        {
+            residentSlabs[key] = ResidentSlab(buffer: buffer, layout: layout, keepAlive: payload)
+            return
+        }
+        guard let buffer = pipeline.device.makeBuffer(length: payload.count, options: .storageModeShared) else {
+            throw Error.commandFailed("could not allocate \(payload.count) bytes for resident slab \(key)")
+        }
+        payload.withUnsafeBytes { source in
+            if let address = source.baseAddress {
+                buffer.contents().copyMemory(from: address, byteCount: payload.count)
+            }
+        }
+        residentSlabs[key] = ResidentSlab(buffer: buffer, layout: layout, keepAlive: nil)
+    }
+
+    /// Whether `key` is already mapped.
+    public static func isResident(key: String) -> Bool {
+        residentLock.lock()
+        defer { residentLock.unlock() }
+        return residentSlabs[key] != nil
+    }
+
+    /// `matmul` against a payload **already on the device** (`D116`). Same kernel, same arithmetic, no copy.
+    public static func matmulResident(x: [Float], key: String, rows: Int) throws -> [Float] {
+        let pipeline = try Self.pipeline.current()
+        residentLock.lock()
+        let held = residentSlabs[key]
+        residentLock.unlock()
+        guard let held else { throw Error.commandFailed("resident slab \(key) was never uploaded") }
+        let layout = held.layout
+        let out = layout.rows, k = layout.columns
+        guard rows >= 0, k >= 0, out >= 0 else {
+            throw Error.shapeMismatch("negative shape \(rows)x\(k)x\(out)")
+        }
+        guard x.count == rows * k else {
+            throw Error.shapeMismatch("x has \(x.count) values, \(rows)x\(k) needs \(rows * k)")
+        }
+        let values = rows * out
+        guard values > 0 else { return [] }
+        if k == 0 { return [Float](repeating: 0, count: values) }
+        let zeroBytes = layout.rows * layout.groups
+        guard layout.codeBytes + layout.scaleBytes + zeroBytes <= held.buffer.length else {
+            throw Error.shapeMismatch("resident slab \(key) is shorter than its own layout")
+        }
+        return try Self.buffers.withBuffers(
+            [rows * k * 4, 1, values * 4], device: pipeline.device
+        ) { cached in
+            let xBuffer = cached[0], outBuffer = cached[2]
+            x.withUnsafeBytes { source in
+                if let base = source.baseAddress, rows * k > 0 {
+                    xBuffer.contents().copyMemory(from: base, byteCount: rows * k * 4)
+                }
+            }
+            var dims = SIMD4<UInt32>(UInt32(rows), UInt32(k), UInt32(out), UInt32(layout.group))
+            var extra = SIMD4<UInt32>(UInt32(layout.padded), UInt32(layout.groups), 0, 0)
+            guard let command = pipeline.queue.makeCommandBuffer(),
+                  let encoder = command.makeComputeCommandEncoder()
+            else { throw Error.commandFailed("could not make a command buffer") }
+            encoder.setComputePipelineState(pipeline.state)
+            // The three sections are contiguous in the payload the installation stored, in this order.
+            encoder.setBuffer(held.buffer, offset: 0, index: 0)
+            encoder.setBuffer(held.buffer, offset: layout.codeBytes, index: 1)
+            encoder.setBuffer(held.buffer, offset: layout.codeBytes + layout.scaleBytes, index: 2)
+            encoder.setBuffer(xBuffer, offset: 0, index: 3)
+            encoder.setBuffer(outBuffer, offset: 0, index: 4)
+            encoder.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 5)
+            encoder.setBytes(&extra, length: MemoryLayout<SIMD4<UInt32>>.size, index: 6)
+            let width = pipeline.state.threadExecutionWidth
+            encoder.dispatchThreads(
+                MTLSize(width: values, height: 1, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
+            )
+            encoder.endEncoding()
+            command.commit()
+            command.waitUntilCompleted()
+            if let error = command.error { throw Error.commandFailed("\(error)") }
+            let raw = outBuffer.contents().bindMemory(to: Float.self, capacity: values)
+            return Array(UnsafeBufferPointer(start: raw, count: values))
+        }
+    }
+
     private static let shader = """
     #include <metal_stdlib>
     using namespace metal;
