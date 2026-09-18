@@ -10702,3 +10702,44 @@ block** - QK^T, softmax and PV together - so **the 1.9x is a floor on the op, no
 prefills, GPU decodes. **The measurement now says that is plausible for attention at a full 4,096-token chunk and
 not for projections** - which is a narrower and more useful claim than the section previously carried, and it comes
 with the operating point, the compile cost and the `used_ane` guard that `D300` recovered from upstream.
+
+## D303 — The ANE wins QK^T and loses the block it belongs to: the composite is not the sum of its ops
+
+`D302` measured the first ANE-positive result - QK^T at a full chunk, 1.9x the GPU path - and named the next
+measurement as the **whole full-attention block**, because that is what the sister project moves and one op is not
+a block. The block is measured, and it does not repeat the result:
+
+    full attention block at 4,096:  QK^T + softmax + PV   8.59 GFLOP of matmul
+
+| unit | median | GFLOP/s (matmul only) |
+| --- | --- | --- |
+| **CPU_AND_GPU** | **5.84 ms** | **1,471.3** |
+| ALL (ANE-eligible) | 7.12 ms | 1,206.8 |
+| CPU_ONLY | 13.58 ms | 632.7 |
+
+**So on the composite the ANE-eligible path is 1.22x slower than the GPU path, where on QK^T alone it was 1.9x
+faster.** The two measurements are not in conflict; they say something more specific and more useful than either:
+
+  * **`ALL` still beats `CPU_ONLY` by 1.9x** (7.12 against 13.58), so the block as a whole is not falling back to
+    the CPU;
+  * **`ALL` keeps 1,206.8 GFLOP/s while the GPU path reaches 1,471.3**, so the ANE-eligible path is doing well and
+    still losing;
+  * **and the difference between `D302` and this is exactly the softmax and the second matmul.** The op the ANE
+    wins is not the op that decides the composite.
+
+**The most likely reading, and it is a reading: softmax.** It is the only element added between the two probes, it
+is not a matrix multiply, and it is the classic operation an acceleration engine handles badly because it needs
+reductions and exponentials rather than dense arithmetic. **That would also explain why the sister project's README
+describes moving "the full-attention prefill block" as a single unit rather than a set of ops** - the composition
+is the thing that has to be built for the engine, not the parts.
+
+**What this changes.** `D302`'s positive stands and is correctly scoped: **the ANE engages and wins on QK^T at a
+full chunk.** It does **not** follow that an attention block built naively from `matmul`, `softmax`, `matmul` will
+win, and this round shows it does not. **The design document's section 8b therefore keeps "ANE for prefill" as an
+intent with one positive op-level result behind it, not a block-level one** - which is where it was left, now with
+a firmer boundary around it.
+
+**And the next step is not another probe of my own construction.** Two rounds of composing ops by hand have shown
+that the answer depends on how the block is built, and the sister project has already built it. **The efficient
+move is to read its attention graph** - what it fuses, what it keeps as separate layers, and whether softmax is
+inside the accelerated region - rather than to guess a third time.
