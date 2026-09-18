@@ -494,3 +494,49 @@ and the second option adds 320.
 function plus either a small kernel or a dispatch pattern whose cost is unknown. **Everything before it is built and
 verified** - the exchange on both sides, the requesting half wired and behaviourally verified, the queue and the
 synchronous fetch located - and this is what stands between that and a four-node number.
+
+### The serve path's call sequence, with the real parameter names
+
+"The down projection" is the phrase that hid the kernel. This is the same step written so it can be typed:
+
+```
+// once, on the runner: an fp16 activation buffer [D], an fp16 acts scratch [FmoE], a float y [D],
+// a float weights[1] = 1.0, a float residual[D] = 0, all persistent - NOT per request, per D114.
+let plan   = try model.planRoutedExperts(layer: layer, experts: experts)   // ModelExpertIO.swift:107, sync
+let blobs  = try model.routedExpertBuffers(for: plan)                      // :165, sync -> [TensorView]
+let offsets = try model.routedExpertOffsets(layer: layer)                  // MoEExpertOffsets
+
+// write `activation` into the fp16 activation buffer, widened.
+
+// ONE EXPERT AT A TIME, because phase 2 REDUCES and has no per-expert output:
+for (i, expert) in experts.enumerated() {
+    let cb = ctx.queue.makeCommandBuffer()
+    try moe.encodeRoutedPersistentPhase1U16Load(
+        commandBuffer: cb, routedArgBuffer: argBuf,
+        routedBlobs: [blobs[i].buffer], routedOffsets: offsets,
+        x: activationBuffer, acts: actsScratch, d: D, f: FmoE, topK: 1)
+    try moe.encodeRoutedPersistentPhase2Reduce(
+        commandBuffer: cb, routedArgBuffer: argBuf,
+        routedBlobs: [blobs[i].buffer], routedOffsets: offsets,
+        acts: actsScratch,
+        routingWeights: unitWeights,        // [1.0] - the WEIGHT BELONGS TO THE REQUESTER (D168)
+        residual: zeroResidual,             // zeros - the residual too
+        y: yBuffer, d: D, f: FmoE, topK: 1) // remotePartials: nil
+    cb.commit(); cb.waitUntilCompleted()
+    // read yBuffer.contents() as [D] floats into out[i * D ..< (i + 1) * D]
+}
+```
+
+**`topK: 1` in both calls is the whole trick**, and `validate(routedBlobs:topK:)` enforces it: one blob, one
+slot, so the reduce has nothing to reduce and `y` is that expert's down output. **The weights are 1.0 and the
+residual is zero for the reason `D168` gives** - the requester owns the router's decision and applies the weight, so
+a peer that applied it too would be counted twice, silently.
+
+**What this costs, stated so the run can be interpreted.** Per request: `experts.count` phase-1 encodes,
+`experts.count` phase-2 encodes and `experts.count` blocking waits. On the serving node at eight experts a layer and
+forty layers that is **640 encodes and 320 blocking waits per token**, which is the shape `D114` measured at
+**2.47 s/step against 0.92** when buffer handling went wrong - not the same failure, but the same order of
+dispatches. **The four-node number this produces will be dominated by the serving node's dispatch pattern, not by
+the exchange**, and that must be said when it is reported.
+
+**The clean alternative remains a down-only kernel** writing `[expert][d]` in one pass, which removes all of it.
