@@ -9261,3 +9261,48 @@ client-side `ShardTransport` is already synchronous and unaffected, because the 
 runs where the peers were refusing almost every request, so neither says anything about the exchange. **The first
 honest distributed number comes after this change**, and the prediction to compare it against is the one the records
 have carried since `D235`: about **1.12x** expert-only, on a step whose routed MoE is **19.4 ms of 137.0 ms**.
+
+## D265 — The async serve path streams correctly and feeds the model NaN: the exchange's values are wrong
+
+The async change worked as designed. The cache error is gone -
+
+    node2  [shard] node 1 of 3, peers [0, 2] connected; expert contributions are being exchanged.
+           [stop=maxTokens prefill=5tok/1.47s new=48tok decode=7.15s tok/s=6.715]
+           node1  Paris error: sampler row had no finite logit: every value in the row was NaN
+           node3  Error Domain=NSPOSIXErrorDomain Code=61 "Connection refused"
+
+- and node2's 6.715 tok/s is the closest to single-node (7.6) any distributed run has reached, with **zero** "cache
+cannot place requested experts" lines. **`fetchRoutedExperts` is the right route and the async plumbing is right.**
+
+**And it produces NaN.** node1 emitted "Paris" and then a sampler row with no finite value - which is what a wrong
+shared partial does, and it is the failure the records have been warning about since `D154`: **a wrong number, not an
+error**, because each side is internally consistent. So:
+
+  * **the client half is proven** (it has run four times now, twice to completion);
+  * **the server half now streams the right experts** (the cache no longer refuses);
+  * **and the values it returns are not the values the model expects.**
+
+**The candidates, in the order they can be checked.** Each has a specific way to be wrong, and the records already
+name most of them:
+
+  1. **The buffer lifetime of `fetchRoutedExperts`.** It returns `[TensorView]` for a *streaming* read, and those
+     views may be backed by staging buffers that are only valid until the next fetch. This code holds them across an
+     encode and a `waitUntilCompleted()`. **If they are transient, that is the NaN** - and it is the one candidate
+     whose evidence is entirely in code this method does not control.
+  2. **The eight-slot one-hot.** The same expert in all eight slots with weights `[1,0,0,0,0,0,0,0]` should sum to
+     one term, but `acts` is eight slots wide and `f` is derived as `remoteActs.length / 2 / 8` - **a derivation that
+     is only correct if the buffer is exactly eight slots and nothing else.**
+  3. **The activation width.** `routedX` is `[D]` and the peer is sent `[D]`; if the kernel's `f` is not what the
+     requester's is, the down projection is over the wrong dimension and the sum is nonsense rather than an error.
+  4. **The weight semantics.** `D168` put the weight on the requester's side; if the phase-2 reduce has already
+     applied something, the one-hot is multiplying a value that is already weighted.
+
+**What to do, and it is the same instrument that found the last four defects.** Not more reading: **one node, one
+request, and compare the peer's answer against the same expert computed locally on that node.** `remoteExpertValues`
+is a public method on the runner; a test can call it with a known expert and activation and compare against the
+node's own `routedX -> phase1 -> phase2` path for the same expert. **A single equality check would say whether the
+wire is wrong or the arithmetic is**, and nothing so far has compared the two.
+
+**And the goal's number is now genuinely close to measurable**: node2 at 6.715 against 7.6 single-node is 0.88x, from
+a run in which two of three peers were still failing. **One correctness fix and one clean run, and the exchange has
+its first real measurement** - against the ~1.12x the records predict.
