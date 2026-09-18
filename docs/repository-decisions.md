@@ -4803,3 +4803,32 @@ TERMed the converter itself** at 3.85 GB free, instead of detecting the conditio
 one process responsible. That is the whole point of `D140`/`D148` demonstrated rather than asserted, and it is
 why the second attempt cost disk but not a panic: the guard stopped the job *before* it reached the 0.77 GB the
 first attempt hit.
+
+## D152 — Where a shard plan hooks into the fork, and confirmation that it has none
+
+The distribution half needs exactly one thing the reference does not have, and reconnaissance while the source
+transfer runs has located both the seam and the absence.
+
+**The absence first, because it is the contribution.** `grep -rl "shardPlan\|ShardPlan\|shard-plan\|nodeID\|nodeId"`
+across every Swift file in the fork returns **nothing**. There is no notion of a node, a peer, ownership, or a
+plan anywhere in the reference: it is a single-machine runtime, and its `DecodeService` boundary (`D135`) is a
+client/server split on one host. The plan-as-data design this repository built (`D20`) is not something to
+adapt from the reference — it is the part that has to come from here.
+
+**The seam is the expert read**, and the fork factors it cleanly:
+
+| file | role |
+| --- | --- |
+| `sources/TinyTitan/Infrastructure/Streaming/PreadExpertStreamer.swift` | the `pread`-based streamer that fetches expert slabs — **the hook point** |
+| `sources/TinyTitan/Runtime/Inference/ModelExpertIO.swift` | the expert I/O layer above it |
+| `sources/TinyTitan/Runtime/Inference/RealForwardRunner+Decode.swift` | the decode forward that calls into it |
+| `sources/TinyTitan/Kernels/MoE/MoE.swift` | the routed-expert kernel |
+
+`PreadExpertStreamer` is where "read this expert's bytes from local disk" becomes "ask whoever owns this expert" —
+which is the whole of what sharding means. It is one file with a name that says what it does, so unlike the
+earlier mis-scoped delegation (`D142`), the next step does not need a survey to begin.
+
+**Not started.** This is recorded because the transfer is a ~30 minute copy and the reconnaissance costs one
+command; the design itself — which node owns which expert, and how the reduction contract (`D17`) maps onto the
+reference's MoE, whose two-kernel structure differs from this repository's — is the next substantial piece of
+work and is not attempted here.
