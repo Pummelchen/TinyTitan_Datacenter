@@ -5432,3 +5432,56 @@ set is order-insensitive; a replicated id outside the model is refused.
 (`b8852cb`), and the exchange's shape and budget are settled by measurement and arithmetic (`D154`, `D158`,
 `D165`, `D166`). What remains is the transport that carries a contribution and the engine change that routes
 non-owned experts — both blocked on having something to run.
+
+## D168 — The reduce kernel says the wire carries **fp32**, so `D165`'s bf16 row was wrong and the replication cost is higher
+
+`D165` and `D166` sized the exchange assuming **bf16** contributions. Reading the actual kernel shows that
+assumption is wrong in a way that matters, and it corrects both.
+
+```metal
+kernel void moe_phase2_down_reduce_k8(
+    device const half* acts, device const half* routing_w, device const half* residual,
+    device half* y, ...) {
+    threadgroup float partial[8];
+    const float value = moe_int4_gemv_row_simd_dev_vec(...);   // the expert's output for this dimension
+    if (lane == 0) partial[sg_idx] = float(routing_w[sg_idx]) * value;
+    if (sg_idx == 0 && lane == 0) {
+        float acc = float(residual[d]);
+        acc += partial[0]; ... acc += partial[7];              // fixed order, fp32
+        y[d] = half(acc);
+    }
+}
+```
+
+**The partials are `float`, and the sum is a fixed-order fp32 accumulation of eight of them.** That is what a
+sharded node must reproduce, and it has a consequence `D165` missed: **sending a contribution as fp16 — or bf16 —
+rounds it, and the sum is then not bit-identical.** It breaks I3 for exactly the reason `D166` said int8 would.
+There is no "cheaper encoding" version of this trade at all; **the wire carries fp32**.
+
+**The corrected table**, with the same optimistic compute floor (141.3/4 = 35.3 ms) and the measured 40 MB/s:
+
+| replicated | slots | MB/step | Wi-Fi step | Wi-Fi tok/s | wired tok/s | extra MB/node |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0 | 6.0 | 1.97 | 84.5 ms | **11.8** | 19.6 | 0 |
+| 64 | 4.0 | 1.31 | 68.1 ms | 14.7 | 21.8 | 116 |
+| 96 | 3.0 | 0.98 | 59.9 ms | 16.7 | 23.2 | 175 |
+| **144** | **1.5** | **0.49** | **47.6 ms** | **21.0** | 25.5 | **262** |
+| 160 | 1.0 | 0.33 | 43.5 ms | 23.0 | 26.4 | 291 |
+| 192 | 0.0 | 0.00 | 35.3 ms | 28.3 | 28.3 | 349 |
+
+**What this changes.** Without replication, **bit-exact** distributed inference on this Wi-Fi link is
+**11.8 tok/s — 1.67×, not 3×**; `D165`'s bf16 row said 16.7. On a wired link it is **19.6 tok/s, still short of
+21**. Reaching the target needs **~144 replicated experts (262 MB/node) on Wi-Fi**, or **~64 (116 MB/node)**
+wired. `D166`'s conclusion — replication is the lever, and it is the only one that keeps bit-exactness — stands
+and is strengthened; its *numbers* were optimistic by roughly a factor of two on the wire.
+
+**The direction of every error in this series has been the same**, and it is worth naming: `D155` bounded the
+round trip with ping and understated it 2x; `D158` measured the real latency and then `D165` understated the
+volume by assuming a narrower encoding; `D166` then built a table on that narrower encoding. Each step was
+closer than the last and every one was optimistic. The reason is consistent — **I have been reading what the
+design would like to be true rather than what the code does**, and in this case one `awk` over the kernel
+settled a question that two rounds of arithmetic had got wrong.
+
+**Still arithmetic, and still an upper bound.** Perfect 4-way compute scaling is assumed (the dense weights and
+head are replicated, `D87`/`D93`), no overlap is modelled, and 40 MB/s is this Wi-Fi pair. It is not a
+measurement of a sharded run, which does not exist.
