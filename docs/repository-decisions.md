@@ -4715,3 +4715,45 @@ transport unlinks a file. Then a ~150 s release build and the app's tests.
 replacements that refuse to guess, so the file was never written and `git status` on it is empty. The honest
 position is that this is a design change to a client that manages processes, and it deserves to be made in one
 pass with the context to build and test it, not as a corner of a round spent watching an install.
+
+## D150 — The LAN client is done and verified: 1,570 tests, 0 failures
+
+`D149` said the client could not be treated as a connect swap because it *launches* the service it connects to.
+That change is now made, in one pass, and verified:
+
+```
+swift build -c release     clean, 0 errors, 0 warnings
+swift test                 8 targets, 1570 tests, 0 failure markers
+                           680 + 343 + 99 + 131 + 25 + 9 + 194 + 89
+```
+
+**What it is.** A `Transport` value — `.unixSocket(path:)` or `.tcp(host:port:)` — replaces the bare `socketPath`
+the client carried, and owns the only three things that differ: the arguments the service is launched with, the
+file teardown must unlink (nil for TCP), and nothing else.
+
+**The load-bearing part is the lifecycle branch, and it is smaller than expected.** `ensureProcess` now returns
+`connectRemote(remoteService)` when a remote endpoint is configured, and `connectRemote` opens the transport
+directly and stores the connection **with no `launchLabel`**. That single omission is what makes
+`tearDownService`'s existing `guard let label` correctly a **no-op for a service that was never ours to tear
+down** — no extra flag, no remote-specific branch in the cleanup path, and no way for the remote case to boot
+out a job it did not create. The design fell out of the existing guard rather than needing a new one.
+
+**The guard became conditional, not deleted.** `sunPathCapacity` is now stated as a property of the Unix
+transport. `launchIndependentService` only ever runs for the local case, so the constraint holds exactly as
+before, but a remote path cannot inherit a limit that means nothing for TCP.
+
+**`sweepOrphanedServices` is untouched in substance.** It sweeps local launchd jobs — local by construction,
+since it reads `launchctl` on this machine — so it wraps its socket path in a Unix transport and is unaffected
+by how the client is configured.
+
+**A half-specified endpoint is refused, not guessed.** `init` gained `remoteServiceHost` and `remoteServicePort`,
+which must be given together; one without the other throws rather than silently falling back to launching a
+local service — a fallback that would look like it worked and talk to the wrong machine.
+
+**No behaviour change for the local path:** the same socket is created, the same plist written with the same
+`--socket` argument, the same guard applied, the same file unlinked.
+
+**The distance this leaves.** The transport is now end-to-end over TCP at both layers — the service accepts
+`--host`/`--port` and proves `DecodeServiceCommand` frames cross it (`D147`), and the client can reach a remote
+service (`D150`) — so **a two-node run no longer waits on transport code**. What it waits on is a model, which
+is the install decision that has been outstanding for many rounds and has now cost real work twice.
