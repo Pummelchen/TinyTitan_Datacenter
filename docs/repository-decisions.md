@@ -9524,3 +9524,43 @@ node pays roughly eight times what an expert is worth, on its own critical path.
 
 **This is the measurement the objective asked for**, short of four nodes, and it says the ~1.0-1.1x ceiling it told
 me to test rather than defend is not merely defensible but **an over-estimate of what this design achieves**.
+
+## D272 — The only route the arithmetic leaves, and why no plan here takes it
+
+`D271` measured the distribution at **0.85x a single node** against the **2.8x** the objective asks for, and named
+the reason: the thing sharding divides is worth nothing and the thing that serves it costs eight times what it saves.
+This records what *would* move the number, so the next attempt does not spend its budget re-deriving that the expert
+plan cannot.
+
+**The budget, as measured.** A 137.0 ms step decomposes - `D202`, `D226` - and the pieces that can be divided are:
+
+| work | meas | divides today? | why not |
+| --- | --- | --- | --- |
+| routed MoE | **19.4 ms** | **yes** | - |
+| head | 9.6 ms | yes | vocabulary-parallel since `D93` |
+| `attn_norm_qkv` | **22.5 ms** | **no** | the plan shards experts, not attention |
+| shared expert | **8.0 ms** | **no** | dense, every node runs it in full |
+| `attn_tail_router` | 6.0 ms | **no** | dense |
+| the expert read | 47.4 ms | divides, and it is **worth zero** (`D239`) | the read is hidden behind the GPU |
+| everything else | ~30 ms | no | per-layer and per-token work every node repeats |
+
+**Dividing the routed MoE four ways is worth about 1.12x** - `D235`, unchanged - and `D271` measured 0.85x because the
+serving path costs more than that. **Even a free, instantaneous expert exchange leaves 137.0 - 19.4 + 4.85 = 122.5 ms,
+or 8.2 tok/s.** The target needs **47.6 ms**.
+
+**So the arithmetic points at one thing: divide the dense work.** Attention at 22.5 ms, the shared expert at 8.0 and
+the router at 6.0 are **36.5 ms of a 137.0 ms step**, and they are replicated on every node by construction. Two of
+the three have a precedent in this repository: `D93` made the **head** vocabulary-parallel by giving each node its own
+rows and gathering the slices, and `D223` costed **attention and shared-expert sharding at 6.3 ms of all-reduce
+against 22.9 ms saved** - it assumed the exchange was nearly free and that assumption is now measured rather than
+hoped, at 3.2 ms/step for the expert frames.
+
+**What it would take, honestly.** Attention sharding is a *tensor-parallel* change: split the GQA heads across nodes,
+all-reduce the output per layer. It is not a plan tweak and it is not the `ShardPlan` this tree has - **`ShardPlan`
+distributes experts and has no concept of a split tensor.** So it is a second kind of sharding built beside the first,
+which is why nothing here has attempted it.
+
+**And it is the honest end of the objective's road.** With attention and the shared expert divided as well, `D223`
+projected **~20.6 tok/s** - within 2% of the target and still short, on a model calibrated against one node. **So even
+the route the arithmetic allows does not obviously reach 21**, and the measurement that would settle it is the one
+`D271` could not take: four nodes, all completing, median over repeats.
