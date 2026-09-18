@@ -9564,3 +9564,39 @@ which is why nothing here has attempted it.
 projected **~20.6 tok/s** - within 2% of the target and still short, on a model calibrated against one node. **So even
 the route the arithmetic allows does not obviously reach 21**, and the measurement that would settle it is the one
 `D271` could not take: four nodes, all completing, median over repeats.
+
+## D273 — The serving cost has a lever after all, and it is eight times
+
+`D261` and `D271` both attributed the serving node's collapse to the eight-slot one-hot: a peer always answers with
+eight slots because `validate(routedBlobs:topK:)` preconditions `topK == maxStreamedExperts`, so the same expert is
+placed in all eight and seven of them are computed and weighted to zero. **That is eight times the work for one
+expert, on the serving node's critical path** - and `D271` measured the cost: a serving node at **1.36 tok/s** against
+a requesting node's **6.58**.
+
+**And `maxStreamedExperts` is not a constant of the architecture.** It is set from the `MoE` initialiser:
+
+    init(..., topKExperts: Int = 8) throws {
+        self.realDecodeTopK = UInt32(topKExperts)
+        self.maxStreamedExperts = topKExperts
+        precondition((0...16).contains(topKExperts), ...)
+
+**so a `MoE` built with `topKExperts: 1`** - which the precondition permits - makes `topK: 1` legal, and the
+argument buffer, the phase-1 encode, the phase-2 reduce and both scratch buffers all become one slot wide. **Eight
+times less work per request, from a construction parameter.**
+
+**Why the generation path cannot simply use it.** The generating runner needs `topKExperts` equal to the model's
+routed top-k, eight, for its own forward pass - so this is a **second `MoE` instance** for the serving path, built
+once beside the first: the same config, the same device, the same kernels and the same expert streamer, with
+`topKExperts: 1`. `remoteExpertValues` then uses that instance and one-slot scratch, and the one-hot disappears
+because there is nothing to weight - which also removes the fp16 weight buffer whose element type caused `D269`.
+
+**What this does and does not buy.** It removes the *eight-times* term from the serving node, which is the whole of
+the 4.9x gap between a serving node and a requesting one in `D271`, and it is the strongest remaining lever on the
+measured number. **It does not change `D272`'s conclusion**: even with the expert exchange made free and
+instantaneous, the step is 122.5 ms and the target needs 47.6 ms, because what sharding divides is 19.4 ms of
+137.0. **So this is worth doing for the measured number and is not, on this arithmetic, a route to 21 tok/s** - and
+saying that before doing it is the point of having the arithmetic.
+
+**Order, if it is done:** the second `MoE` with `topKExperts: 1`; one-slot `remoteActs`, `remoteY` and `remoteResidual`;
+`remoteExpertValues` without `remoteWeight`; then the same three-repeat measurement `D271` took, so the two numbers
+are comparable.
