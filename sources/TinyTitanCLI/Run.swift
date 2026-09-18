@@ -307,6 +307,13 @@ public func run(args: Args,
             // Task rather than DispatchQueue.global(): the loop awaits instead of blocking and holds no thread.
             // That reverses D197's reason for moving the accept off the pool - a *blocking* accept had to leave it,
             // an awaiting one belongs back on it.
+            if args.shardServeOnly {
+                // SERVE ON THE MAIN PATH. Awaiting here makes the process live exactly as long as the server does,
+                // which is what makes an idle serving node measurable (D279). The accept loop awaits rather than
+                // blocks, so it holds no thread.
+                try await server.serve(connections: Int.max)
+                return RunResult(exitCode: 0)
+            }
             Task {
                 do { try await server.serve(connections: Int.max) } catch {
                     FileHandle.standardError.write(Data("[shard] serve stopped: \(error)\n".utf8))

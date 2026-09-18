@@ -29,6 +29,11 @@ public struct Args: Equatable, Sendable {
     public var shardPeersSpec: String?
     /// Port to serve peer expert requests on. Without it a node generates but does not answer.
     public var shardServePort: Int?
+    /// Serve peers and nothing else. D278 measured a peer request at 2.95 ms of compute against about 0.5 ms for the
+    /// same work single-node, and named contention between a node's own forward pass and the requests it answers.
+    /// A node cannot test that today: it always generates, and a Task does not keep the process alive once main
+    /// returns, so the server dies with the generation. With this the node serves on the main path instead (D279).
+    public var shardServeOnly: Bool
     public var stops: [String]
     public var quiet: Bool
     public var concise: Bool
@@ -61,6 +66,7 @@ public struct Args: Equatable, Sendable {
                 shardNode: Int? = nil,
                 shardPeersSpec: String? = nil,
                 shardServePort: Int? = nil,
+                shardServeOnly: Bool = false,
                 stops: [String] = [],
                 quiet: Bool = false,
                 concise: Bool = false,
@@ -93,6 +99,7 @@ public struct Args: Equatable, Sendable {
         self.shardNode = shardNode
         self.shardPeersSpec = shardPeersSpec
         self.shardServePort = shardServePort
+        self.shardServeOnly = shardServeOnly
         self.stops = stops
         self.quiet = quiet
         self.concise = concise
@@ -215,6 +222,7 @@ extension Args {
         var shardNode: Int?
         var shardPeersSpec: String?
         var shardServePort: Int?
+        var shardServeOnly = false
         var stops: [String] = []
         var quiet = false
         var concise = false
@@ -266,6 +274,8 @@ extension Args {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
                 shardServePort = parsed
+            case "--shard-serve-only":
+                shardServeOnly = true
             case "--model":
                 model = try takeValue(argv, &index, flag: flag)
             case "--prompt":
@@ -412,6 +422,7 @@ extension Args {
                     shardNode: shardNode,
                     shardPeersSpec: shardPeersSpec,
                     shardServePort: shardServePort,
+                    shardServeOnly: shardServeOnly,
                     stops: stops,
                     quiet: quiet,
                     concise: concise,
