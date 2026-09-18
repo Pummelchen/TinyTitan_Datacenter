@@ -6584,3 +6584,44 @@ expert misses are after sharding divides them (`D188`: 96/4 = 24 MB), and it dec
 **The measurement that separates them** is the same iostat run with the prefill excluded and the run long enough
 that the decode dominates, which is the next thing to take. Until then this is a **measured disagreement with two
 live explanations**, and `D190` is the standing reminder of what happens when one of them is assumed.
+
+## D195 — Steady-state decode: the disk does 985 MB/s, and the expert path is 73% of it
+
+`D194` left two explanations for the I/O that the expert path does not account for, and named the separating
+measurement: the same `iostat` with the prefill unambiguously out of the window. Taken with a 192-token
+generation, sampled 20 s in, when prefill (1.62 s) is long finished:
+
+    333.38 KB/t  3052 tps   993.76 MB/s
+    330.83 KB/t  3023 tps   976.56 MB/s
+    decode 25.47 s / 192 tokens = 132.7 ms/step  ->  7.537 tok/s
+
+**Steady-state decode disk: ~985 MB/s**, against the 1,050-1,171 MB/s that `D191`/`D193` measured on shorter runs.
+So the earlier figure **was** inflated by the prefill's reads sitting in the window, and the correction is about
+**10%**, not enough to explain the disagreement.
+
+    disk per step            985 MB/s x 0.1327 s  =  131 MB
+    expert path (D194)       91.4 MiB/token        =   96 MB
+    ------------------------------------------------------
+    unattributed                                    ~35 MB   (27%)
+
+**So the expert path is ~73% of the decode's disk I/O and 27% is still other traffic**, down from `D194`'s 35%
+but the same order. The dense-payload explanation `D194` gave remains the leading one, and it is now the smaller
+of the two candidates for the 21 tok/s gap rather than a third of it.
+
+### What is now measured, all of it on node3 with the reference's install at 40 slots
+
+| quantity | value | source |
+| --- | --- | --- |
+| step | 132.7-137.8 ms | five runs, 7.256-7.537 tok/s |
+| expert reads | 91.4-101.0 MiB/token | `TINYTITAN_DECODE_IO_TRACE`, 64- and 16-token runs |
+| disk, steady-state decode | ~985 MB/s, ~131 MB/step | iostat, prefill excluded |
+| disk, idle | 0.12-12.9 MB/s | iostat baseline |
+| serial `pread` ceiling at this batch size | **3.44 GB/s** | `ParallelExpertReader` header |
+| device occupancy | ~30% | `TINYTITAN_KERNEL_STATS` |
+| host CPU | 31-37% of one core of eight | `ps` |
+
+**The one gap that is not explained by any of these: the expert reads achieve ~985 MB/s against a measured
+3.44 GB/s ceiling, a factor of 3.5.** The reads are one expert at a time in routing order, 64 per step spread
+over 40 layers, so the queue depth is low - but `D190` measured turning the prefetch off as worth only 5%, which
+is the opposite of what a queue-depth explanation predicts. Both cannot be read the same way, and this is the
+disagreement the next measurement has to settle rather than a number to build on.
