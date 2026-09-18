@@ -53,3 +53,30 @@ Three defects were found by tests rather than by reasoning, and each is a commen
   itself the bug and the single-node path silently ran the sharded kernel on garbage;
 * a test that hung, and being **filtered around** is what hid the second one for a whole session. `swift test`
   now runs whole: 684 tests, 0 failure markers.
+
+## A named gap: the two halves compose, but nothing tests that they do
+
+The requesting half, the serving half and the reduce are each tested, and the whole suite is green. What is **not**
+verified is the **composition** of the requesting and serving halves over one socket — a real server, a real
+participant, the peer's contribution merged with the node's own and compared bit-for-bit against the single-node
+answer. That test was written and **crashes**:
+
+    Swift/SliceBuffer.swift:317: Fatal error: Index out of bounds
+
+with no stack frame naming any of our code. It is removed rather than shipped — a test that kills the runner is
+worse than a named gap — and this note exists so the gap is not mistaken for coverage.
+
+**Ruled out by reading, so a retry does not repeat it:**
+
+* the frame shapes. `dimensions` is `activation.count`, **one activation row shared by every slot**, and the
+  engine's `moeActs` is `[topK * FmoE]` which is one row per slot — so a participant asking about two slots still
+  sends one row, and it does. The reply is `slots.count * dimensions` and both the encoder and the decoder check
+  it.
+* the slot arithmetic. Experts `[0,2,4,6]` at slots `[0,1,2,3]` over a round-robin 4-node plan puts 2 and 6 on
+  node 2, so exactly one request crosses, and the test's own placement is in range.
+* the kernel layout. `remote[d * 8 + slot]` with `d < 4`, `slot < 8` addresses 32 floats, which is what
+  `remotePartials` returns.
+
+**Not ruled out:** `ShardPeerChannel.receive`'s frame slicing and `dataToFloats`, both of which slice and neither
+of which the crash names. **The next attempt should call `contributions(...)` against a stubbed peer before adding
+the socket**, so the crash bisects to one side of the wire.
