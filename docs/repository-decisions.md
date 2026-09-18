@@ -10271,3 +10271,44 @@ prefetch; the engine's policy is LFU with a wired bank, and `D243` measured that
 the real curve is *lower* than this one at small capacities and converges at large ones. **The 68% is therefore an
 upper bound on the hit rate and the 100 ms a lower bound on the stream** - which does not change the conclusion,
 because the compute binds either way.
+
+## D292 — The co-occurrence structure is real: mean lift 1.94, maximum 305x, and D290 tested the wrong thing
+
+`D290` withdrew the routing-affinity design on the strength of per-layer Gini and entropy. **Those are statistics of
+the MARGINAL distribution - how popular each expert is on its own. The operator's idea was about CO-ACTIVATION -
+which experts are drawn together - and the two are independent.** 256 experts can be perfectly uniform individually
+and still always be drawn in specific sets, so marginal uniformity does not imply the joint is uniform. **The
+withdrawal rested on evidence that does not test the claim, and this round ran the test that does**, on the same
+trace: 2,745 tokens and 109,800 decisions, 20 prompts.
+
+    lift = P(a and b drawn together) / (P(a) x P(b));   lift 1.0 means independent
+
+| layer | mean lift | max lift | pairs above 2x |
+| --- | --- | --- | --- |
+| 0 | 2.670 | 101.7 | 3,969 |
+| 1 | 1.931 | 261.4 | 4,182 |
+| 4 | 1.927 | 59.4 | 4,389 |
+| 7 | 2.071 | 305.0 | 4,433 |
+
+**Across sampled layers the mean lift is 1.941 and the median is 1.060.** So the picture is precise and it is not
+"independence": **the median pair is nearly independent, and a small population of pairs is enormously correlated -
+up to 305 times chance, with roughly 4,300 pairs per layer above 2x.** That is structure. **`D290`'s conclusion is
+withdrawn, and the operator's hypothesis is live again.**
+
+**And the placement test in the same round does not yet exploit it.** Splitting each layer's 256 experts into four
+groups of 64 by marginal frequency - which is what a hot-core design would do - a token touches **3.14 of 4 groups
+at layer 0 and 2.74 of 4 at layer 20**. **That is close to what random assignment gives**, and it is the expected
+result: a marginal-greedy split cannot concentrate experts whose *pairwise* structure is invisible to the marginals.
+**The partition that would exploit the lift has not been built.**
+
+**One computation in this round is broken and is reported as broken rather than used.** The cross-layer attempt
+printed set entropies of **20.7 bits against a stated maximum of 48.5** - but with 2,745 samples the entropy of a
+set-valued variable cannot exceed **log2(2745) = 11.4 bits**. So those numbers are meaningless, the "maximum" was
+the wrong quantity, and **the cross-layer question - does layer L predict layer L+1 - is unanswered.** It is the
+fourth item in `D286` section 8's analysis list and it is still open.
+
+**What this does to the design document.** Section 8 was struck through as "measured and not justified". **That is
+now wrong and must be reopened**: the marginals are near-uniform, the joint is not, and the design question is
+whether a partition built from the **affinity graph** can concentrate a token's eight experts into one or two groups
+where the marginal-greedy split manages three. **If it can, the serving cost `D278` measured at 2.95 ms a request
+and 61% of a serving node's token comes down; if it cannot, the idea dies on the right evidence this time.**
