@@ -153,7 +153,11 @@ public enum MixtureOfExperts {
             }
         }
 
-        for expert in pairs.keys.sorted() where provider.serves(expert) {
+        // Everything this layer will ask for is known here, so it is the one place a preload can be useful
+        // (`DC-118`). The provider decides whether it has anywhere to put the bytes.
+        let chosen = pairs.keys.sorted().filter { provider.serves($0) }
+        provider.preload(experts: chosen, shape: shape)
+        for expert in chosen {
             let assignments = pairs[expert]!
             let gateUp = try provider.gateUp(expert: expert, shape: shape)
             let down = try provider.down(expert: expert, shape: shape)

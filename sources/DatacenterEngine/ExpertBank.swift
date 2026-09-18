@@ -38,12 +38,13 @@ private struct BankKey: Hashable {
 /// unchanged whether the bank is empty, warm or full. `ExpertBankTests` asserts the values a hit returns are
 /// the ones the loader produced, not merely a same-shaped array.
 ///
-/// **What it measured, and why the default is 0.** Built and measured on the real 35 B-A3B (`D98`): a decode
+/// **What it measured, and what it is for now.** Built and measured on the real 35 B-A3B (`D98`): a decode
 /// token asks for 773 slices of 12.5 MB, so one token's working set is ~9.7 GB across both projections, and a
 /// 537 MB bank has a reuse distance **nine times** its capacity. The alternated A/B found **0.0% hits and
 /// identical elements read at 0, 512 and 1024 MB**, the bank on being slightly slower in both pairs. So this
 /// type is not the win it was built to be — what it *is* is the instrument that proved the capacity cannot be
-/// the lever on an 8 GB node, and the store the prefetch ring (`DC-121`) will stage into. `D31`'s "hit rate 0
+/// the lever on an 8 GB node, and the **staging area the preload writes into**: with the fan-out of `DC-118`
+/// the same 512 MB is worth **1.35x** on the step, while the bank alone is still a loss (`D101`). `D31`'s "hit rate 0
 /// at every size" was right about the workload as well as the lifetime; the lifetime fix is what made the two
 /// distinguishable.
 ///

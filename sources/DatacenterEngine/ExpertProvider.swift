@@ -32,10 +32,19 @@ public protocol ExpertWeightProvider {
     /// (`OrderedReduction.isComplete`) — that check is what `D17` means by "absence has to be loud".
     /// A provider that serves everything, which is every single-node one, keeps the default.
     func serves(_ expert: Int) -> Bool
+    /// Fetch these experts ahead of the loop that will ask for them (`DC-118`).
+    ///
+    /// A **hint**, and the default is to do nothing, because most providers have nowhere to put the bytes.
+    /// The one that matters is the slot cache in front of a generation-scoped bank: the reads are latency-bound
+    /// (1.08 GB/step at 0.83 GB/s, 520 small `pread`s issued one at a time) and fanning them across threads is
+    /// the only way to stop paying for them one at a time. A preload that fails is not an error — the call that
+    /// follows raises it, which is where the failure belongs.
+    func preload(experts: [Int], shape: MixtureShape)
 }
 
 extension ExpertWeightProvider {
     public func serves(_ expert: Int) -> Bool { true }
+    public func preload(experts: [Int], shape: MixtureShape) {}
 }
 
 /// Raised when a source hands back a width the mixture's geometry does not agree with — a
@@ -214,6 +223,45 @@ public final class ExpertSlotCache: ExpertWeightProvider {
         }
         count(outcome)
         return outcome.values
+    }
+
+    /// Fetch this layer's chosen experts ahead of the loop that asks for them (`DC-118`).
+    ///
+    /// Two conditions, and both are load-bearing. The bank must have a budget, because otherwise the
+    /// preloaded bytes are discarded and the loop reads them **again** — twice the work rather than half the
+    /// latency. And there must be more than one thread, because the point is the fan-out.
+    ///
+    /// The warm reads deliberately **do not count as requests**: the request is the loop's, and the loop will
+    /// find each slice resident and count a *hit*. Counting the warm-up too would double every request and
+    /// every miss, and `ForwardResult.expertMetrics` is summed over layers by callers.
+    public func preload(experts: [Int], shape: MixtureShape) {
+        guard let bank, bank.budgetBytes > 0, DecodeThreads.count > 1 else { return }
+        let wanted = experts.filter { upstream.serves($0) }
+        guard wanted.count > 1 else { return }
+        nonisolated(unsafe) let target = self
+        DispatchQueue.concurrentPerform(iterations: wanted.count) { index in
+            _ = try? target.warm(expert: wanted[index], shape: shape)
+        }
+    }
+
+    /// Both projections of one expert, into the bank, without counting the *requests*.
+    ///
+    /// The volume is a different question from the request, and this was wrong at first: a warm read that
+    /// counted nothing hid the bytes it had really read, so `expertElementsRead` went to zero and
+    /// `ExpertProviderTests`/`SourceBytesTests` — whose whole point is that traffic is measured — failed with
+    /// "the fixture must route experts, or this test proves nothing". The request belongs to the loop; the
+    /// **volume belongs to whoever touched the disk**, which is this path when the loop finds the slice
+    /// resident.
+    private func warm(expert: Int, shape: MixtureShape) throws {
+        guard let bank else { return }
+        let up = try bank.gateUp(layer: layer, expert: expert) {
+            try upstream.gateUp(expert: expert, shape: shape)
+        }
+        metrics.elementsRead += up.elementsLoaded
+        let downOutcome = try bank.down(layer: layer, expert: expert) {
+            try upstream.down(expert: expert, shape: shape)
+        }
+        metrics.elementsRead += downOutcome.elementsLoaded
     }
 
     private func count(_ outcome: ExpertBank.Outcome) {

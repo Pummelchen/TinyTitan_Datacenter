@@ -2801,3 +2801,51 @@ the kernel then needs an `MTLBuffer` of the same size — about **4 GB** on a no
 GPU path is not blocked by the kernel, it is blocked by the fp32 array that `DC-120` exists to remove, and that
 is one more reason to do `DC-120` first: after it, both the threaded CPU matmul (`DC-122`) and the GPU kernel
 become addressable.
+
+## D101 — The expert reads were latency-bound, and fanning them out is worth 1.35x
+
+`D100` split the largest phase and found two halves: the device read (1.298 s/step) and the CPU unpack
+(1.353 s). The read half is 1.08 GB per step at **0.83 GB/s**, a quarter of what the device can do — so it is
+**latency**, not bandwidth: about 520 small `pread`s per step, issued one after another. `DC-118` fixes that
+with a hint rather than a rewrite of the reader.
+
+**The change.** `ExpertWeightProvider.preload(experts:shape:)` is called once per layer, at the one point where
+the router's choices are known, and its default is to do nothing. The adapter in front of the
+generation-scoped bank implements it by fanning the *misses* across threads through `DecodeThreads`, writing
+into the bank as **staging**. Two details are load-bearing:
+
+- **The warm reads do not count as requests.** The loop that follows is the requester, finds each slice
+  resident and counts a *hit*; counting the warm-up too would double every request and every miss, and
+  `ForwardResult.expertMetrics` is summed over layers by its callers.
+- **The bank must have a budget and there must be more than one thread**, or the preloaded bytes are discarded
+  and read again — twice the work rather than half the latency.
+
+The reader's counters are now **write-locked**, because a `+=` from two threads loses one of them and a lost
+read under-reports exactly the cost this change exists to reduce. The *reads* of those counters are
+deliberately unlocked, which is a statement about when they happen: `sourceTiming` is asked between forwards,
+when no reader is running.
+
+**Measured**, alternated, one binary, 8-step decode, load average 2.90:
+
+| configuration | s/step | `mix.read` | digest |
+| --- | --- | --- | --- |
+| bank 0 | 3.383 / 3.382 | 1.671 / 1.660 | `89d654ff54b0fd03` |
+| bank 512 MB + fan-out | **2.503** | **0.761** | `89d654ff54b0fd03` |
+| bank 512 MB, `SHARD_DECODE_THREADS=1` | 4.109 | 1.708 | `89d654ff54b0fd03` |
+
+**0.296 → 0.400 tok/s**, digest identical in every arm. The third row is what makes the first two readable: the
+bank **alone** is a *loss*, which is what `D98` measured and why it set the default to 0; what changed is what
+the bank is *for*. It is not a cache that has to earn its keep by hitting — it cannot hit this model — it is the
+**staging area the fan-out writes into**, and with the fan-out the same 512 MB is worth 1.35x. The default is
+therefore 512 MB, and `SHARD_EXPERT_BANK_MB=0` disables both halves at once.
+
+**One instrument caveat, recorded because it would mislead otherwise.** With concurrent reads the per-thread
+counters sum **past wall time**: the same run reports read 3.867 s and unpack 5.206 s inside a 2.503 s step.
+They measure *thread-time under overlap*, not elapsed time, and any later reading of them has to know that. The
+honest fix, when it matters, is to attribute the segments once per phase rather than per read.
+
+**Where this leaves the objective.** 2.503 s/step = **0.400 tok/s** against the operator's 7 — a factor of 17.5.
+The remaining levers are unchanged in kind and now better ordered: the unpack is the largest single cost and
+`DC-120` (fuse the dequantise into the matmul, never materialise the fp32 slice) removes it; `DC-122` (the
+threaded CPU matmul) is still open with its failure on the record; and `DC-121` (prefetching the *next* token's
+experts) is now cheap to try, because the fan-out it would feed already exists.

@@ -188,9 +188,13 @@ public struct Qwen3_5Forward: ForwardPass {
         // projection — **4.83 GB**, ~9.66 GB for both — against a 537 MB bank: the reuse distance is nine
         // times the capacity, and the alternated A/B measured **0.0% hits with identical elements read at
         // 0, 512 and 1024 MB**, with the bank *on* slower in both pairs (4.020/4.132 -> 4.236/4.139). The
-        // knob stays because the prefetch ring will want storage and because a node with headroom may want
-        // to test it; the default does not pretend.
-        let defaultMegabytes = 0
+        // knob stays because a node with headroom may want to test it — but the default is now **512, and the
+        // reason is `DC-118`, not caching.** `D98` measured a bank alone as a small loss and set this to 0; then
+        // the preload arrived and changed what the bank is *for*. It is the **staging area the fan-out writes
+        // into**, and with the fan-out the same 512 MB is a **1.35x** win (3.383 -> 2.503 s/step, `mix.read`
+        // 1.671 -> 0.761, digest unchanged), while the bank alone is still 4.109 s/step. The pair is the
+        // configuration, and `SHARD_EXPERT_BANK_MB=0` disables both halves at once.
+        let defaultMegabytes = 512
         guard let raw = environment["SHARD_EXPERT_BANK_MB"], let megabytes = Int(raw) else {
             return defaultMegabytes * 1_048_576
         }

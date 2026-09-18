@@ -32,7 +32,7 @@ final class InstallCacheTests: XCTestCase {
             forward.payloadCacheMetrics.hits, 0, "nothing can be cached before the first read"
         )
 
-        _ = try forward.forwardWithDecisions(tokens: tokens)
+        let result = try forward.forwardWithDecisions(tokens: tokens)
         let secondPayload = forward.payloadCacheMetrics.bytesRead - firstPayload
 
         XCTAssertEqual(
@@ -43,17 +43,31 @@ final class InstallCacheTests: XCTestCase {
         XCTAssertGreaterThan(
             forward.payloadCacheMetrics.hits, 0, "and the cache is what did it, not a shorter forward"
         )
-        // This test is about the **whole-tensor payload cache**, and `DC-119` briefly made it about the expert
-        // bank instead: with the bank living for the generation and defaulting to 512 MB, a second identical
-        // forward read no row ranges at all. Then `D98` measured that a bank of that size **cannot hit** on this
-        // model — 773 slices of 12.5 MB per token against a 537 MB budget — and set the default to 0, which
-        // puts the row-range reads back. The bank's own behaviour is asserted in `ExpertBankTests`; what is
-        // asserted here is the property this file is named for.
-        XCTAssertGreaterThan(
+        // This assertion used to say the opposite, and the change is the point. It read "row-range reads still
+        // happen", because `D98` had set the expert bank's default to 0: a bank that could not hit on this model
+        // was pure cost, so the second forward re-read the expert slices. `D101` found a reason for the bank that
+        // does not need a hit to pay — it is the **staging area the preload fans misses into**, worth 1.35x — and
+        // raised the default to 512 MB. On a fixture this small that means the second identical forward is served
+        // **entirely from what is already resident**: no whole-tensor payload (which this test is named for, and
+        // which the cache above it proves) and no row-range re-read either.
+        //
+        // That is a stronger statement than the one it replaces, not a weaker one: it says the reads did not
+        // happen at all, rather than that they happened again. What it must not be is *silent* — the expert
+        // volume is counted by whoever touched the disk (`ExpertSlotCache.warm`), so `expertElementsRead` going
+        // to zero here is a measurement, not an absence of one.
+        XCTAssertEqual(
             forward.sourceBytesRead - firstRead, 0,
-            "row-range reads still happen — the embedding's rows and the expert banks are streamed, which is "
-                + "the point: a cache of whole tensors cannot hold 18 GB of stacked experts, and `DC-121` is "
-                + "where those reads get hidden"
+            "the second forward re-reads nothing: the dense payload is cached whole, and the expert slices are "
+                + "resident because `D101` stages the preload into the bank"
+        )
+        XCTAssertGreaterThan(
+            result.expertHitRate, 0,
+            "and the bank is what served them, so the saving is visible rather than assumed"
+        )
+        XCTAssertEqual(
+            result.expertElementsRead, 0,
+            "nothing was read from upstream on this pass — the volume metric says so because the warm path "
+                + "counts what it reads, which is exactly the bug this assertion caught"
         )
     }
 

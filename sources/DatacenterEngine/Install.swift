@@ -168,6 +168,44 @@ public struct InstallFile: WeightSource {
         static let payloadCacheBudgetValue = InstallFile.payloadCacheBudget(
             environment: ProcessInfo.processInfo.environment
         )
+
+        /// Counting is guarded because `DC-118` fans expert misses across threads: two `+=` on the same
+        /// counter lose one of them, and a lost read under-reports the very cost that change exists to
+        /// reduce.
+        ///
+        /// **The reads are deliberately unlocked**, and that is a statement about *when* they happen rather
+        /// than a hope: `sourceTiming` and `payloadCacheMetrics` are asked between forwards, after every
+        /// dispatched read has returned, so there is no concurrent writer at that moment. A lock on the read
+        /// side would be paid for on every measured forward and buy nothing.
+        private let lock = NSLock()
+
+        func addRead(seconds: Double, bytes: Int) {
+            lock.lock(); readSeconds += seconds; bytesRead += bytes; lock.unlock()
+        }
+
+        func addVerified(bytes: Int) {
+            lock.lock(); bytesVerified += bytes; lock.unlock()
+        }
+
+        func addDigest(seconds: Double) {
+            lock.lock(); digestSeconds += seconds; lock.unlock()
+        }
+
+        func addUnpack(seconds: Double) {
+            lock.lock(); unpackSeconds += seconds; lock.unlock()
+        }
+
+        /// Two counters, two meanings, and they must not be conflated: a **request** is counted on the way
+        /// *past* the cache, so a hit is still visible, and **bytes** are counted only when the disk was
+        /// touched (`DC-106`). One method for both recorded a request named "" for every read, which is how
+        /// this surfaced — `InstallCacheTests` compares per-name counts across two forwards.
+        func notePayloadRequest(_ name: String) {
+            lock.lock(); payloadRequests[name, default: 0] += 1; lock.unlock()
+        }
+
+        func addPayloadBytes(_ count: Int) {
+            lock.lock(); payloadBytesRead += count; lock.unlock()
+        }
     }
 
     /// The whole-tensor payload cache (`DC-106`). A **class**, because `InstallFile` is a struct and a
@@ -300,12 +338,13 @@ public struct InstallFile: WeightSource {
     private func verifyRead(_ entry: Entry) throws -> Data {
         let readStarted = DispatchTime.now().uptimeNanoseconds
         let payload = try blob.readData(offset: entry.offset, byteCount: entry.nbytes)
-        state.readSeconds += Double(DispatchTime.now().uptimeNanoseconds &- readStarted) / 1e9
-        state.bytesRead += payload.count
-        state.bytesVerified += payload.count
+        state.addRead(
+            seconds: Double(DispatchTime.now().uptimeNanoseconds &- readStarted) / 1e9, bytes: payload.count
+        )
+        state.addVerified(bytes: payload.count)
         let digestStarted = DispatchTime.now().uptimeNanoseconds
         let digest = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
-        state.digestSeconds += Double(DispatchTime.now().uptimeNanoseconds &- digestStarted) / 1e9
+        state.addDigest(seconds: Double(DispatchTime.now().uptimeNanoseconds &- digestStarted) / 1e9)
         guard digest == entry.sha256 else { throw Error.digestMismatch(entry.name) }
         state.names.insert(entry.name)
         return payload
@@ -335,8 +374,9 @@ public struct InstallFile: WeightSource {
     private func readCounted(offset: Int, byteCount: Int) throws -> Data {
         let started = DispatchTime.now().uptimeNanoseconds
         let data = try blob.readData(offset: offset, byteCount: byteCount)
-        state.readSeconds += Double(DispatchTime.now().uptimeNanoseconds &- started) / 1e9
-        state.bytesRead += data.count
+        state.addRead(
+            seconds: Double(DispatchTime.now().uptimeNanoseconds &- started) / 1e9, bytes: data.count
+        )
         return data
     }
 
@@ -373,7 +413,7 @@ public struct InstallFile: WeightSource {
     }
 
     private func payload(_ entry: Entry) throws -> Data {
-        state.payloadRequests[entry.name, default: 0] += 1
+        state.notePayloadRequest(entry.name)
         if let cached = payloadCache.value(for: entry.name) { return cached }
         let data: Data
         if verifyOnFirstUse {
@@ -383,7 +423,7 @@ public struct InstallFile: WeightSource {
         }
         // Counted on the way *past* the cache, so the metric is disk traffic and a hit is invisible —
         // which is exactly what a second forward has to show.
-        state.payloadBytesRead += data.count
+        state.addPayloadBytes(data.count)
         payloadCache.store(data, named: entry.name)
         return data
     }
@@ -481,7 +521,7 @@ public struct InstallFile: WeightSource {
             } else {
                 guard try digestMatches(entry) else { throw Error.digestMismatch(entry.name) }
             }
-            state.digestSeconds += Double(DispatchTime.now().uptimeNanoseconds &- digestStarted) / 1e9
+            state.addDigest(seconds: Double(DispatchTime.now().uptimeNanoseconds &- digestStarted) / 1e9)
         }
         // The concatenation is inside the unpack timing on purpose: `codes + scales + zeros` copies
         // the payload before the decoder sees it, and a copy of the payload is part of what the
