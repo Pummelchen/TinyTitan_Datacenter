@@ -7263,3 +7263,49 @@ observation under sampling and is not comparable to any step time in this docume
 **What stands after it:** the host remainder is 41.3 ms, it is CPU, it does not divide, no setting moves it, and
 where inside it the time goes is **not yet known**. That is the question the next round starts from, and it is
 narrower than the one this goal opened with.
+
+## D212 — D209 was wrong: the host term is a WAIT, not CPU work, and the host is already four threads
+
+`D209` inferred that the 41.3 ms host remainder is CPU work because its **share of the step, 31.1%, matched the
+31-37% of one core** measured independently (`D191`). That inference is now falsified by a profile, and the
+coincidence it rested on is the trap.
+
+**The main thread is blocked on a semaphore for the whole decode.** Sampling the decode loop on node3 (96 tokens,
+40 slots, the reference install, `D211`'s file) and reading the main thread's call tree deepest-first:
+
+    1473  semaphore_wait_trap            (libsystem_kernel)
+    1473  _dispatch_sema4_wait
+    1473  _dispatch_semaphore_wait_slow
+    1473  drive(_:)                      (TinyTitanCLI)
+    1473  main
+
+1473 is **every sample taken** - the profiler ran 4 s at 1 ms and the main thread never left the wait. So the
+41.3 ms the budget calls "host" is **the main thread waiting**, not the main thread computing.
+
+**And the host is already parallel.** The same profile shows **four threads named `TinyTitan.expert-io.0` through
+`.3`**, each with a full 1473 samples, sitting in `ExpertIOScheduler.runWorker()`, `closure #1 in
+ExpertIOScheduler.init(workerCount:)` and `submit_batch`. Four workers at roughly **8% of a core each** is the
+31-37% that `D191` measured - so that reading was accurate and `D209` attributed it to the wrong thread.
+
+**What that changes.** `D209` concluded the host term "does not divide across nodes" and that the target needs a
+2.5x reduction in per-layer CPU work. Both follow only if the term is CPU on the critical path. It is not:
+
+  - **it is a wait, so it can be overlapped**, which is exactly what `D202`'s scenarios computed and what `D209`
+    argued against - `D202` found that overlapping reads, device and host gives **20.2 tok/s** against 7.5 with
+    none overlapped, and 23.8 with reads at depth 8. **20.2 was the answer and `D209` talked past it.**
+  - **the host loop is already multi-threaded**, so `D210`'s "there is no threading knob" is true of the
+    *configuration* and false of the *engine*: `ExpertIOScheduler` runs four workers. The change the target needs
+    is not to parallelise it but to **stop the main thread blocking on it**.
+
+**The specific wait.** `drive(_:)` is blocked in `_dispatch_semaphore_wait_slow` throughout, so the dependency is
+main thread -> semaphore -> expert-IO workers -> (their own waits) -> GPU. Every layer the main thread hands work
+to the workers and then blocks until they finish; the workers are idle whenever the main thread has not yet given
+them the next layer's miss list. **That is a pipeline with one stage's worth of overlap at best**, and it is the
+same shape `D200` found at the read level - "the ring lands about one" - one storey up.
+
+**The correction matters more than the number.** `D209` was a deduction from two measurements that agreed, and the
+agreement was a coincidence of arithmetic: 31.1% of the step and 31-37% of a core describe *different* things, one
+being a serial wait and the other four workers' CPU. **`DC-087`'s rule runs in both directions** - a diagnostic
+narrower than the gate reports success - and this is its mirror image: **two numbers that agree are not two
+measurements agreeing unless they are measurements of the same quantity.** The profile is the third measurement,
+and it is the one that decides it.
