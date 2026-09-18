@@ -8970,3 +8970,38 @@ trap list.
 `swift test` reported green throughout and would have continued to, through a failing lint, a warning-emitting build
 and a broken link. **The session's own rule - run the measurement rather than reason about it - had been applied to
 every claim about the engine and to none of the claims about its own work.**
+
+## D257 — The three-node run started, and stopped at two real bugs in this session's own wiring
+
+Both halves were built and deployed to node1, node2 and node3 with a three-node contiguous plan (86/85/85 experts;
+node4 is this machine and cannot open LAN connections, `D172`). The run was attempted and **did not produce a
+measurement**, but it found two defects that no test could have:
+
+**First: the bundle.** Node1 and node2 died with
+
+    error: Metal function missing in library: moe_phase2_down_reduce_k8_remote
+
+because only the executable had been deployed. The `.metal` sources ship as bundle resources and are compiled at
+runtime, so a farm deployment is the binary **and** `TinyTitan_TinyTitan.bundle`. **This is the identical trap this
+session hit once already**, recorded then and repeated here - which is the argument for writing a deployment script
+rather than a `scp` line.
+
+**Second, and it is an ordering bug in the wiring written two rounds ago:** with the bundle in place all three nodes
+reached
+
+    [shard] serving peer expert requests on port 9150
+
+and then all three failed with `Connection refused`. **The server is dispatched asynchronously and `connect()` runs
+immediately after it**, so the connect races the bind and loses. The server is started first - which was the fix last
+round - but *starting* it is not *being ready*, and the gap between dispatching `serve` and it reaching
+`listenAndAccept` is exactly the race.
+
+**Two shapes of fix, and the second is the right one.** A sleep before connecting would work and would be wrong: it
+is a timing assumption dressed as a fix, and on a loaded farm the gap is not bounded. **`ShardPeerSet.connect()`
+should retry a refused connection for a bounded period**, which is what the tests already do by hand - every socket
+test in this module polls the connect because the same race exists there.
+
+**What this says about the eleven rounds of specification.** The call sequence, the buffer placement, the argument
+buffer's third argument, the module decision, the weight trap - all of those were found by reading and were correct
+when written. **The two defects that stopped the run were not in any of them: they were in the deployment and in the
+order two statements execute.** Reading finds what the code says; running finds what it does.
