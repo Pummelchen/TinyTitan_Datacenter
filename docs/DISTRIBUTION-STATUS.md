@@ -378,3 +378,33 @@ contract cannot catch** because each side is internally consistent.
 the unweighted per-expert down output with no new kernel; or add a down-only encode. **The first reuses a kernel that
 is already verified; the second is clearer.** Either way the trap is the same one `D168` records on the requesting
 side, mirrored - and it is worth writing down before the code, because it is invisible in a passing test.
+
+### The serve path has an async/sync seam, and it is the last thing to decide
+
+Two facts that only meet when the code is written:
+
+* **the method belongs on `RealForwardRunner`.** It holds `model: Model` (`:144`), `moe: MoE` (`:173`),
+  `moeActs: MTLBuffer` (`:270`) and the device - everything the serve path needs, and nothing else in the tree has
+  all four;
+* **`model.fetchRoutedExperts(layer:experts:)` is `async throws`** (`ModelExpertIO.swift:266`) while
+  **`ShardExchangeServer.Compute` is synchronous**: `(Int, [Int], [Float]) throws -> [Float]`.
+
+**So the obvious implementation - a synchronous `Compute` that blocks on an async fetch - is the one to avoid.**
+Bridging async to sync inside the server's accept loop means blocking a thread that may be a cooperative-pool thread,
+and **`D197` is this repository's own record of exactly that failure**: `ShardExchangeIntegrationTests` hung for a
+whole session because a blocking accept sat inside a `Task` and starved the very task that had to connect to it. The
+fix there was to move the blocking call to `DispatchQueue.global()`; the same move here would work but hides the
+cost, and the server would then hold a thread per request.
+
+**Two clean ways, and they differ in what they cost:**
+
+1. **Make `Compute` async** - `(Int, [Int], [Float]) async throws -> [Float]` - and let `answer(_:)` await it. The
+   server already runs off the cooperative pool (`D197`), so this is the natural shape and needs no thread to be
+   blocked. It changes `ShardExchangeServer`'s signature and its tests, which is the cost.
+2. **Give the runner a synchronous fetch.** The MoE path already calls `routedExpertBuffers(for:)` and
+   `routedExpertResidentIDs(layer:)` synchronously before falling back to the async fetch, so a synchronous
+   "buffers for these ids, populating the bank if needed" is a shape the engine already contains.
+
+**Neither is chosen here, and the choice should be made deliberately**, because the wrong one produces a server that
+passes its tests and then deadlocks under a real four-node run - which is precisely the failure `D197` cost this
+repository once already.
