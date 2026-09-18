@@ -6369,3 +6369,76 @@ twice the size). The repository measured this before this session began, and `D1
 sharding would reach ~1.7x; the correction came from measuring the term instead of computing it from a bandwidth
 figure. A byte count divided by a peak rate is an upper bound on a cost, never an estimate of it, and the
 repository had already published the measurement that contradicts it.
+
+## D191 — The read is the bottleneck after all: the disk is saturated, and D190 inferred wrongly
+
+Three rounds have now measured the same term three ways, and only the direct ones survive. **`D188` was right,
+`D190` was wrong**, and the reason `D190` was wrong is worth more than either number.
+
+### The measurement that decides it
+
+`iostat -d` sampled while a 64-token decode ran on node3, the reference's install, 40 slots:
+
+    351.65 KB/t  3331 tps  1143.94 MB/s
+    394.62 KB/t  2790 tps  1075.28 MB/s
+    315.65 KB/t  3406 tps  1049.77 MB/s
+    step 8.70 s / 64 tokens = 136 ms  ->  7.358 tok/s
+
+**~1.05-1.14 GB/s sustained on disk0 for the whole decode**, against the device's measured cold sequential rate
+of ~1.65 GB/s. The read path is running at roughly **70% of what the device can do, continuously**, and that is
+the step.
+
+### Why `D190` reached the opposite conclusion from a true measurement
+
+`D190` disabled speculative prefetch, found it worth only ~5%, and concluded the read was "95% hidden". **The
+prefetch setting changes the *order* of the reads, not their *volume*.** With the bus saturated, issuing the
+reads earlier cannot make them cheaper: the same 101.0 MiB/token is read either way, and turning prefetch off
+only removes the small latency benefit of having them in flight sooner. So **+5% for prefetch is exactly what a
+saturated read path predicts**, and `D190` read it as evidence that the reads were free.
+
+**Two more readings agree with the disk number and not with `D190`:**
+
+* **Host CPU is 31-37% of one core of eight** and **device occupancy is ~30%.** Nothing is compute-bound; the
+  machine is *waiting*, and `ps` does not count blocked-on-I/O time as CPU. Both-idle is the signature of an I/O
+  bound step, and `D190` treated it as evidence of host overhead instead.
+* **101.0 MiB/token at the step time is 780 MB/s of read demand**, against the ~1.1 GB/s measured - the same
+  order, the difference being other reads and the accounting of a partial step.
+
+### So the position is `D188`'s, with the numbers it had
+
+    step              139.4 ms
+    expert reads      101.0 MiB/token, ~1.1 GB/s sustained - the dominant term
+    device busy       ~42 ms/step, of which the mixture is ~18 ms
+    host              waiting on the reads, not computing
+
+**The read divides** - a node reads the experts it owns, which is what the plan is for - so the four-node ceiling
+is `D188`'s **~1.4-1.75x**, and `D183`/`D190`'s ~1.0-1.1x is withdrawn. The three ways to move the term remain
+what `D188` said: **divide** it (sharding), **shrink** it (a bigger cache, which `D178` bounds, or replication,
+which `D179` bounds), or **serve it faster** than 1.1 GB/s.
+
+### The lesson, and it is about instruments
+
+Three rounds, three answers, from three instruments measuring one quantity:
+
+| instrument | answer | verdict |
+| --- | --- | --- |
+| byte count ÷ peak bandwidth (`D188`) | ~61 ms exposed | **right in conclusion, wrong in method** - it assumed the peak rate was achieved, and by luck it nearly is |
+| prefetch on/off (`D190`) | read ~free | **wrong** - it measures latency hiding, not volume, and a saturated bus makes it look worthless |
+| `iostat` during decode (`D191`) | **1.1 GB/s sustained** | **direct**: it reads the quantity itself |
+
+**An instrument that measures a *proxy* for the thing can invert the answer when the thing is saturated**, and
+the only defence is to read the quantity directly. `D188`'s arithmetic was an upper bound that happened to be
+close; `D190`'s experiment was a clean measurement of the wrong variable; `iostat` is the measurement that should
+have been taken first.
+
+### What this means for 21 tok/s
+
+    47.6 ms/step needs the read term to fall from ~100 ms to under ~15 ms
+
+Four nodes divide it to ~25 ms; that alone gives about **10-12 tok/s (1.4-1.7x)**. The rest has to come from
+**shrinking the volume** - a larger resident expert set, which the 8 GB budget bounds, or **replication**, which
+`D179` sized at 4.53 GB for R = 64 and is therefore not available either - or from **reading faster than
+1.1 GB/s**, which means the demand reads are not achieving the device's cold rate and the access pattern is the
+thing to fix. That last one is the most promising and the least explored: 350 KB reads at 3,300 IOPS is not a
+sequential pattern, and `D110` is the precedent for what a change of access shape is worth - reading each
+int4 row as a `uint4` instead of a byte at a time was **3.6-4x**.
