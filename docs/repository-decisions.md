@@ -4832,3 +4832,33 @@ earlier mis-scoped delegation (`D142`), the next step does not need a survey to 
 command; the design itself — which node owns which expert, and how the reduction contract (`D17`) maps onto the
 reference's MoE, whose two-kernel structure differs from this repository's — is the next substantial piece of
 work and is not attempted here.
+
+## D153 — The reference already has an *expert cache plan*, so the shard seam is a plan executor, not a read
+
+`PreadExpertStreamer` is 1,391 lines and its surface is a small API over a **slot bank**, not a single read
+function. The parts that matter for distribution:
+
+| member | what it does |
+| --- | --- |
+| `planExpertsCached(experts:)` / `planExpertsCachedIfPossible(experts:)` | decide which of the chosen experts must be fetched and which are resident |
+| `beginExpertCachePlan(_:)` / `executeExpertCachePlan(_:)` | **execute that plan** — this is the read |
+| `expertCachePlanBuffers(_:)`, `expertResidencyResources()`, `residencyEntry(expert:)` | where the bytes land, and what is already there |
+| `adviseExpertCachePlanMisses(_:)`, `adviseExperts(_:)`, `adviseExpertMisses(_:)` | read-ahead advice |
+| `loadExpert(layer:expert:)`, `loadExpertsCached(experts:)` | the simple paths |
+| `statistics()`, `residentExperts()`, `beginPrefetch(experts:)` | instrumentation and prefetch |
+
+**That changes what the port is.** The seam is not "replace a `pread`" — it is **a plan executor**. The reference
+already separates *deciding what to fetch* from *fetching it*, which is exactly the split a shard plan needs:
+
+- `planExpertsCached` is where ownership is decided — an expert owned by a peer is a "miss" locally that a peer
+  will satisfy;
+- `executeExpertCachePlan` is where the bytes come from — local disk today, a socket in a sharded engine;
+- `expertCachePlanBuffers` / `residencyEntry` say where they land, and are unchanged either way.
+
+So the distributed version extends an existing abstraction instead of cutting across one, and the resident-slot
+bookkeeping, read-ahead advice and statistics all keep working. That is a materially better position than `D152`
+implied when it called this "the hook point" on the strength of a filename, and it is why reading the interface
+before designing the shard plan was worth a round.
+
+**Still not started**, and the next real question is the reduction contract: the reference's MoE is its own
+two-kernel structure, so this repository's `D17` reduction has to be mapped onto it rather than assumed.
