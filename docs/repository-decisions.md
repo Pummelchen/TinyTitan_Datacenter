@@ -9774,3 +9774,35 @@ generating** - `--shard-serve` alone, as `D257`'s design already allows - and se
 rather than 2.95. **If it does, the serving penalty is contention and the answer is scheduling; if it does not, it is
 the command-buffer round trip and the answer is fewer, larger requests.** Either way it is one measurement, and the
 last four rounds have been four changes made before taking it.
+
+## D279 — The contention experiment needs one small flag, and nothing else
+
+`D278` measured a peer request at **2.95 ms of compute** where the same work costs about **0.5 ms** in the
+single-node path, and named the difference as contention: the serving node is running its own forward pass while it
+answers, so its GPU queue is shared and every serve wait is inflated. **The experiment that would settle it is a
+node that serves without generating** - 0.5 ms would mean contention, 2.95 would mean the command-buffer round trip.
+
+**It cannot be run today, for a plain reason.** The CLI has one server and one generation:
+
+    --shard-serve <port>   "Without it a node generates but does not answer."
+    --max-new <n>          how long it generates
+
+so a node **always** generates, and **the process exits when its generation ends** - the server runs in a `Task`, and
+a Task does not keep a process alive once `main` returns. A serving node therefore cannot outlive its own generation,
+which is exactly the state the experiment needs.
+
+**So the blocker is a flag, not a design.** `--shard-serve-only` would skip the generation and await the server
+instead: a handful of lines in `Run.swift`, no change to the exchange, no change to `ShardPlan`, and it uses the
+`--shard-serve` path that `D257` already built and that has run on three nodes. **The server's own signature, its
+`Compute` and its tests are all untouched.**
+
+**And what it would be worth knowing.** If a request costs 0.5 ms on an idle node, then the whole serving penalty is
+**scheduling** - the node's own forward pass competing with the peer's requests - and the answer is to give the
+serving work a lane of its own rather than to make it cheaper. If it still costs 2.95 ms, the cost is the
+command-buffer round trip itself and the answer is fewer and larger requests, which is a different change with a
+different budget. **Either answer is one measurement, and this session has now spent five rounds changing the serve
+path before taking it** - the slot width (11%), the batch (9%), the zeroing (nothing), and the two that fixed
+correctness.
+
+**Recorded rather than built** because the flag spans argument parsing, the run path and the exit condition, and a
+half-applied version would leave a node that neither generates nor serves - the worst of both.
