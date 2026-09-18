@@ -313,3 +313,32 @@ error.
 **Then the run.** Four nodes, `--shard-plan`/`--shard-node`/`--shard-peers`, a server per node, and the loads, the
 repeat count with a median, and the generation length recorded together. The prediction is **~8-9 tok/s (about
 1.12x)** and it would falsify the 21 target rather than meet it - which is what the goal asked for.
+
+### The serving `Compute` can be built from pieces that exist, with one thing to get right
+
+Checked before assuming, because the last five rounds were a record of what happens when a nearby buffer is used
+without checking that it is the one the arithmetic used:
+
+* **the MoE kernels are expert-*list* bound, not slot-bank bound.** They take `routedBlobs: [MTLBuffer]` and
+  `routedOffsets: MoEExpertOffsets` (`MoE.swift:330`, `:393`, and `MoEExpertOffsets` at `:9`), so a peer can
+  evaluate **any** expert list it is asked for rather than only what occupies its own layer's slots;
+* **`fetchRoutedExperts(layer:experts:)` exists** (`ModelExpertIO.swift:266`) and takes explicit expert ids - the
+  same entry point the request path already uses, so a `Compute` shares the node's cache by construction rather than
+  by discipline;
+* **the argument buffer is built by `makeRoutedArgumentBuffer(routedBlobs:...)`**, which validates the blobs against
+  `topK` before encoding.
+
+**So the shape is:** `fetchRoutedExperts` for the requested ids -> `makeRoutedArgumentBuffer` -> phase 1 with the
+supplied activation as `x:` and a scratch as `acts:` -> a down projection -> read back `[Float]`.
+
+**And the one thing to get right is the down projection, because the existing one does three jobs at once.**
+`encodeRoutedPersistentPhase2Reduce` applies the **routing weight**, **reduces** across slots and folds in the
+residual - and a peer must send the **unweighted per-expert output**, because `D154`/`D168` put the weight on the
+side that owns the router's decision, which is the requester. A `Compute` built on the reduce would send
+`w * value` and the requester would multiply by `w` again: **a wrong number, silently, and one the bit-exactness
+contract cannot catch** because each side is internally consistent.
+
+**Two ways to get it.** Run the existing phase 2 with **unit routing weights** and `k = 1` per expert, which yields
+the unweighted per-expert down output with no new kernel; or add a down-only encode. **The first reuses a kernel that
+is already verified; the second is clearer.** Either way the trap is the same one `D168` records on the requesting
+side, mirrored - and it is worth writing down before the code, because it is invisible in a passing test.
