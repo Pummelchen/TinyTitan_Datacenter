@@ -5353,3 +5353,43 @@ four Mac minis, and the arithmetic says that is **not** reachable over Wi-Fi und
 needs a wired LAN, and probably exchange/compute overlap on top of it. This is recorded now, from the model's own
 config and `D155`/`D158`'s measurements, rather than discovered after building the transport — and it is
 **arithmetic, not a measurement of a sharded run**, which does not exist yet.
+
+## D166 — Expert replication is the lever that reaches ≥21 tok/s on this link, and it keeps bit-exactness
+
+`D165` concluded the target is unreachable over Wi-Fi. That was the answer for **partitioned** experts; the
+design space has one more axis, and it closes the gap.
+
+**The exchange exists only because a node does not have the expert.** So a node that holds **more** experts
+exchanges less, and the cheapest way to hold more is to **replicate** a set — the same set on every node — so
+that more of the top-8 are already local. No arithmetic changes; the expert is simply computed where it already
+lives. At bf16 contributions, 2048-wide, over the measured 40 MB/s:
+
+| replicated | local share | non-owned slots | MB/step | exchange | step | tok/s | extra MB/node |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | 25.0% | 6.0 | 0.98 | 24.6 ms | 59.9 ms | 16.7 | 0 |
+| 32 | 37.5% | 5.0 | 0.82 | 20.5 ms | 55.8 ms | 17.9 | 58 |
+| 64 | 50.0% | 4.0 | 0.66 | 16.4 ms | 51.7 ms | 19.3 | 116 |
+| **96** | **62.5%** | **3.0** | **0.49** | **12.3 ms** | **47.6 ms** | **21.0** | **175** |
+| 128 | 75.0% | 2.0 | 0.33 | 8.2 ms | 43.5 ms | 23.0 | 233 |
+| 160 | 87.5% | 1.0 | 0.16 | 4.1 ms | 39.4 ms | 25.4 | 291 |
+
+**96 replicated experts reaches 21.0 tok/s at 175 MB per node** — and that is on the same optimistic compute
+floor `D165` used, so it is an upper bound on the whole table, not a prediction of any row.
+
+**Why replication rather than a cheaper encoding.** Quantising the contribution to int8 would halve the bytes for
+free and is the obvious move — and it **breaks I3**. The engine's bit-exactness is that a sharded forward
+produces the *identical* trace to a single-node one, and a quantised contribution is a different number.
+Replication sends **nothing extra at all** and computes the *same* expert with the *same* weights, so the trace is
+untouched by construction. There is a version of this trade where the wire format is negotiable and this is not
+one of them.
+
+**Two costs, stated rather than buried.** 175 MB is ~6% of the reference's own 3 GB expert-cache optimum
+(`D161`), on a machine whose whole problem is that memory is scarce — so it competes with the cache that produces
+the 7 tok/s in the first place, and that interaction is **not** modelled here. And the replicated set must be
+**identical on every node**, which makes it part of the agreed plan rather than a per-node choice: the ported
+`ShardPlan` (`D162`) has no notion of replication, so the plan format needs a replicated set before any of this is
+implementable.
+
+**Still arithmetic, not measurement.** Same caveats as `D165` and the same direction: perfect 4-way compute
+scaling is assumed, no overlap is modelled, and the link figure is this Wi-Fi pair. The contribution here is that
+the target is **reachable in principle on this link**, with a named cost and a named next artifact.
