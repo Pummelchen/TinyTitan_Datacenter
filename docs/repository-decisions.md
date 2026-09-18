@@ -4405,3 +4405,24 @@ Both are recorded because the same two shapes will recur for every other model k
 "both widths" whatever the key looks like, and any tool run outside the installer needs its interpreter given
 to it. Neither produces a useful error first — one silently spends disk, the other names a Python that is not
 the one you set.
+
+## D140 — The disk watchdog could not name the job that was filling the disk
+
+Running the reference's installer from this node exposed a hole in this repository's own guard, and it is the
+kind that matters on a machine that has already panicked over disk (`D58`).
+
+**`tools/disk_watchdog.py` stops processes by matching `HEAVY_PATTERNS`, and every pattern in that list named
+a tool of *this* repository** — `tools/quantize.py`, `datacenter-generate`, `tools/run_m1_gate.py`, and so on.
+Nothing matched `prepare_agentworld.py`, `install_models.sh` or `TinyTitanRepack`, which are the tools that were
+in fact writing ~20 GB. So the watchdog would have done half its job: three readings below the floor, a
+`.build/DISK_STOP` marker written, and **nothing stopped** — the repack running to completion while the disk
+filled.
+
+Two things make it worse than a missing pattern. The marker is written under *this* repository's `.build/`,
+while the repack writes under the *fork's*, so even the marker would not have reached it. And the guard's own
+comment says the machine is shared — *"the harness that runs this agent is also a Python process"* — which is
+exactly the argument for knowing every writer rather than only the ones that live here.
+
+The reference's converters and installer are now in `HEAVY_PATTERNS`. This is the same class as `D132`: a
+check whose configuration is a list goes stale the moment work moves outside the assumed boundary, and the
+thing that moved was the whole deliverable (`D135`).

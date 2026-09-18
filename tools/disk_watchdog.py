@@ -53,6 +53,16 @@ HEAVY_PATTERNS = (
     "tools/check_engine_generation.py",
     "tools/make_tiny",
     "tools/repair_install_provenance.py",
+    # **The reference's installers, because they are now run from this node** (`D140`). `HEAVY_PATTERNS` listed
+    # only this repository's own tools, so a 20 GB `prepare_agentworld.py` repack would have run to completion
+    # with the watchdog unable to name it: the marker would be written and nothing would be stopped. Disk is a
+    # shared resource and this node has panicked on it before (`D58`), so the guard has to know every writer,
+    # not only the ones that live here.
+    "prepare_agentworld.py",
+    "prepare_qwen35.py",
+    "prepare_qwen38.py",
+    "install_models.sh",
+    "TinyTitanRepack",
 )
 
 
