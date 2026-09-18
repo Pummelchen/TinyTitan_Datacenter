@@ -88,6 +88,13 @@ public enum MetalInt4Matmul {
 
     private static let buffers = MetalBufferCache()
 
+    /// **A second cache, not the one above** (`D114`). `MetalBufferCache` keeps a *set* of slots and
+    /// reallocates all of them whenever the request **count** changes, which is right for one caller with one
+    /// request shape. The single form asks for 5 buffers, and the dense projections share exactly that shape;
+    /// the batch asks for `5 x experts`. Pointing both at one cache made every alternation between them
+    /// rebuild the whole set, which measured **2.47 s/step against 0.92** — so each shape gets its own.
+    static let batchBuffers = MetalBufferCache()
+
     /// `x` is `[rows, k]` and the payload is the int4 form of an `[out, k]` matrix, `out` being the
     /// layout's row count — one expert's projection in the engine's own use. The result is `[rows, out]`.
     ///
@@ -161,6 +168,101 @@ public enum MetalInt4Matmul {
 
             let raw = outBuffer.contents().bindMemory(to: Float.self, capacity: values)
             return Array(UnsafeBufferPointer(start: raw, count: values))
+        }
+    }
+
+    /// `matmul` for several payloads in **one command buffer** (`D114`).
+    ///
+    /// A decode step issues **640** of these — 8 experts x 2 projections x 40 layers — and the single form
+    /// builds a command buffer, commits it and **blocks** on it each time. At these shapes the kernel is a few
+    /// microseconds of a ~0.3 ms call, so the wait is the cost and the GPU is idle for the handoff on every
+    /// one. A layer's experts are independent and (in decode) share `x`, so they are encoded back to back and
+    /// waited for once.
+    ///
+    /// Every item must have the **same shape**, because the outputs are read back together and the caller is a
+    /// mixture layer whose experts are one shape by construction; anything else is refused rather than
+    /// silently mis-indexed. Each item's arithmetic is `matmul`'s, unchanged — the same ascending-k chain and
+    /// the same one rounding per multiply and add.
+    public static func matmulBatch(
+        _ items: [(payload: Data, entry: InstallFile.Entry, rowCount: Int?, x: [Float])], rows: Int
+    ) throws -> [[Float]] {
+        guard let first = items.first else { return [] }
+        let shape = try InstallFile.int4Layout(
+            entry: first.entry, rowCount: first.rowCount, payloadBytes: first.payload.count
+        )
+        let values = rows * shape.rows
+        var layouts: [InstallFile.Int4Layout] = []
+        layouts.reserveCapacity(items.count)
+        for item in items {
+            let layout = try InstallFile.int4Layout(
+                entry: item.entry, rowCount: item.rowCount, payloadBytes: item.payload.count
+            )
+            guard layout.rows == shape.rows, layout.columns == shape.columns, layout.group == shape.group,
+                layout.padded == shape.padded, layout.groups == shape.groups,
+                layout.codeBytes == shape.codeBytes, layout.scaleBytes == shape.scaleBytes
+            else { throw Error.shapeMismatch("matmulBatch needs one shape") }
+            guard item.x.count == rows * shape.columns else {
+                throw Error.shapeMismatch("x has \(item.x.count) values, \(rows)x\(shape.columns) needs \(rows * shape.columns)")
+            }
+            layouts.append(layout)
+        }
+        guard rows >= 0, shape.columns >= 0, shape.rows >= 0 else {
+            throw Error.shapeMismatch("negative shape \(rows)x\(shape.columns)x\(shape.rows)")
+        }
+        guard values > 0 else { return items.map { _ in [] } }
+        if shape.columns == 0 { return items.map { _ in [Float](repeating: 0, count: values) } }
+
+        let pipeline = try Self.pipeline.current()
+        let zeroBytes = shape.rows * shape.groups
+        let perItem = [shape.codeBytes, shape.scaleBytes, zeroBytes, rows * shape.columns * 4, values * 4]
+        return try Self.batchBuffers.withBuffers(items.indices.flatMap { _ in perItem }, device: pipeline.device) { cached in
+            guard let command = pipeline.queue.makeCommandBuffer(),
+                  let encoder = command.makeComputeCommandEncoder()
+            else { throw Error.commandFailed("could not make a command buffer") }
+            encoder.setComputePipelineState(pipeline.state)
+            var dims = SIMD4<UInt32>(UInt32(rows), UInt32(shape.columns), UInt32(shape.rows), UInt32(shape.group))
+            var extra = SIMD4<UInt32>(UInt32(shape.padded), UInt32(shape.groups), 0, 0)
+            let width = pipeline.state.threadExecutionWidth
+            for (index, item) in items.enumerated() {
+                let base = index * perItem.count
+                let codes = cached[base], scales = cached[base + 1], zeros = cached[base + 2]
+                let xBuffer = cached[base + 3], outBuffer = cached[base + 4]
+                item.payload.copyBytes(
+                    to: codes.contents().assumingMemoryBound(to: UInt8.self), from: 0..<shape.codeBytes
+                )
+                item.payload.copyBytes(
+                    to: scales.contents().assumingMemoryBound(to: UInt8.self),
+                    from: shape.codeBytes..<(shape.codeBytes + shape.scaleBytes)
+                )
+                item.payload.copyBytes(
+                    to: zeros.contents().assumingMemoryBound(to: UInt8.self),
+                    from: (shape.codeBytes + shape.scaleBytes)..<(shape.codeBytes + shape.scaleBytes + zeroBytes)
+                )
+                item.x.withUnsafeBytes { source in
+                    if let address = source.baseAddress, rows * shape.columns > 0 {
+                        xBuffer.contents().copyMemory(from: address, byteCount: rows * shape.columns * 4)
+                    }
+                }
+                encoder.setBuffer(codes, offset: 0, index: 0)
+                encoder.setBuffer(scales, offset: 0, index: 1)
+                encoder.setBuffer(zeros, offset: 0, index: 2)
+                encoder.setBuffer(xBuffer, offset: 0, index: 3)
+                encoder.setBuffer(outBuffer, offset: 0, index: 4)
+                encoder.setBytes(&dims, length: MemoryLayout<SIMD4<UInt32>>.size, index: 5)
+                encoder.setBytes(&extra, length: MemoryLayout<SIMD4<UInt32>>.size, index: 6)
+                encoder.dispatchThreads(
+                    MTLSize(width: values, height: 1, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
+                )
+            }
+            encoder.endEncoding()
+            command.commit()
+            command.waitUntilCompleted()
+            if let error = command.error { throw Error.commandFailed("\(error)") }
+            return items.indices.map { index in
+                let raw = cached[index * perItem.count + 4].contents().bindMemory(to: Float.self, capacity: values)
+                return Array(UnsafeBufferPointer(start: raw, count: values))
+            }
         }
     }
 

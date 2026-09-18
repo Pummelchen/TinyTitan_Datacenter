@@ -157,6 +157,20 @@ public enum MixtureOfExperts {
         // (`DC-118`). The provider decides whether it has anywhere to put the bytes.
         let chosen = pairs.keys.sorted().filter { provider.serves($0) }
         provider.preload(experts: chosen, shape: shape)
+
+        // **A layer's experts are independent, so they are asked for in one dispatch** (`D114`). Each of the
+        // 640 fused calls a decode step makes builds a command buffer, commits it and blocks on it, and at
+        // these shapes the kernel is a few microseconds of a ~0.3 ms call: the wait is the cost, and the GPU
+        // is idle for the handoff on every one. The batch is taken only when every chosen expert was routed
+        // the **same number of rows** — every decode step, not every prefill — and the single-expert calls
+        // below remain as the fallback, so a provider with no batch, a checkpoint, the tiny fixtures and an
+        // A/B control all take exactly the path they took before.
+        var currents: [[Float]] = []
+        currents.reserveCapacity(chosen.count)
+        // The **row** count, which is the assignment count and not `current.count` — the gathered vector is
+        // `rows * hiddenSize` long, and passing that as `rows` is a shape the batch refuses rather than
+        // mis-reads. It is tracked beside the vectors for that reason.
+        var rowCounts: [Int] = []
         for expert in chosen {
             let assignments = pairs[expert]!
             var current = [Float](repeating: 0, count: assignments.count * hiddenSize)
@@ -165,47 +179,72 @@ public enum MixtureOfExperts {
                     current[position * hiddenSize + index] = hidden[assignment.token * hiddenSize + index]
                 }
             }
-            profiler?.mark("mix.gather")
+            currents.append(current)
+            rowCounts.append(assignments.count)
+        }
+        profiler?.mark("mix.gather")
+        let rows = rowCounts.first ?? 0
+        let uniform = !chosen.isEmpty && rowCounts.allSatisfy { $0 == rows }
+        let gateUps = uniform
+            ? try provider.gateUpProducts(currents, rows: rows, experts: chosen, shape: shape) : nil
+        profiler?.mark("mix.read")
+        // Kept at its old meaning — the gap between fetching a projection and multiplying it — which in the
+        // fused path is nothing at all. It stays because the phase names are a published shape.
+        profiler?.mark("mix.gateup")
+
+        var activateds: [[Float]] = []
+        activateds.reserveCapacity(chosen.count)
+        for (index, expert) in chosen.enumerated() {
+            let assignments = pairs[expert]!
             // **The stored form first** (`D109`). The provider answers `nil` when it has no packed form, when
             // the device is off or when the switch is off, and the fallback is the previous sequence — fetch
             // the projection, then the contract matmul — so a checkpoint, the tiny fixtures and an A/B control
             // all take exactly the path they took before. The phase marks move with the work: a fused product
             // reads *and* multiplies, so its read is booked to `mix.read` and `mix.gateup` is nearly empty.
             let gateUpProduct: [Float]
-            if let stored = try provider.gateUpProduct(
-                x: current, rows: assignments.count, expert: expert, shape: shape
+            if let stored = gateUps?[index] {
+                gateUpProduct = stored
+            } else if let stored = try provider.gateUpProduct(
+                x: currents[index], rows: assignments.count, expert: expert, shape: shape
             ) {
                 gateUpProduct = stored
             } else {
                 let gateUp = try provider.gateUp(expert: expert, shape: shape)
                 gateUpProduct = MetalMatmul.ordered(
-                    x: current, w: gateUp, rows: assignments.count, k: hiddenSize, out: 2 * intermediate
+                    x: currents[index], w: gateUp, rows: assignments.count, k: hiddenSize, out: 2 * intermediate
                 )
             }
-            profiler?.mark("mix.read")
-            let fused = gateUpProduct
-            profiler?.mark("mix.gateup")
             var activated = [Float](repeating: 0, count: assignments.count * intermediate)
             for row in 0..<assignments.count {
-                for index in 0..<intermediate {
-                    let gate = fused[row * 2 * intermediate + index]
-                    let up = fused[row * 2 * intermediate + intermediate + index]
-                    activated[row * intermediate + index] = Ops.silu(gate) * up
+                for column in 0..<intermediate {
+                    let gate = gateUpProduct[row * 2 * intermediate + column]
+                    let up = gateUpProduct[row * 2 * intermediate + column + intermediate]
+                    activated[row * intermediate + column] = Ops.silu(gate) * up
                 }
             }
-            profiler?.mark("mix.act")
+            activateds.append(activated)
+        }
+        profiler?.mark("mix.act")
+
+        let downProducts = uniform
+            ? try provider.downProducts(activateds, rows: rows, experts: chosen, shape: shape) : nil
+        profiler?.mark("mix.down")
+
+        for (index, expert) in chosen.enumerated() {
+            let assignments = pairs[expert]!
             let projected: [Float]
-            if let stored = try provider.downProduct(
-                x: activated, rows: assignments.count, expert: expert, shape: shape
+            if let stored = downProducts?[index] {
+                projected = stored
+            } else if let stored = try provider.downProduct(
+                x: activateds[index], rows: assignments.count, expert: expert, shape: shape
             ) {
                 projected = stored
             } else {
                 let down = try provider.down(expert: expert, shape: shape)
                 projected = MetalMatmul.ordered(
-                    x: activated, w: down, rows: assignments.count, k: intermediate, out: hiddenSize
+                    x: activateds[index], w: down, rows: assignments.count, k: intermediate, out: hiddenSize
                 )
             }
-            profiler?.mark("mix.down")
             for (position, assignment) in assignments.enumerated() {
                 let base = position * hiddenSize
                 contributions.append(

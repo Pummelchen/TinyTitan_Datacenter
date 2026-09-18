@@ -49,6 +49,14 @@ public protocol ExpertWeightProvider {
     func gateUpProduct(x: [Float], rows: Int, expert: Int, shape: MixtureShape) throws -> [Float]?
     /// The down projection's product, on the same terms as `gateUpProduct`.
     func downProduct(x: [Float], rows: Int, expert: Int, shape: MixtureShape) throws -> [Float]?
+
+    /// The same products for several experts in **one dispatch**, or nil when this provider cannot (`D114`).
+    ///
+    /// `xs[i]` is the input for `experts[i]`, every one `rows` tall. Deliberately an all-or-nothing answer on
+    /// the same terms as the single form: a provider that cannot batch has not lost a capability, and the
+    /// caller's fallback is the per-expert call it would have made anyway.
+    func gateUpProducts(_ xs: [[Float]], rows: Int, experts: [Int], shape: MixtureShape) throws -> [[Float]]?
+    func downProducts(_ xs: [[Float]], rows: Int, experts: [Int], shape: MixtureShape) throws -> [[Float]]?
     /// Read these experts' **stored** forms ahead of the loop, the packed counterpart of `preload` (`D109`).
     ///
     /// `preload` warms a bank of fp32 slices; when the fused path is on there are no fp32 slices to warm, so
@@ -68,6 +76,8 @@ extension ExpertWeightProvider {
     public func preload(experts: [Int], shape: MixtureShape) {}
     public func gateUpProduct(x: [Float], rows: Int, expert: Int, shape: MixtureShape) throws -> [Float]? { nil }
     public func downProduct(x: [Float], rows: Int, expert: Int, shape: MixtureShape) throws -> [Float]? { nil }
+    public func gateUpProducts(_ xs: [[Float]], rows: Int, experts: [Int], shape: MixtureShape) throws -> [[Float]]? { nil }
+    public func downProducts(_ xs: [[Float]], rows: Int, experts: [Int], shape: MixtureShape) throws -> [[Float]]? { nil }
     public func preloadPacked(experts: [Int], shape: MixtureShape) {}
     public var servesPacked: Bool { false }
 }
@@ -145,6 +155,38 @@ public struct StackedExpertProvider: ExpertWeightProvider {
 
     public func downProduct(x: [Float], rows: Int, expert: Int, shape: MixtureShape) throws -> [Float]? {
         try product(x: x, rows: rows, expert: expert, name: downName, out: shape.hiddenSize)
+    }
+
+    public func gateUpProducts(_ xs: [[Float]], rows: Int, experts: [Int], shape: MixtureShape) throws -> [[Float]]? {
+        try products(xs, rows: rows, experts: experts, name: gateUpName, out: 2 * shape.intermediate)
+    }
+
+    public func downProducts(_ xs: [[Float]], rows: Int, experts: [Int], shape: MixtureShape) throws -> [[Float]]? {
+        try products(xs, rows: rows, experts: experts, name: downName, out: shape.hiddenSize)
+    }
+
+    /// One dispatch for a whole layer's experts (`D114`). Nil — never a partial answer — when this source has
+    /// no packed form for any one of them, so the caller's fallback is the path it already had.
+    private func products(
+        _ xs: [[Float]], rows: Int, experts: [Int], name: String, out: Int
+    ) throws -> [[Float]]? {
+        guard MetalInt4Matmul.enabled, MetalInt4Matmul.isAvailable, !experts.isEmpty,
+            xs.count == experts.count
+        else { return nil }
+        var items: [(payload: Data, entry: InstallFile.Entry, rowCount: Int?, x: [Float])] = []
+        items.reserveCapacity(experts.count)
+        for (index, expert) in experts.enumerated() {
+            guard let packed = try source.packedRows(named: name, range: expert..<(expert + 1)) else { return nil }
+            items.append((packed.payload, packed.entry, packed.payloadRows, xs[index]))
+        }
+        let products = try MetalInt4Matmul.matmulBatch(items, rows: rows)
+        guard products.count == experts.count, products.allSatisfy({ $0.count == rows * out }) else {
+            throw ExpertProviderError.unexpectedWidth(
+                tensor: name, expert: experts.first ?? -1,
+                got: products.first?.count ?? 0, expected: rows * out
+            )
+        }
+        return products
     }
 
     /// `D101`'s fan-out, against the **packed** slabs rather than a bank of `[Float]`.
@@ -394,6 +436,22 @@ public final class ExpertSlotCache: ExpertWeightProvider {
         }
         countFused()
         return product
+    }
+
+    public func gateUpProducts(_ xs: [[Float]], rows: Int, experts: [Int], shape: MixtureShape) throws -> [[Float]]? {
+        guard let products = try upstream.gateUpProducts(xs, rows: rows, experts: experts, shape: shape) else {
+            return nil
+        }
+        for _ in products { countFused() }
+        return products
+    }
+
+    public func downProducts(_ xs: [[Float]], rows: Int, experts: [Int], shape: MixtureShape) throws -> [[Float]]? {
+        guard let products = try upstream.downProducts(xs, rows: rows, experts: experts, shape: shape) else {
+            return nil
+        }
+        for _ in products { countFused() }
+        return products
     }
 
     /// The fused path counts a **request** and nothing else.

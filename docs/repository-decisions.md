@@ -3459,3 +3459,51 @@ that the page cache is not holding (it is being squeezed by the 2.6 GB of anonym
 `mix.read` + `mix.down` ~340 ms of **640 synchronous fused dispatches**. One command buffer per layer instead
 of one wait per expert is the next change, and the kernel is now fast enough for batching to be the whole
 question rather than a rounding error on top of a slow kernel.
+
+## D114 — A layer's experts are independent, so they are asked for in one dispatch
+
+The decode step issued **640 fused calls per token** — 8 experts x 2 projections x 40 layers — and each one
+built a command buffer, committed it and **blocked** on it. At these shapes the kernel is a few microseconds
+of the call: `D110`'s probe put `1024x2048` at 0.303 ms and `2048x512` at 0.202 ms, and the layer's arithmetic
+is microseconds. The wait was the cost, and the GPU was idle for the handoff on every one of the 640. A
+layer's experts are independent and in decode share `x`, so they are now encoded back to back into **one**
+command buffer and waited for once — 80 batch dispatches a step instead of 640 waits.
+
+`MetalInt4Matmul.matmulBatch` encodes `items.count` dispatches into one buffer, then waits, then reads all the
+outputs back. Every item must have the **same shape**, because the outputs are read back together and a
+mixture layer's experts are one shape by construction; anything else is **refused**. Each item's arithmetic is
+`matmul`'s, unchanged.
+
+| | `mix.read` | `mix.down` | step | tok/s |
+| --- | --- | --- | --- | --- |
+| `D113` | 179 ms | 151 ms | 0.919 s | 1.089 |
+| batched | **84 ms** | **52 ms** | **0.722 s** | **1.384** |
+
+Three runs, digest `ed5e0328c087e4db…` in all: 0.712, 0.722, 0.731 s/step. 266 Swift tests, 0 failures.
+
+**The batch is taken only when every chosen expert was routed the same number of rows** — `xs[i].count /
+hiddenSize` equal across the layer, which is **every decode step and not every prefill**, where the experts'
+assignment counts differ. When it is not uniform the single-expert calls run exactly as before, so a
+checkpoint, the tiny fixtures and an A/B control keep the path they had.
+
+**Two bugs on the way, and the first is the one worth remembering.**
+
+The batch asks its buffer cache for `5 x experts` buffers; the single form and the dense projections ask for
+5. Both went to the **same** `MetalBufferCache`, whose contract is that it keeps a *set* of slots and
+reallocates **all of them** whenever the request **count** changes. So every alternation between a dense
+projection and an expert batch rebuilt the whole set — measured at **2.47 s/step against 0.92**, with
+`mix.gather` alone at 1079 ms, which is nowhere near the code that was changed. The batch now has its own
+cache (`MetalInt4Matmul.batchBuffers`). This is the `D101` shape again: a cost that appears in a phase that
+has nothing to do with it, and a shared cache whose sizing assumption was never written down.
+
+The second was that the batch's `rows` was taken from `current.count` — the gathered vector, which is
+`rows * hiddenSize` long — rather than from the assignment count. `matmulBatch`'s shape check **refused** it
+(`x has 2048 values, 2048x2048 needs 4194304`) instead of multiplying a mis-shaped matrix, which is the whole
+argument for validating the batch's shape rather than trusting the caller.
+
+**What is left.** The step is 722 ms and the largest single phase is now `mix.gather` at **245 ms**, which is
+the expert read — 582 MB a step that is a device read because the page cache is not holding it. `attn.core` is
+147 ms and `head` 110 ms. The lever the sister project uses is **residency**: its 3 GB expert cache is what
+takes it to 7 tok/s, and this node's usable memory is why `D106` and `D113` both refused an anonymous cache
+that size. Getting there needs the expert working set to be resident in *clean, evictable* pages rather than
+in the process, which is a change to how the install is read, not to how it is multiplied.

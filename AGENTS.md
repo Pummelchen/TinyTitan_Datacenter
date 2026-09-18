@@ -199,6 +199,17 @@ payload and not the head, so both re-read every step. Zero is better than either
 uniformly. **2048 MiB is near-minimal and load-bearing** — 1965 MiB of content against a 2048 ceiling — not a
 knob. What remains is ~260 ms of device reads the page cache cannot hold and ~340 ms of 640 synchronous
 dispatches.
+**Then the 640 dispatches became 80 (`D114`).** Each fused call built a command buffer, committed it and
+**blocked** on it, and at these shapes the kernel is microseconds of a ~0.3 ms call — the wait was the cost. A
+layer's experts are independent, so `MetalInt4Matmul.matmulBatch` encodes them into **one** command buffer and
+waits once: `mix.read` **179 -> 84 ms**, `mix.down` **151 -> 52 ms**, step **0.919 -> 0.722 s**, **1.384
+tok/s**. The batch is taken only when every chosen expert was routed the same number of rows — every decode
+step, not every prefill — and the single-expert calls remain the fallback. The bug worth remembering: the
+batch's 40-buffer request and the dense projections' 5-buffer request shared one `MetalBufferCache`, whose
+contract is to reallocate its **whole set** when the request count changes, so every alternation rebuilt
+everything — **2.47 s/step against 0.92**, with the damage showing in `mix.gather`, a phase the change never
+touched. The largest phase is now `mix.gather` at **245 ms** — the expert read, which the page cache is not
+holding — and residency is the lever that remains.
 
 ## Scope of this checkout
 
@@ -517,6 +528,13 @@ any failure.
   The fix is one function that decides the name, used by the stager and the launcher alike; the test that
   matters is the one that reads **both** files and refuses the literal anywhere, because the defect was the two
   halves disagreeing and a test of either half alone passes (`D83`).
+- **A grow-only cache is only grow-only for one caller.** `MetalBufferCache` keeps a *set* of slots and
+  reallocates **all of them** whenever the request **count** changes, which is a fine contract for one caller
+  that always asks for the same number of buffers. Two callers with different shapes sharing it — the dense
+  projections asking for 5 and the expert batch asking for 40 — made every alternation rebuild the whole set,
+  and it presented as a **2.7x slowdown in a phase the change never touched** (`mix.gather` at 1079 ms) rather
+  than as an allocation. A shared cache's sizing assumption belongs in the cache, or the callers need separate
+  caches; and when a change makes everything slower, suspect the thing that is *shared* (`D114`).
 - **A pipe hides the exit status of the thing you are testing, and it has now happened three times in one
   session.** `swift test | tail` on a failing suite; `datacenter-generate … | tail -3` on a run whose *token
   line* was the thing being verified; and `run_m3_gate.py … | tail` on a gate that had **crashed** — each
