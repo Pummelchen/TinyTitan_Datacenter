@@ -3316,3 +3316,56 @@ excused.**
 tests, 0 failures; the three tests that asserted the old bank-only mechanism now assert the saving rather
 than the configuration. The objective is still 7 tok/s (143 ms), so what remains is the same list `D109`
 left: the expert read, `load`'s fp32 decode, and the per-layer dispatch structure.
+
+## D111 — The page cache is worth having, and the dense int4 projections should never have been decoded
+
+Two changes, both measured, and one bug found between them that would have made the second a trade rather
+than a win.
+
+**The install can now be read through the kernel's buffer cache** (`SHARD_INSTALL_CACHED`, on by default;
+`=0` restores `F_NOCACHE`). `UncachedFile`'s rule was written for a **sequential scan of a file larger than the
+machine** — the 20 GB verification that filled the page cache, grew swap, and is why `D58` exists. A decode step
+is the opposite access pattern: a **582 MB working set of expert slabs that repeats every token**, whose pages
+are read-only, clean and evictable. Measured, `mix.gather` (the preload read):
+
+| state | `mix.gather` | step |
+| --- | --- | --- |
+| cold cache, `F_NOCACHE` | 469 ms | 1.456 s |
+| warm cache | **266-286 ms** | **1.31-1.38 s** |
+
+A clean cold A/B is **not available on this node**: `purge` needs root, and once any run has populated the
+cache the `F_NOCACHE` arm reads the warm pages too — so the honest statement is the cold/warm contrast above,
+and that the switch is what *populates* the cache on a fresh node. Peak RSS (2.9-3.0 GB), free disk and swap
+were all unchanged across the runs, which is the part that matters: the pages are being reclaimed, not swapped.
+
+**The three Gated DeltaNet int4 projections now come from their stored form.** `linear.in_qkv`, `linear.in_z`
+and `linear.out` are **581 MB of the install's 738 MB of dense int4** — the largest per-step decode in the
+engine — and `MetalInt4Matmul` widens them in registers, so the fp32 array is never built. `MetalInt4Matmul`
+was already bit-exact (`D108`, `D110`), so the trace digest is unchanged. `GatedDeltaNetWeights` carries the
+packed handles beside the arrays, and when one is set its `[Float]` twin is **empty**: `GatedDeltaNet.projection`
+is the only reader of either and refuses to multiply an empty array, falling back to decoding the stored bytes
+on the CPU rather than multiplying nothing onto a `-0.0` accumulator. `load` fell **350 → 119 ms**.
+
+**The bug between them is the one worth recording.** The first version of `packedTensor` went through
+`int4RowsPayload` — the row-range reader — which is right for an expert slab and wrong for a dense tensor whose
+whole payload is already in the cache. It sent **7.5 GB a step** back to the device for bytes that were
+resident, and the only symptom was a counter: reads went **8.46 → 14.28 GB** while the step still looked
+slightly better, because a cached-page disk read is faster than a CPU decode. `packedTensor` now slices
+`payload(entry)`, the same cached whole-tensor bytes the CPU path decodes. The lesson is the one `D101` wrote
+down about volume counting: a re-read disguised as an optimisation shows up in the byte counter and nowhere
+else.
+
+**Result.** Three runs, digest `ed5e0328c087e4db…` in all of them: **1.133, 1.087, 1.079 s/step — median
+1.087 s, 0.920 tok/s**, from 0.682 at the top of the round. 266 Swift tests, 0 failures. The step is now:
+
+| phase | ms/step | what is left in it |
+| --- | --- | --- |
+| `mix.gather` | 299 | the expert read, at ~1.5-2 GB/s with a 256 MiB slab cache |
+| `mix.read` + `mix.down` | 355 | 640 synchronous fused dispatches at ~0.3-0.5 ms each |
+| `attn.core` | 156 | the recurrence plus the attention projections still decoded |
+| `head` | 132 | 1.017 GB bf16 through the GPU GEMV |
+| `load` | 119 | the attention projections and the bf16 tensors, still decoded per step |
+
+The attention projections (`attn.q/k/v/o`, a further 1.02 GB of fp32 a step) are the same change as the GDN
+three and are the next one; after that the dispatch count and the expert read are what stand between this and
+the objective.

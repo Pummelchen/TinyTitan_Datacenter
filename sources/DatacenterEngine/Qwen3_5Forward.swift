@@ -401,7 +401,21 @@ private final class ExpertBankBox: @unchecked Sendable {
             return DecodedLayer(weights: weights, gdn: nil, feedForward: feedForward)
         }
         var gdnWeights: [TensorRole: [Float]] = [:]
+        var packedGDN: [TensorRole: PackedInt4Rows] = [:]
         for role in [TensorRole.linearInQKV, .linearInZ, .linearInA, .linearInB, .linearConv, .linearALog, .linearDTBias, .linearNorm, .linearOut] {
+            // **The three int4 projections come from their stored form when the source has one** (`D111`).
+            // They are 581 MB of the install's 738 MB of dense int4 — the largest per-step decode in the
+            // engine — and the fused kernel widens them in registers, so the fp32 array is never built. The
+            // empty array is the signal that the packed form is authoritative; `GatedDeltaNet.projection` is
+            // the only reader of either and refuses to multiply it. `in_a`, `in_b`, `conv`, `norm`, `a_log`
+            // and `dt_bias` stay decoded: they are tiny, and the recurrence reads them directly on the CPU.
+            if MetalInt4Matmul.enabled, [.linearInQKV, .linearInZ, .linearOut].contains(role),
+                let name = byRole[role], let packed = try source.packedTensor(named: name)
+            {
+                packedGDN[role] = packed
+                gdnWeights[role] = []
+                continue
+            }
             gdnWeights[role] = try load(role)
         }
         weights.merge(gdnWeights) { current, _ in current }
@@ -410,7 +424,9 @@ private final class ExpertBankBox: @unchecked Sendable {
             inB: gdnWeights[.linearInB]!, inA: gdnWeights[.linearInA]!,
             conv: gdnWeights[.linearConv]!, aLog: gdnWeights[.linearALog]!,
             dtBias: gdnWeights[.linearDTBias]!, norm: gdnWeights[.linearNorm]!,
-            outProj: gdnWeights[.linearOut]!
+            outProj: gdnWeights[.linearOut]!,
+            packedInQKV: packedGDN[.linearInQKV], packedInZ: packedGDN[.linearInZ],
+            packedOut: packedGDN[.linearOut]
         )
         return DecodedLayer(weights: weights, gdn: gdn, feedForward: feedForward)
     }

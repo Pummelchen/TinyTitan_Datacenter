@@ -172,6 +172,16 @@ packed slab cache was then swept and **smaller is better**: 256 MiB 1.465 s, 512
 — `D106`'s memory verdict a third time. Five alternated pairs put the fused path at **1.465 s against the
 split path's 1.539**, digest unchanged, at lower peak RSS. Both defaults are now the measured ones. The step
 is **1.465 s, 0.682 tok/s**, 266 tests green.
+**Then the page cache and the dense decodes (`D111`).** Two changes: the install can be read **through** the
+kernel's buffer cache (`SHARD_INSTALL_CACHED`, on by default), which is right for a repeating 582 MB working set
+even though it was wrong for the 20 GB sequential scan `D58` records — cold `mix.gather` **469 ms**, warm
+**266-286**, RSS/disk/swap unchanged; and the three Gated DeltaNet int4 projections (**581 MB of the 738 MB of
+dense int4**) now come from their stored form through the fused kernel, so the fp32 array is never built
+(`load` **350 -> 119 ms**, digest unchanged). The bug between them is the one to remember: the first
+`packedTensor` went through the row-range reader and sent **7.5 GB a step** back to the device for bytes the
+payload cache already held — visible only in the byte counter (reads 8.46 -> 14.28 GB). The step is now
+**1.087 s, 0.920 tok/s**; the attention projections (~1 GB of fp32 a step, the same change), the 640
+synchronous dispatches, and the expert read are what remain.
 
 ## Scope of this checkout
 

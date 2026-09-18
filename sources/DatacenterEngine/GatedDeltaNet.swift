@@ -46,10 +46,24 @@ public struct GatedDeltaNetWeights: Sendable {
     public let norm: [Float]      // [valueHeadDim], stored fp32
     public let outProj: [Float]   // [hidden, valueDim]
 
+    /// The three int4 projections in their **stored** form, when the source had one (`D111`).
+    ///
+    /// When one of these is set its `[Float]` twin is **empty**, because the decode it would hold is exactly
+    /// the cost this avoids. `projection` below is the only thing allowed to read either, and it refuses to
+    /// multiply an empty array — a silently empty weight would multiply as zeros and still look like a tensor.
+    public let packedInQKV: PackedInt4Rows?
+    public let packedInZ: PackedInt4Rows?
+    public let packedOut: PackedInt4Rows?
+
     public init(
         inQKV: [Float], inZ: [Float], inB: [Float], inA: [Float], conv: [Float],
-        aLog: [Float], dtBias: [Float], norm: [Float], outProj: [Float]
+        aLog: [Float], dtBias: [Float], norm: [Float], outProj: [Float],
+        packedInQKV: PackedInt4Rows? = nil, packedInZ: PackedInt4Rows? = nil,
+        packedOut: PackedInt4Rows? = nil
     ) {
+        self.packedInQKV = packedInQKV
+        self.packedInZ = packedInZ
+        self.packedOut = packedOut
         self.inQKV = inQKV
         self.inZ = inZ
         self.inB = inB
@@ -405,6 +419,30 @@ public enum GatedDeltaNet {
     /// The conv follows `causal_conv1d_update:252`: concatenate the window with the new input,
     /// take the convolution with no padding, keep the **last** output, and store the last
     /// `kernel - 1` inputs as the new window.
+    /// A projection's product, from the **stored** form when the layer has one (`D111`).
+    ///
+    /// `values` is empty exactly when `packed` is set: the decode is the cost this avoids, so a layer that can
+    /// serve the packed bytes never materialises them. If the device is unavailable or refuses — a shape the
+    /// kernel cannot take — the stored bytes are decoded on the CPU rather than multiplying nothing, so the
+    /// empty array can never reach `Ops.orderedMatmul`.
+    private static func projection(
+        x: [Float], rows: Int, k: Int, out: Int, values: [Float], packed: PackedInt4Rows?
+    ) -> [Float] {
+        if MetalInt4Matmul.enabled, let packed, values.isEmpty {
+            if let product = try? MetalInt4Matmul.matmul(
+                payload: packed.payload, entry: packed.entry, rowCount: packed.payloadRows, x: x, rows: rows
+            ), product.count == rows * out {
+                return product
+            }
+            if let decoded = try? InstallFile.dequantizeInt4(
+                packed.payload, entry: packed.entry, rowCount: packed.payloadRows
+            ) {
+                return MetalMatmul.ordered(x: x, w: decoded, rows: rows, k: k, out: out)
+            }
+        }
+        return MetalMatmul.ordered(x: x, w: values, rows: rows, k: k, out: out)
+    }
+
     public static func decodeStep(
         hidden: [Float], weights: GatedDeltaNetWeights, shape: GatedDeltaNetShape, state: State
     ) -> [Float] {
@@ -419,7 +457,10 @@ public enum GatedDeltaNet {
         let window = kernel - 1
         let eps = shape.eps
 
-        let mixed = MetalMatmul.ordered(x: hidden, w: weights.inQKV, rows: 1, k: shape.hiddenSize, out: convDim)
+        let mixed = projection(
+            x: hidden, rows: 1, k: shape.hiddenSize, out: convDim,
+            values: weights.inQKV, packed: weights.packedInQKV
+        )
 
         // The window, oldest first, then the new projection: the reference's `torch.cat`.
         var convolved = [Float](repeating: 0, count: convDim)
@@ -441,7 +482,10 @@ public enum GatedDeltaNet {
             for index in 0..<window { state.conv[channel * window + index] = samples[index + 1] }
         }
 
-        let z = MetalMatmul.ordered(x: hidden, w: weights.inZ, rows: 1, k: shape.hiddenSize, out: valueDim)
+        let z = projection(
+            x: hidden, rows: 1, k: shape.hiddenSize, out: valueDim,
+            values: weights.inZ, packed: weights.packedInZ
+        )
         let b = MetalMatmul.ordered(x: hidden, w: weights.inB, rows: 1, k: shape.hiddenSize, out: heads)
         let a = MetalMatmul.ordered(x: hidden, w: weights.inA, rows: 1, k: shape.hiddenSize, out: heads)
 
@@ -515,7 +559,10 @@ public enum GatedDeltaNet {
         }
 
         let normalised = gatedRMSNorm(hidden: core, gate: z, weight: weights.norm, rows: heads, width: headV, eps: eps)
-        return MetalMatmul.ordered(x: normalised, w: weights.outProj, rows: 1, k: valueDim, out: shape.hiddenSize)
+        return projection(
+            x: normalised, rows: 1, k: valueDim, out: shape.hiddenSize,
+            values: weights.outProj, packed: weights.packedOut
+        )
     }
 
     public static func layer(
@@ -554,8 +601,9 @@ public enum GatedDeltaNet {
 
         // The projection is computed for the whole batch, then the conv runs per sequence
         // because it is causal along the sequence axis.
-        var mixed = MetalMatmul.ordered(
-            x: hidden, w: weights.inQKV, rows: batch * length, k: shape.hiddenSize, out: convDim
+        var mixed = projection(
+            x: hidden, rows: batch * length, k: shape.hiddenSize, out: convDim,
+            values: weights.inQKV, packed: weights.packedInQKV
         )
         var convolved = [Float](repeating: 0, count: batch * length * convDim)
         for index in 0..<batch {
@@ -577,8 +625,9 @@ public enum GatedDeltaNet {
         }
         mixed = convolved
 
-        let z = MetalMatmul.ordered(
-            x: hidden, w: weights.inZ, rows: batch * length, k: shape.hiddenSize, out: valueDim
+        let z = projection(
+            x: hidden, rows: batch * length, k: shape.hiddenSize, out: valueDim,
+            values: weights.inZ, packed: weights.packedInZ
         )
         let b = MetalMatmul.ordered(
             x: hidden, w: weights.inB, rows: batch * length, k: shape.hiddenSize, out: heads
@@ -666,8 +715,9 @@ public enum GatedDeltaNet {
             )
             record?("gated_norm_out", normalised, [length * heads, headV])
 
-            let projected = MetalMatmul.ordered(
-                x: normalised, w: weights.outProj, rows: length, k: valueDim, out: shape.hiddenSize
+            let projected = projection(
+                x: normalised, rows: length, k: valueDim, out: shape.hiddenSize,
+                values: weights.outProj, packed: weights.packedOut
             )
             for index2 in 0..<projected.count {
                 output[index * length * shape.hiddenSize + index2] = projected[index2]

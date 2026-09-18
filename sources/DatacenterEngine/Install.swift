@@ -66,6 +66,12 @@ public protocol WeightSource {
     /// default is `nil`, so every source keeps working and a caller falls back to `rows` — a checkpoint
     /// has no packed form at all.
     func packedRows(named name: String, range: Range<Int>) throws -> PackedInt4Rows?
+    /// The **whole** tensor in its stored form, when the source has one (`D111`).
+    ///
+    /// `packedRows` takes a leading-axis range; a dense projection is wanted entire, and its row count lives in
+    /// the source's own manifest rather than in the caller, so the caller has nothing to pass. This is the
+    /// accessor that lets a dense path avoid decoding a weight it is only going to multiply.
+    func packedTensor(named name: String) throws -> PackedInt4Rows?
     /// The **stored** bytes of a row range for a dtype that is not int4 — bf16 above all, which is how the
     /// LM head is held (`D109`).
     ///
@@ -165,6 +171,8 @@ extension WeightSource {
 
     /// A source that holds only fp32 has nothing stored to hand over either.
     public func storedRows(named name: String, range: Range<Int>) throws -> StoredRows? { nil }
+
+    public func packedTensor(named name: String) throws -> PackedInt4Rows? { nil }
 }
 
 extension SafetensorsFile: WeightSource {
@@ -467,7 +475,16 @@ public struct InstallFile: WeightSource {
         self.manifest = manifest
         // Read through `UncachedFile`, not `mmap`: the payload is larger than the machine, and
         // pages cached from it evict everything useful and turn a read into swap pressure.
-        self.blob = try UncachedFile(url: url.appendingPathComponent("data.bin"))
+        //
+        // **`SHARD_INSTALL_CACHED=1` asks the kernel to keep the pages anyway** (`D111`), and the two cases are
+        // not the same access pattern. The hazard `UncachedFile` records is a **sequential scan of the whole
+        // file** — a 20 GB verification — whose pages are never revisited and which evicts everything useful on
+        // the way past. A decode step is the opposite: a **582 MB working set of expert slabs that repeats every
+        // token**, which is what a buffer cache is for, and whose pages are clean and evictable rather than
+        // anonymous. The switch exists so the two can be measured against each other on one binary.
+        self.blob = try UncachedFile(
+            url: url.appendingPathComponent("data.bin"), uncached: !Self.readThroughCacheEnabled
+        )
         var entries: [String: Entry] = [:]
         for entry in manifest.tensors { entries[entry.name] = entry }
         self.entries = entries
@@ -788,6 +805,22 @@ public struct InstallFile: WeightSource {
     /// A row range of a non-int4 tensor is contiguous — the leading axis is the outermost — so the slice is
     /// exact and free. int4 is `packedRows`' business: its sections are not contiguous, so there is no
     /// byte range that means one row.
+    /// `WeightSource.packedTensor`: the whole tensor, which for a dense projection is the only range there is.
+    ///
+    /// **The cached whole-tensor payload, not a row-range read** (`D111`). A dense int4 tensor's three sections
+    /// are contiguous in the file in exactly the order the layout wants, and `payload(entry)` is where the
+    /// install already keeps them; routing this through `int4RowsPayload` sent **7.5 GB a step** back to the
+    /// device for bytes that were resident — a re-read disguised as a decode-avoidance. The cache is what makes
+    /// this an improvement rather than a trade.
+    public func packedTensor(named name: String) throws -> PackedInt4Rows? {
+        let entry = try entry(name)
+        guard entry.dtype == "int4", entry.shape.count >= 2 else { return nil }
+        let data = try payload(entry)
+        return PackedInt4Rows(
+            payload: data, entry: entry, payloadRows: entry.shape.dropLast().reduce(1, *)
+        )
+    }
+
     public func storedRows(named name: String, range: Range<Int>) throws -> StoredRows? {
         let entry = try entry(name)
         guard entry.dtype != "int4", entry.shape.count >= 2 else { return nil }
@@ -951,6 +984,17 @@ public struct InstallFile: WeightSource {
     /// A host with no GPU falls back to the scalar path, so CI runners and a machine without Metal are
     /// unaffected.
     public static let gpuUnpackEnabled = ProcessInfo.processInfo.environment["SHARD_GPU_UNPACK"] != "0"
+
+    /// Whether the payload file is read **through** the kernel's buffer cache rather than with `F_NOCACHE`
+    /// (`D111`). **On by default, and measured**; `SHARD_INSTALL_CACHED=0` restores the bypass.
+    ///
+    /// The doc comment on `UncachedFile` is about a sequential scan of a file larger than the machine; a decode
+    /// step is a repeating working set, which is the case a buffer cache is designed for. What has to be true
+    /// for this to be a win rather than the panic `D58` records is that the cached pages are **clean and
+    /// evictable** — they are, since the file is opened read-only and never written — so the kernel reclaims
+    /// them instead of growing swap. The measurement is what decides it.
+    public static let readThroughCacheEnabled =
+        ProcessInfo.processInfo.environment["SHARD_INSTALL_CACHED"] != "0"
 
     /// How many threads a dequantisation may use.
     ///
