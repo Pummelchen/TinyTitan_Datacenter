@@ -53,14 +53,37 @@ public final class ShardPeerSet: ShardTransport, @unchecked Sendable {
     ///
     /// Sorted by peer so a failure names the first unreachable node in a stable order, and so two runs that fail
     /// differently are comparable.
+    /// How long to keep retrying a refused connection before giving up, and how long to wait between attempts.
+    ///
+    /// **Retrying is not politeness, it is the fix for a race that a four-node run hits every time.** A node starts
+    /// its server and then connects, but *starting* the server is not *being ready*: `serve` is dispatched
+    /// asynchronously and there is a gap before it reaches `listenAndAccept`. On a three-node run every node
+    /// therefore refused every peer, deterministically, and the run never began (`D257`). A sleep before connecting
+    /// would paper over it with a timing assumption that a loaded farm does not honour; a bounded retry waits
+    /// exactly as long as it takes and no longer.
+    public static let connectRetrySeconds: Double = 5.0
+    public static let connectRetryIntervalSeconds: Double = 0.02
+
     public func connect() throws {
+        let deadline = Date().addingTimeInterval(Self.connectRetrySeconds)
+        var lastError: Swift.Error?
         for peer in reachablePeers() {
             guard let address = addresses[peer] else { continue }
-            let connected = try DecodeTCPSocket.connect(host: address.host, port: address.port)
-            lock.lock()
-            channels[peer] = ShardPeerChannel(input: connected.input, output: connected.output)
-            lock.unlock()
+            while true {
+                do {
+                    let connected = try DecodeTCPSocket.connect(host: address.host, port: address.port)
+                    lock.lock()
+                    channels[peer] = ShardPeerChannel(input: connected.input, output: connected.output)
+                    lock.unlock()
+                    break
+                } catch {
+                    lastError = error
+                    guard Date() < deadline else { throw error }
+                    Thread.sleep(forTimeInterval: Self.connectRetryIntervalSeconds)
+                }
+            }
         }
+        _ = lastError
     }
 
     /// The peers currently connected, for a startup line that says what the node actually reached.
