@@ -5777,3 +5777,44 @@ being corrupted. The instrument that catches it is **the record compared against
 0 missing, 0 size mismatch — and it is a different question from a checksum: a checksum over the files present
 cannot notice that four are absent. The earlier "all 40 layers complete" line was true and I read it as "the
 install is here", which it was not.
+
+## D176 — The single-node number is 6.58 tok/s on node3, and the 0.186 tok/s reading was 35x wrong
+
+**Measured, five runs, on node3** — the machine the reference was taken on, quiet (load 2.49-2.98), the
+reference's own install, `TinyTitanCLI --expert-cache-slots 40` (40 slots x 1,769,472 B x 40 layers = 2.83 GB,
+the reference's 3 GB expert cache):
+
+| run | load | prefill | decode | tok/s |
+| --- | --- | --- | --- | --- |
+| 1 | 2.68 | 1.59 s | 2.57 s | **6.230** |
+| 2 | 2.49 | 1.53 s | 2.43 s | **6.580** |
+| 3 | 2.61 | 1.54 s | 2.33 s | **6.859** |
+| 4 | 2.90 | 1.55 s | 2.54 s | **6.304** |
+| 5 | 2.98 | 1.47 s | 2.35 s | **6.795** |
+
+**Median 6.580 tok/s against the reference's 7.075 — 93.0% of it.** The spread is 6.230-6.859, about 10%, and
+the median is quoted rather than the best.
+
+**And this retires a number this session carried for many rounds.** The 0.154-0.186 tok/s taken on macbook-ab
+was **35x below** this, on the same binary and the same install. macbook-ab is a MacBook Pro **M3 with 24 GB**,
+which should beat a Mac mini M2 — so that reading was never about the hardware. It was taken while that machine
+sat at **load 8.55 running the operator's unrelated work**, which `D174` names as exactly the condition that
+makes a measurement worthless. The honest position is that the number was **known-unreliable when it was taken**
+and I reported it as a finding anyway; `D174` is the rule that would have prevented it, and this is that rule
+applied one round later.
+
+**Two further facts that a measurement on another node depends on:**
+
+1. **The install receipt is path-bound.** Replicating the install node4 -> node3 does not produce a usable
+   install: `trusted install receipt invalid: model directory mismatch: the receipt was issued for
+   /Users/andreborchert/... but the model is now at /Users/node3/...`. It is re-issued **in place** with
+   `TinyTitanRepack --verify-install --input-gturbo <path>` — 46 files, 20,078,200,501 bytes in **51 s**, and
+   free disk is **unchanged at 22 Gi** while it runs, which is `D58`'s uncached read holding. So the distribution
+   costs a per-node re-verify, and that is cheap enough to be routine.
+2. **`TinyTitanRepack` was not staged on the farm** — only `TinyTitanCLI` and `TinyTitanDecodeService` were. An
+   install can be copied to a node and be unusable there for the want of a **1.6 MB** tool.
+
+**The 6.58 is the first reading of this engine taken under `D174`'s discipline** — a named node, its load
+recorded beside the number, the reference's own install, the engine and the slot count named, and a median over
+repeats rather than a single sample. It is **93% of the 7 tok/s target** and the remaining 7% is the next
+question, not this one.
