@@ -10494,3 +10494,43 @@ the ANE route is closed for prefill.
 
 **Nothing in `docs/distribution-design.md` section 8b changes, because section 8b already carries `D296`'s
 negative.** It now has two, and the design remains an intent with no measured support.
+
+## D298 — It is dispatch overhead: Core ML's ANE path pays ~96 ms per prediction and the arithmetic inside is free
+
+`D297` found `ComputeUnit.ALL` 50x slower than CPU on a 1x1 conv and noticed the time was constant while the work
+quadrupled. The test it named was the same convolution repeated **inside one model**, so a per-call cost appears
+once. Run at K = 1, 2, 4 and 8:
+
+| K | ALL ms | per-op | CPU_ONLY ms | per-op |
+| --- | --- | --- | --- | --- |
+| 1 | 96.37 | 96.37 | 2.13 | 2.13 |
+| 2 | 96.52 | 48.26 | 1.88 | 0.94 |
+| 4 | 96.42 | 24.10 | 1.88 | 0.47 |
+| 8 | 96.58 | 12.07 | 1.89 | 0.24 |
+
+**`ALL` is flat at ~96.4 ms while the arithmetic multiplies by eight.** Eight convolutions of 1.34 GFLOP each -
+10.7 GFLOP - cost the same as one. **So the 96 ms is a fixed per-prediction cost, not compute**, and it is the
+signature of the Neural Engine's dispatch: a long fixed setup paid once per inference. `CPU_ONLY` behaves as a
+CPU path should, flat at ~1.9 ms with the per-op cost falling as 1/K because the work is already at its floor.
+
+**This corrects how `D297` should be read, and it changes the conclusion.** The earlier round recorded the ANE path
+as "50x slower" and left the route in doubt. **That was a misreading of a fixed cost as a rate.** What the two
+rounds together establish is narrower and more useful:
+
+  * **the ANE is not reachable through a single op** (`D296`: a matmul on `ALL` shows no engagement);
+  * **a bare conv on `ALL` pays ~96 ms of dispatch per `predict`**, which swamps any arithmetic at this size
+    (`D297`, `D298`);
+  * **and the arithmetic inside that dispatch is free** - eight times the work for the same 96 ms.
+
+**So a whole-network conversion is the right next step rather than a dead end**, because that 96 ms would be paid
+**once for an entire forward pass** instead of once per operation. **And the cost of that is now known rather than
+guessed: 96 ms per forward.** Against `D293`'s prefill read of ~310 ms for a 1,000-token prompt, that is roughly a
+quarter on top - affordable if the batched matmul is then fast, which eight-free-convolutions suggests it would be.
+
+**What is still not measured, and it is the number that decides.** The **marginal** throughput inside the dispatch
+is unknown: K up to 8 all fit within 96 ms, so eight convolutions prove the overhead is fixed but not how fast the
+engine is once running. **K = 64 or 128 would put a GFLOP/s figure on the ANE itself**, and that - not the 96 ms -
+is what says whether prefill on the ANE is worth building. **Third probe: larger K, same shape.**
+
+**Nothing is claimed about ANE benefit.** Two negatives and one mechanism, no measured speedup, and section 8b of
+the design document continues to carry them.
