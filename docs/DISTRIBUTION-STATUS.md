@@ -500,8 +500,10 @@ synchronous fetch located - and this is what stands between that and a four-node
 "The down projection" is the phrase that hid the kernel. This is the same step written so it can be typed:
 
 ```
-// once, on the runner: an fp16 activation buffer [D], an fp16 acts scratch [FmoE], a float y [D],
-// a float weights[1] = 1.0, a float residual[D] = 0, all persistent - NOT per request, per D114.
+// Five buffers, created in `init` alongside `moeActs`: an fp16 activation [D], an fp16 acts scratch [FmoE],
+// a float y [D], a float weight [1] = 1.0, and a float zero residual [D]. In init and not in the method,
+// because `cfg` and `context` are init-locals - `FmoE` is `cfg.moeIntermediateSize` (:1366) and the device is
+// `context.device` (:729) - so neither is reachable from a method on the runner. Persistent, not per request (D114).
 let plan   = try model.planRoutedExperts(layer: layer, experts: experts)   // ModelExpertIO.swift:107, sync
 let blobs  = try model.routedExpertBuffers(for: plan)                      // :165, sync -> [TensorView]
 let offsets = try model.routedExpertOffsets(layer: layer)                  // MoEExpertOffsets
