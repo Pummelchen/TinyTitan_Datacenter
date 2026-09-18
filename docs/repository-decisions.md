@@ -9225,3 +9225,39 @@ and everything after it is measurement.**
 live - 7.095, then 4.039 - against its own single-node 7.61-7.77. **Both are below single-node and neither is a
 measurement of the exchange, because in the runs that produced them the peers were answering almost nothing.** The
 first honest distributed number is the one after the cache fix.
+
+## D264 — The serving path has to be async: the streaming read is, and every sync route goes through the cache
+
+`D263` reduced the whole distribution to one defect - the cache cannot place an expert the node does not own - and
+said the fix was a streaming read. Checking what a streaming read *is* in this engine settles the design question
+`D255` deferred:
+
+    model.fetchRoutedExperts(layer:experts:)     async throws -> [TensorView]     ModelExpertIO.swift:266
+    model.planRoutedExperts(layer:experts:...)   sync  -> RoutedExpertFetchPlan    :107
+    model.routedExpertBuffers(for: plan)         sync  -> [TensorView]             :165
+
+**The asynchronous one is the streaming read**; the two synchronous ones take a *plan*, and a plan is a description of
+where an expert can be placed in **this node's** bank - which is exactly the operation that fails with "8 experts do
+not fit in 40 cache slots". So:
+
+  * **the synchronous route cannot serve a peer**, because it is the route that requires placement;
+  * **the route that does not require placement is `fetchRoutedExperts`, and it is `async`**;
+  * therefore **`ShardExchangeServer.Compute` must be async**, which is `D255`'s option 1 - **the one I chose
+    against**, on the reasoning that a synchronous fetch existed. It exists, and it is the wrong one.
+
+**That is worth stating plainly because the reasoning that rejected it was sound and the fact it rested on was not.**
+`D255` preferred the synchronous option because it kept the server's signature and its tests unchanged, and that is a
+real cost worth avoiding - but it assumed the synchronous entry points could do the job, and they can do a *different*
+job: plan a fetch from the local bank. **The choice should have been made by asking which entry point performs a
+streaming read, not which one avoids changing a signature.**
+
+**What the change is, concretely.** `Compute` becomes
+`(_ layer: Int, _ experts: [Int], _ activation: [Float]) async throws -> [Float]`; `answer(_:)` awaits it; the
+client-side `ShardTransport` is already synchronous and unaffected, because the requester's call path is unchanged.
+`ShardExchangeServerTests` and `ShardExchangeEndToEndTests` will need their closures making async, which is the cost
+`D255` was trying to avoid and is now simply the price.
+
+**And the two observations are unaffected and still not measurements.** node1 completed at 7.095 and 4.039 tok/s in
+runs where the peers were refusing almost every request, so neither says anything about the exchange. **The first
+honest distributed number comes after this change**, and the prediction to compare it against is the one the records
+have carried since `D235`: about **1.12x** expert-only, on a step whose routed MoE is **19.4 ms of 137.0 ms**.
