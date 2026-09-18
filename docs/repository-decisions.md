@@ -6625,3 +6625,45 @@ of the two candidates for the 21 tok/s gap rather than a third of it.
 over 40 layers, so the queue depth is low - but `D190` measured turning the prefetch off as worth only 5%, which
 is the opposite of what a queue-depth explanation predicts. Both cannot be read the same way, and this is the
 disagreement the next measurement has to settle rather than a number to build on.
+
+## D196 — Read rate against queue depth and order, measured directly: depth is worth 1.5x, order nothing, and the decode is below both
+
+`D195` left a contradiction — the expert reads achieve ~985 MB/s against a `ParallelExpertReader` header figure of
+3.44 GB/s, while `D190` measured turning prefetch off as worth only 5%, which is the opposite of what a
+queue-depth explanation predicts. Rather than infer from a knob again, the rate was measured **as a function of
+the two variables directly**, on node3, reading the install's own `packed_experts/layer_00.bin` in whole experts
+(1,769,472 B each, 256 of them) with `F_NOCACHE` set, which is what the engine does:
+
+| configuration | GB/s |
+| --- | --- |
+| depth 1, ascending offsets | 1.94 |
+| depth 1, scattered offsets | 1.95 |
+| **depth 8, ascending** | **2.94** |
+| **depth 8, scattered** | **2.92** |
+
+**Three things follow, and the third is the one that matters.**
+
+1. **Order is irrelevant.** Scattered and ascending are the same to 0.5% at both depths, so the routing order the
+   plan produces costs nothing and the "random vs sequential" hypothesis is **closed** - as it should be, since a
+   1.77 MB read is large enough that the device sees it as a burst either way.
+2. **Depth is worth 1.5x.** 1.94 -> 2.94 GB/s from one read in flight to eight. That is the variable that moves
+   the rate, and it is the one the `prefetchDepth` knob is nominally about.
+3. **The decode is below even depth 1.** It achieves **~985 MB/s** (`D195`) where a single-threaded, no-compute
+   loop of exactly the same demand reads achieves **1.94 GB/s**. So in the engine the reads are idle roughly
+   **half the time** - they are **serialised behind the step's other work, not limited by the device**.
+
+**What that means for the contradiction `D195` posed.** The explanation is not that prefetch is worthless; it is
+that the engine's reads are not bandwidth-bound at all in the current arrangement, so the prefetch's contribution
+is small **and** the ceiling is far away, and both are true at once. `D190` measured the wrong variable and
+`D195` was right to refuse to pick a side.
+
+**What it means for 21 tok/s.** 91.4 MiB/token is **95.9 MB per step**. At the decode's present 985 MB/s that is
+**97 ms of a 132.7 ms step**; at the depth-1 rate it is **49 ms**; at depth 8 it is **33 ms**.
+
+    132.7 - 97 + 33 = 68.7 ms  ->  14.6 tok/s   (1.94x)   on ONE node
+
+**so keeping eight reads in flight would be worth about 1.9x on one node, with no distribution and no memory** -
+more than every sharding case measured in this session combined. That is a hypothesis from a microbenchmark and
+not an engine result: the engine has to be made to issue the reads concurrently and then measured on the same
+node with the same command, which is the next round's work. The microbenchmark's job was to say which variable to
+attack, and it says **concurrency**, not size and not order.
