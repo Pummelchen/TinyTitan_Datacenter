@@ -44,8 +44,37 @@ public final class ShardExchangeServer: @unchecked Sendable {
         for _ in 0..<connections {
             let accepted = try DecodeTCPSocket.listenAndAccept(host: "0.0.0.0", port: port)
             boundPort = (try? DecodeTCPSocket.boundPort(of: accepted.input.fileDescriptor)) ?? port
-            try answer(accepted)
+            do {
+                try answer(accepted)
+            } catch {
+                // A REQUEST THAT CANNOT BE ANSWERED MUST NOT TAKE THE SERVER WITH IT. Before this catch, one
+                // unanswerable request ended the node's willingness to answer any request - `answer` throwing
+                // propagated out of the accept loop - and its peers, which had not yet connected, were then refused.
+                // That made the failure systematic and order-dependent: whichever node refused a request first died
+                // first, and who survived depended on who connected when (D262).
+                //
+                // The protocol has no error frame, so the honest thing is to close this connection and keep
+                // serving. The requester sees a closed channel and falls back to single-node for that layer, which
+                // is the same behaviour a missing peer gets.
+                refusedRequests += 1
+                lastRefusal = "\(error)"
+                accepted.input.closeFile()
+                if accepted.output.fileDescriptor != accepted.input.fileDescriptor {
+                    accepted.output.closeFile()
+                }
+            }
         }
+    }
+
+    /// Requests this server could not answer. Exposed so a run can report it rather than merely being slower.
+    public private(set) var refusedRequests: Int = 0
+    /// The most recent refusal, for a startup line that says why a peer is falling back.
+    public private(set) var lastRefusal: String = ""
+
+    /// Refuse a request the server cannot answer, and say so, without ending the accept loop.
+    public func recordRefusal(_ error: Swift.Error) {
+        refusedRequests += 1
+        lastRefusal = "\(error)"
     }
 
     /// Answer one connection until its peer closes. Each request is decoded, computed and replied to in order.
