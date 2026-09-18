@@ -7502,3 +7502,38 @@ of expert data reaching the GPU, then the levers are exactly: **read fewer bytes
 step is not expert-read-bound, so >=3x is not what an expert plan delivers on that design" are now in tension, and
 **this engine's own measurement is the one that decides**: on this runtime, the read is on the critical path, and
 dividing it four ways is worth more here than `D84` found there.
+
+## D218 — The single-node cache is maxed at 40 slots, 48 is a plateau, and 64 collapses into swap
+
+`D217` showed the step tracking the read volume across 8 to 48 slots and read the 48-slot runs (7.435, 7.856)
+against 40 (7.357, 7.649) as "no plateau". **That was wrong, and it was wrong in the direction this session keeps
+having to correct: two runs each, overlapping ranges, called a trend.** Measured properly - node3, the reference
+install, 32 tokens, peak RSS from `/usr/bin/time -l`:
+
+| slots | tok/s | peak RSS |
+| --- | --- | --- |
+| 40 | 7.451 | 4.54 GB |
+| 48 | **7.432** | 4.82 GB |
+| 64 | **3.633** | 4.78 GB |
+
+and the machine's swap across the sweep went from **2048 MB used to 3072 MB used** - it swapped.
+
+**Three things follow, and they are all clean.**
+
+  - **40 to 48 is a plateau.** 7.451 against 7.432, a 0.3% difference on a 2.83 -> 3.40 GB cache. The earlier
+    48-slot "gain" was run-to-run spread, which is exactly what `D187` warned about and what `D217` walked into.
+  - **64 collapses**, at half the throughput, and it does it by **swapping** rather than by failing - so the
+    reference's own 4 GB collapse (`DC-117`) reproduces here, mechanism and all, and this node's 8 GB is the wall.
+  - **The cache lever is spent on one node.** `D217`'s monotonic curve is real across 8 to 40 - a 5x range and a
+    227 -> 134 ms step - and it **ends at the memory limit**, not at a plateau in the mechanism.
+
+**So the single node is finished at ~7.45 tok/s, and that is the measurement that makes the distribution the only
+remaining lever rather than one option among several.** `D217` established that the step is set by bytes of expert
+data reaching the GPU; the cache reduces those bytes and is at its ceiling; the disk delivers them at a measured
+985 MB/s average (`D203`); and **the only remaining way to reduce the bytes one node must deliver is to have
+another node deliver some of them.** That is the four-node plan, and it is now the *measured* consequence of this
+node's numbers rather than an assumption carried over from the sister project.
+
+**The corrected 48-slot figure also removes a claim.** The status line after `D217` said the reference was beaten
+"7.435-7.856 at 48" as well as at 40. **48 is 7.432 in this measurement** - the same as 40 - so the honest claim is
+the one that has held throughout: **40 slots, median 7.357-7.451 against the reference's 7.075.**
