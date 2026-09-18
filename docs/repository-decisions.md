@@ -4426,3 +4426,24 @@ exactly the argument for knowing every writer rather than only the ones that liv
 The reference's converters and installer are now in `HEAVY_PATTERNS`. This is the same class as `D132`: a
 check whose configuration is a list goes stale the moment work moves outside the assumed boundary, and the
 thing that moved was the whole deliverable (`D135`).
+
+## D141 — The repack's work directory is bounded; the disk prediction was too pessimistic
+
+`D139` left the 4-bit repack running and the following round predicted it would fail on space, from
+28 GB of need against 19 GB free. That prediction was **wrong in the reassuring direction**, and the
+correction is the useful part:
+
+| shard | work dir | free |
+| --- | --- | --- |
+| 2/26 | 8.5 GB | 19 GB |
+| 4/26 | **5.5 GB** | **21 GB** |
+
+The work directory **does not accumulate** — the converter consumes each source shard and discards its
+intermediates — so the peak is the *output*, ~20 GB for a 4-bit install, rather than output plus a growing
+scratch area. Free space recovered by 2 GB while the job ran. That is still tight against 21 GB, but it is a
+reachable margin rather than the certain failure that was reported, and the watchdog that `D140` taught this
+process's name is the thing that will decide it.
+
+Recorded because the earlier prediction was stated with more confidence than the evidence carried, in the same
+direction as the other over-readings this session: a two-point trajectory (8.5 GB, 8.4 GB) was read as growth
+when the third point (5.5 GB) showed it was noise around a bounded value.
