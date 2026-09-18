@@ -5306,3 +5306,50 @@ makes this failure *less* likely, not more — the one direction in which shardi
 
 **Not implemented.** This is the change to make, named at the field. It needs the engine to hold a `ShardPlan`
 and to route non-owned contributions, which is the next piece of work.
+
+## D165 — The exchange volume makes ≥21 tok/s unreachable on this Wi-Fi link, and fp32 unreachable everywhere
+
+`D158` measured the round trip (**15.0 ms**) but not the **volume**, and volume is what decides whether the
+target is reachable. The model's real dimensions are in its config, so the arithmetic can be done rather than
+guessed:
+
+```
+hidden_size 2048   num_hidden_layers 40   num_experts 256   num_experts_per_tok 8
+moe_intermediate_size 512
+```
+
+An expert's output is a hidden-sized vector, and it must cross the wire for every slot a node does not own.
+With 4 nodes owning contiguous quarters, the chance a routed expert is **not** ours is 3/4, so ~**6 of the 8**
+slots per layer are a peer's:
+
+| encoding | per slot | per layer | 40 layers | at 40 MB/s | at 125 MB/s |
+| --- | --- | --- | --- | --- | --- |
+| **bf16** | 4,096 B | 24,576 B | **0.98 MB** | **24.6 ms** | 7.9 ms |
+| fp32 | 8,192 B | 49,152 B | 1.97 MB | **49.2 ms** | 15.7 ms |
+
+**Two conclusions, and the first is unambiguous.**
+
+1. **fp32 contributions cannot work at any plausible speed.** 49.2 ms over this Wi-Fi link is the *entire*
+   ≥21 tok/s budget (47.6 ms) spent on the exchange before any compute, and even wired gigabit spends a third of
+   it. The contribution encoding is not a tuning choice; **bf16 is a requirement**.
+2. **On this Wi-Fi link, bf16 still misses the target**, even with optimistic assumptions:
+
+```
+sharded compute 141.3/4 = 35.3 ms  +  exchange 24.6 ms  =  59.9 ms  ->  16.7 tok/s  (2.36x)
+sharded compute 141.3/4 = 35.3 ms  +  exchange  7.9 ms  =  43.2 ms  ->  23.2 tok/s  (3.28x)  [wired]
+```
+
+So **≥21 tok/s needs a wired link**, and the Wi-Fi pair `D155` measured lands at ~2.4×, not 3×.
+
+**The assumptions are optimistic, and that cuts one way only.** The 141.3 ms single-node step is divided by 4 as
+if sharding scaled perfectly, but this repository's own history says it does **not**: the dense weights and the
+head are **replicated** (`D87`, `D93`), so the shardable fraction is smaller than the whole and 35.3 ms is a
+floor, not an estimate. No overlap of exchange with compute is assumed either, although `D158` identified
+pipelining as the one shape with headroom. Both errors make the real number **worse** than the table, so
+**2.36x is an upper bound on this link**, not a prediction.
+
+**What that means for the goal as written.** The objective asks for "at least 3x more than 7 tok/s" across the
+four Mac minis, and the arithmetic says that is **not** reachable over Wi-Fi under optimistic assumptions. It
+needs a wired LAN, and probably exchange/compute overlap on top of it. This is recorded now, from the model's own
+config and `D155`/`D158`'s measurements, rather than discovered after building the transport — and it is
+**arithmetic, not a measurement of a sharded run**, which does not exist yet.
