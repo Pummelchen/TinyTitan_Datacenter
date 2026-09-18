@@ -134,3 +134,33 @@ output rather than measurement.
 **One engine caveat worth carrying:** `totalExposedIoNanos` never increments in this configuration — its clock
 returns `nil` unless an observed completion count equals a *predicted* one (`D237`, `D238`) — so the server's
 published `exposedIo` reads zero here for a reason unrelated to how much IO is exposed. Do not build on it.
+
+## The cheapest measured step towards a four-node number, which needs no exchange at all
+
+The four-node projection turns on one question: **does dividing the expert read divide the step?** The cache sweep
+(`D217`, `D218`, `D236`) answers it indirectly - 156 MiB fewer per token buys 46 ms across four points - but it
+cannot reach the four-node read volume, because 40 slots already reads 89 MiB/token and a node owning a quarter of
+the experts would read about 22. **The sweep's lowest point is above the volume a sharded node would see.**
+
+There is a shorter route, and it uses a seam that already exists and is already on the forward path:
+
+* `ModelExpertIO.setOwnedExpertFilter(_:)` applies a filter at the top of `makeExpertCachePlan`, so a node reads only
+  the experts it owns. **It is unset by default**, which is why every existing measurement is valid;
+* `--shard-plan`, `--shard-node` and `--shard-peers` already parse and build a `ShardConfiguration`, but **nothing
+  consumes it** (`D206`).
+
+**Wiring only the first half** - build the plan from the flags and call `setOwnedExpertFilter` with
+`ShardPlan.isLocal(expert:to:)` for this node, **without any exchange** - produces a run that **has the right read
+volume and the wrong answer**. Its timing is therefore **not a tok/s claim** and must never be reported as one.
+
+What it *is*: a **measured** step time for a node reading a quarter of the experts. That is the quantity `D228`'s
+projection rests on, and it can be had on one machine, in one run, without the exchange, the peers, or a second node.
+If the step falls by roughly the read's share, the read divides and the projection is sound; if it barely moves, the
+read is not on the critical path and `D228` is wrong in the direction `D235` guessed.
+
+**Two things to be careful about.** The run's *output is garbage* and its log must say so, or a later reader will
+mistake a token stream for a result; and the ownership filter changes which experts are resident, so the cache
+behaviour differs from a real sharded run in a way that has to be stated rather than assumed away.
+
+The full call site is still what the objective asks for. This is the measurement that can be taken before it, and it
+is the last one available on a single node.
