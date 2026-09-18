@@ -9147,3 +9147,43 @@ one node of three, one run, no median, no repeats. `observation_only`, as `D258`
   2. **The eight-slot one-hot is wasteful by construction** - it computes the same expert eight times. Raising
      `topKExperts` in the plan would not help; a down-only kernel is what computes it once.
   3. **Then measure four nodes**, with loads, a median over repeats, and the generation length.
+
+## D262 — The serving node dies on its first bad request, and the cache cannot place an expert it does not own
+
+`D261` recorded two of three nodes failing to connect and blamed the retry cap. Raising the cap to sixty seconds
+changed nothing, which ruled the race out and pointed at something systematic. The logs say what it is:
+
+    [shard] serve stopped: expert cache cannot place requested experts:
+            3 experts do not fit in 40 cache slots (policy lfu, avoiding 0 slots)
+    error: Error Domain=NSPOSIXErrorDomain Code=61 "Connection refused"
+
+**Two defects, and the second is the one that matters.**
+
+**1. A single bad request kills the server.** `ShardExchangeServer.serve` loops `accept` -> `answer`, and `answer`
+throwing propagates out of the loop, so **one unanswerable request ends the node's willingness to answer any
+request** - and its peers, which had not yet connected, are then refused. That is why the failure is systematic:
+whichever node's cache refuses first dies first, and the pattern of who survives depends on connection order, which
+is why node2 completed twice and node1 and node3 never did. **A serving node must refuse a request, not die of it** -
+close that connection, keep accepting, and say so.
+
+**2. The expert cache cannot place an expert the node does not own.** The cache is `--expert-cache-slots 40` sized
+against **this node's own routed set** - it is a *cache of the experts the router picks here*. A peer asks for an
+expert that this node never routes to, so it is not resident and the LFU policy cannot evict enough to fit it:
+`3 experts do not fit in 40 cache slots`. **The serving path is asking the wrong data structure.** Reading an
+arbitrary expert for a peer is a *streaming* read, not a cache hit, and it wants the path that bypasses or extends
+the bank rather than one that must fit inside it.
+
+**And this is why the eight-slot one-hot never got a clean test**: the requests that arrive are for experts the
+cache refuses, so what the run measured at 5.172 tok/s was the cost of requests that happened to fit.
+
+**What this says about `D257`'s caveat.** It predicted the serving cost would dominate; this says something sharper -
+**the serving path does not yet have a working way to obtain the expert it is asked for.** The cost estimate was
+about a path that barely ran. Fix the cache access and the number moves; fix the server's error handling and the
+number becomes measurable at all.
+
+**Order of work, revised:**
+
+  1. **`answer` must not die of a refused request** - catch per request, close that connection, keep serving.
+  2. **`remoteExpertValues` must fetch an arbitrary expert** - a streaming read through the same streamer the MoE
+     path uses, not a placement in the local bank.
+  3. Only then is the one-hot cost, the down-only kernel, and a four-node median worth measuring.
