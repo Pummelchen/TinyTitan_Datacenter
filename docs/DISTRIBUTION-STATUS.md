@@ -357,6 +357,16 @@ without checking that it is the one the arithmetic used:
 **So the shape is:** `fetchRoutedExperts` for the requested ids -> `makeRoutedArgumentBuffer` -> phase 1 with the
 supplied activation as `x:` and a scratch as `acts:` -> a down projection -> read back `[Float]`.
 
+**And every input to that shape is a public model method**, checked rather than assumed:
+
+    model.fetchRoutedExperts(layer:experts:)   -> [TensorView]        ModelExpertIO.swift:266
+    model.routedExpertOffsets(layer:)          -> MoEExpertOffsets    called at RealForwardRunner+Decode.swift:1379
+    moe.makeRoutedArgumentBuffer(routedBlobs:) -> MTLBuffer           MoE.swift:330
+    moe.encodeRoutedPersistentPhase1U16Load(x:acts:...)               MoE.swift, called at :1528
+
+There is no missing accessor and no plumbing to add: a serve-side `Compute` is a new function that calls four things
+the request path already calls, plus a command buffer and a readback.
+
 **And the one thing to get right is the down projection, because the existing one does three jobs at once.**
 `encodeRoutedPersistentPhase2Reduce` applies the **routing weight**, **reduces** across slots and folds in the
 residual - and a peer must send the **unweighted per-expert output**, because `D154`/`D168` put the weight on the
