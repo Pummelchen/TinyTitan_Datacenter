@@ -6104,3 +6104,32 @@ own engine made its head vocabulary-parallel in D93 and went from 1.13x to 1.36x
 which is not a sharding change at all, it is a change to how the head is computed on ONE node - is worth more
 than the entire expert exchange. That is the honest place the remaining effort belongs if the throughput target
 is to be pursued rather than renegotiated.
+
+## D184 — The 7 tok/s result re-measured on a build whose whole suite is green
+
+`D181`'s quiet-node figure was taken with a binary built while the kernel change of `D180` was in the tree — the
+same change `DC-132` has now withdrawn because it broke `MoEFusedFFNTests.productionRoutedPipelineAndHitSplitMatchReference`.
+The decode tokens were identical and the number was sound, but a measurement is only as good as the build it came
+from, so it is taken again on the corrected build.
+
+`TinyTitanCLI` rebuilt from `c05e36e`, where `swift test --no-parallel` is **684 tests, 0 failure markers, exit
+0**, deployed to node3, `--expert-cache-slots 40`, 16 tokens at temperature 0, node3 quiet:
+
+| run | load | tok/s |
+| --- | --- | --- |
+| 1 | 0.92 | 6.609 |
+| 2 | 0.93 | 7.295 |
+| 3 | 1.10 | 7.227 |
+| 4 | 1.17 | 7.328 |
+| 5 | 1.22 | 7.220 |
+
+**Median 7.227 tok/s**, and the warm runs sit at **7.220-7.328** against the reference's **7.075**.
+
+Run 1 is the cold-page-cache case a fourth time — `D176`'s 6.580, `D181`'s 6.609 here, and the sweep's first
+point all show the same shape: the first measurement after a binary or a receipt changes is the slow one. That
+is worth stating as a property rather than rediscovering it, because it is the reason a single run is not a
+measurement on this machine.
+
+**So the first half of the objective is met on a build that passes its whole suite: 7.227 median, 7.328 best, on
+a node at load ~1, above the 7.075 reference.** And `D182`/`D183` stand unchanged — the second half's ceiling is
+about 1.0-1.1x, because only 13.2% of the 139.6 ms decode step is expert work that sharding can divide.
