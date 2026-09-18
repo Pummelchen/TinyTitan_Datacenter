@@ -5485,3 +5485,44 @@ settled a question that two rounds of arithmetic had got wrong.
 **Still arithmetic, and still an upper bound.** Perfect 4-way compute scaling is assumed (the dense weights and
 head are replicated, `D87`/`D93`), no overlap is modelled, and 40 MB/s is this Wi-Fi pair. It is not a
 measurement of a sharded run, which does not exist.
+
+## D169 — The farm is **wired**; `macbook-ab` is the Wi-Fi machine, so the throughput arithmetic changes
+
+The operator's answer to the question `D165`–`D168` kept raising: **all four nodes are on a LAN on a proper
+switch, and `macbook-ab` — the only peer I have been measuring against — is on Wi-Fi.**
+
+**That invalidates the link figures the last four rounds were built on, in the favourable direction.**
+
+| | what I measured | what the farm is |
+| --- | --- | --- |
+| path | this node ↔ **macbook-ab (Wi-Fi)** | **node1–node4 over a switch** |
+| round trip | **7.3 ms** (`D155`), **15.0 ms** RPC (`D158`) | expected well under 1 ms; **not measured** |
+| throughput | **40 MB/s** assumed | gigabit is ~125 MB/s nominal, ~110 real; **not measured** |
+
+`macbook-ab` was chosen because it was the machine I had, and it is the **worst** node in the farm for this
+purpose. So `D165`, `D166` and `D168`'s Wi-Fi columns describe a link the distribution will not run on, and the
+**wired column is the one that applies**:
+
+| replicated | wired tok/s | verdict | extra MB/node |
+| --- | --- | --- | --- |
+| 0 | 19.6 | **2.77× — just short of 21** | 0 |
+| 64 | **21.8** | reaches the target | 116 |
+| 96 | 23.2 | reaches the target | 175 |
+
+So on the real farm the target is **much closer than `D168` implied**: without replication, 19.6 tok/s (2.77× of
+7.075) against a bar of 21; with **64 replicated experts at 116 MB/node**, 21.8 tok/s. The Wi-Fi conclusion —
+that 144 experts and 262 MB/node were needed — does not apply.
+
+**And `D158`'s conclusion is in question for the same reason.** It found that one round trip **per layer** costs
+~600 ms/step and is ~4× *slower* than a single node, which was the argument for exchanging **once per step**. That
+was computed with a **15.0 ms** round trip — a Wi-Fi number. At a **sub-millisecond** wired round trip, forty
+per-layer exchanges cost ~40 ms, which is comparable to a once-per-step exchange rather than catastrophic. **The
+design conclusion may survive, but its justification does not**, and it needs re-measuring on the switch before it
+is relied on.
+
+**Not measured, and this is the honest limit of the above.** I have no wired peer to measure against: `macbook-ab`
+is Wi-Fi, and this node cannot open a LAN connection to anything (macOS Local Network privacy, `D156`). Every
+number in the wired column is **gigabit arithmetic**, not a measurement, and the switch may be faster still — a
+Mac mini M2 is gigabit, but a modern switch and a 2.5/10GbE option would change the constant. The next
+measurement that matters is `D155`/`D158`'s pair of numbers **taken on the switch**, and it needs either Local
+Network access from this node or a run from one of node1–node4.
