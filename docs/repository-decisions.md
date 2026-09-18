@@ -6667,3 +6667,48 @@ more than every sharding case measured in this session combined. That is a hypot
 not an engine result: the engine has to be made to issue the reads concurrently and then measured on the same
 node with the same command, which is the next round's work. The microbenchmark's job was to say which variable to
 attack, and it says **concurrency**, not size and not order.
+
+## D197 — Deeper prefetch is worse: concurrency does not transfer from the microbenchmark, and D196's 1.9x is not reachable this way
+
+`D196` measured read rate against queue depth directly - 1.94 GB/s at depth 1, **2.94 GB/s at depth 8** - and
+predicted about 1.9x on one node from keeping eight reads in flight. `TINYTITAN_PREFETCH_TOP_M` sets the prefetch
+ring's depth (it is not a boolean; `ModelProfile` assigns it straight to `prefetchDepth`), so the prediction was
+testable. Node3, the reference's install, 40 slots, 32 tokens, three runs each:
+
+| prefetch depth | tok/s | median |
+| --- | --- | --- |
+| **1** (default) | 6.864, 7.006, 7.054 | **7.006** |
+| 2 | 5.894, 5.960, 5.573 | 5.894 |
+| 4 | 5.177, 5.169, 5.164 | 5.169 |
+| 8 | 4.998, 5.035, 5.035 | 5.035 |
+| 16 | *refused: `must be 1...8`* | - |
+
+**Monotonically worse, and 28% worse at depth 8.** Every run at every depth agrees in direction, so this is not
+`D187`'s run-to-run noise.
+
+### Why the microbenchmark did not transfer, and it is not a refutation of it
+
+**The microbenchmark read the *right* experts.** It walked all 256 of a layer file, so every read was needed and
+depth bought pure concurrency. **The engine's prefetch reads *guessed* experts.** Depth here is speculative depth:
+eight reads in flight means eight *predictions* in flight, and the repository already records how good those
+predictions are - `RealForwardRunner`'s own note gives the next-layer probe **90.8%** top-1 and the two-layer
+probe **85.6%**. So a deeper ring does not read the same bytes sooner; it reads **more bytes**, and the wrong ones
+are pure waste on a device that is already busy. `D196`'s 2.94 GB/s is real; it is the rate for reads you know you
+want, and speculative depth is the wrong instrument for getting them.
+
+**That is the useful form of the result.** The concurrency is worth having - `D196` measured it - but it has to be
+applied to the **demand** misses, whose identity is known exactly and which currently issue at whatever
+concurrency `plan.misses.count` allows. That count is about **1.6 per layer** (64 misses over 40 layers), so the
+demand path is inherently near depth 1, and the limit is not the reader but the fact that **a layer's experts are
+only known after its router has run** - there is nothing to read concurrently with, within a layer.
+
+**So the lever, if it exists, is across layers: overlap layer L's reads with layer L-1's compute.** That is what a
+prefetch ring does, and depth 1 is the setting that pays; deeper speculation loses more to wrong guesses than it
+gains in concurrency. The microbenchmark's 1.94 GB/s at depth 1 is itself **twice** what the decode achieves
+(985 MB/s, `D195`), so there is a factor of two on the table that is **not** about depth at all - and finding
+where the demand reads lose that half is now the sharper question.
+
+**What is closed and what is open.** Closed: prefetch depth beyond 1 (`D197`), access order (`D196`), read size
+(`D193`), speculative decoding (`D187`), the MTP knobs (`D187`). Open: why the demand reads run at 985 MB/s when
+the identical reads with no compute interleaved run at 1,940 MB/s - which is a question about **what the step does
+between reads**, not about the reader.
