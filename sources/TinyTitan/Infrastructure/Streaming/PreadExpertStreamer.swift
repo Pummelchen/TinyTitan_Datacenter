@@ -512,11 +512,36 @@ public final class PreadExpertStreamer: @unchecked Sendable {
                              prefetched: prefetched)
     }
 
+    /// Which experts this node is responsible for, or `nil` on a single node.
+    ///
+    /// `D164`: the routed set is filtered **before** the plan is made, not after it. Marking
+    /// a peer's expert as a cache miss would give it a slot that was sized for the routed
+    /// set and evict an expert this node actually holds — so ownership has to narrow the set
+    /// that is planned, and the peer's contribution arrives through the exchange instead.
+    ///
+    /// `nil` means "this node owns everything", which is every single-node run: the filter
+    /// is not applied at all, so the existing path is bit-for-bit the path it always was.
+    public var ownedExpertFilter: ((Int) -> Bool)?
+
+    /// The routed set narrowed to what this node owns, or unchanged when it owns everything.
+    ///
+    /// Extracted from the plan so the rule is testable **without an install on disk**, which
+    /// the streamer otherwise needs. `nil` ownership — every single-node run — must return the
+    /// set untouched, because the slot assignment downstream is order-sensitive and a
+    /// re-ordered-but-equal array would move which expert lands in which slot.
+    static func ownedExperts(routed: [Int], owns: ((Int) -> Bool)?) -> [Int] {
+        guard let owns else { return routed }
+        return routed.filter(owns)
+    }
+
     private func makeExpertCachePlan(layer: Int,
-                                     experts: [Int],
+                                     experts routedExperts: [Int],
                                      avoidingSlots rawAvoidingSlots: Set<Int>,
                                      prefetched: [Int: UnsafeMutableRawPointer])
         -> ExpertCachePlan? {
+        // Applied here, at the top, so that everything downstream -- the slot count check,
+        // the eviction choice, the read -- sees the owned set and nothing else.
+        let experts = Self.ownedExperts(routed: routedExperts, owns: ownedExpertFilter)
         // K10: too few slots for the requested expert set is a recoverable
         // placement failure, not a programming error, and both entry points are
         // already built to handle it -- `planExpertsCached` turns nil into
