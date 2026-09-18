@@ -5013,3 +5013,48 @@ node — because macOS Local Network privacy currently prevents this node from i
 address. A mesh needs every node to initiate to every other, so **the operator granting Local Network
 permission to this session's application remains the prerequisite** for a multi-node run. This result does not
 remove that requirement; it removes every *other* question about whether the protocol can cross a network.
+
+## D158 — The real command/event round trip is 15.0 ms: twice ping, and it fixes the shape of the distribution
+
+`D155` bounded the exchange with ping (**7.3 ms**) and explicitly labelled it a **lower bound**, because a real
+request/response adds serialisation and processing. Measured, the bound is not close:
+
+```
+40 real command -> event round trips, this node <-> macbook-ab over the LAN
+  min       7.615 ms
+  median   14.992 ms
+  p90      18.458 ms
+  max      21.969 ms
+  mean     14.895 ms
+```
+
+A `DecodeServiceCommand.unload` was framed, sent, decoded, acted on, and answered with a `DecodeServiceEvent`
+that was framed, returned and decoded — exactly the work an expert exchange would do — and it costs **15.0 ms
+median, 18.5 ms at p90**, against the **7.3 ms** ping RTT between the same two machines. **The application
+round trip is roughly twice the network round trip**, so `D155`'s lower bound understated the real cost by 2x.
+
+**This fixes the shape of the distributed design, and it rules one out.** The objective needs **≥21 tok/s**,
+which is **≤47.6 ms per step**:
+
+| shape | cost at 15.0 ms | result |
+| --- | --- | --- |
+| one round trip **per layer** (40 layers) | ~600 ms/step | **~1.7 tok/s — worse than one node** |
+| one round trip per **step** | 15.0 ms of 47.6 ms | viable, but 32% of the budget |
+| fully asynchronous / pipelined | not bounded by RTT | the only shape with real headroom |
+
+So a synchronous per-layer exchange is not merely suboptimal, it is **~4x slower than the single node it is
+supposed to beat** — and this is measured rather than argued. The viable shapes are ones that exchange **once per
+step at most**, or that overlap the exchange with work that is not on the critical path, which is exactly what
+`D92` found on the older engine by a different route.
+
+**It agrees with the other two constraints, which is the useful part.** `D154` argued from bit-exactness that
+every node should produce a **full k=8 slot-ordered contribution array** and the arrays be summed in that order;
+`D158` now argues from latency that the exchange should happen **once per step**. Those are the same shape: one
+whole-step array per layer-group across the wire, not 320 per-expert fetches. Independently derived constraints
+pointing the same way is the strongest signal available that the architecture is right — and unlike `D92`, none
+of it required a working model to establish.
+
+**Caveats, stated rather than implied.** These are 40 round trips of a **payload-free** command; a contribution
+array for a real layer would be larger, so its serialisation cost would be higher and 15.0 ms is again a **floor**
+for that exchange, not a prediction. The link is Wi-Fi (`D155`), so a wired cluster would do better; the farm of
+four Mac minis may not be on Wi-Fi at all, and this measures **this pair**, not that farm.
