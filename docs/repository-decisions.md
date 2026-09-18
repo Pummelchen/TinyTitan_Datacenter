@@ -7234,3 +7234,32 @@ the cache, the prefetch ring or the kernels. The 41.3 ms is single-threaded by c
 either the host loop spread across cores - which `D94` did for this repository's *other* engine with
 `SHARD_DECODE_THREADS` and which was worth **1.74x** there - or its dispatch count reduced, which is `D114`'s
 shape and was worth **1.27x**. Both are code changes to the decode loop, and neither is available as a setting.
+
+## D211 — The host attribution was attempted with a profiler and did not resolve; the open question is named instead
+
+`D209` established that the 41.3 ms host remainder is CPU work matching the measured 31-37% of one core, and
+`D210` established that no setting spreads it. What neither gives is **where inside the host the time goes**, which
+is what a targeted change needs. So `sample` was pointed at the decode loop on node3 - 96 tokens, 40 slots, the
+reference install - and it **did not resolve an attribution**.
+
+What it produced is a record of the attempt and not a result:
+
+  - the run itself was **6.798 tok/s** under sampling, against the 7.357 median unsampled on the same node and the
+    same configuration, so the profiler costs about **8%** and any number taken beside it is not a step time;
+  - the sampler's output is a `+ !` call **tree**, not an indented frame list, so the parser written for it read
+    the tree glyphs as frames - `+`, `+ !` - and the one real symbol it surfaced was
+    `RealForwardRunner.encodeDecodeRoutedMoE`;
+  - that single symbol is consistent with `D209` and adds nothing to it: the host CPU is in the decode loop, which
+    is what `D202`'s remainder already said.
+
+**This is the first instrument in this goal to fail rather than to disagree**, and the distinction matters: the
+others (`D188`, `D190`, `D195`, `D208`) measured a quantity and measured it wrong, while this one produced no
+quantity at all. The corrective is the same as `DC-087`'s rule and the opposite of `D94`'s success: **widen the
+instrument until it is at least as wide as the question** - `sample`'s tree output needs to be flattened by
+`sample`'s own `-file` format or read as a call tree, not parsed as if it were `spindump` - and **do not record a
+number from a run whose own measurement was taken while it was being observed.** The 6.798 is recorded as an
+observation under sampling and is not comparable to any step time in this document.
+
+**What stands after it:** the host remainder is 41.3 ms, it is CPU, it does not divide, no setting moves it, and
+where inside it the time goes is **not yet known**. That is the question the next round starts from, and it is
+narrower than the one this goal opened with.
