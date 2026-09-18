@@ -164,3 +164,28 @@ behaviour differs from a real sharded run in a way that has to be stated rather 
 
 The full call site is still what the objective asks for. This is the measurement that can be taken before it, and it
 is the last one available on a single node.
+
+## The read is NOT the lever, and this has been measured — do not re-derive it
+
+`D239` wired `--shard-plan`/`--shard-node` to `setOwnedExpertFilter` and measured a node reading **64 of 256
+experts** against one reading all 256, same binary and flags, three alternating pairs on node3:
+
+    128.2 -> 128.3 ms     133.7 -> 134.5 ms     128.4 -> 128.5 ms       1.00x, 0.99x, 1.00x
+
+**Reading a quarter of the experts changes the step by nothing.** The expert read is not on the critical path, and
+any projection that recovers read time for a sharded node - including `D219`'s fitted intercept and `D228`'s overlap
+column - is recovering a term worth zero.
+
+**And the cache sweep is not evidence to the contrary** (`D240`). The filter cuts read volume *and* miss count by
+about four times each with no effect on the step, so `--expert-cache-slots` is a proxy for something that is neither
+- `D220`'s 0.521 ms is per **cache slot removed**, not per miss. The measurements (40 slots fastest, 64 collapses
+into swap, the 9.02 tok/s floor) all stand; only the causal story attached to them was wrong.
+
+**What the device does divide, and what a sharded node therefore saves** (`D221`, `D241`): the routed MoE kernels,
+**19.4 ms of a 137.0 ms step**. The filter cannot show this because it leaves the phase-1 kernels running over all
+eight routed slots with zeros in the unowned ones - a **real** sharded node does not run its peers' kernels at all.
+Attention (338.1 ms), the shared expert (119.9) and the router (106.8) are replicated and stay that way unless
+sharded separately, which nothing here does.
+
+**So the ceiling is ~1.12x for expert sharding and ~1.21x with attention and the shared expert sharded as well,
+against the ~2.9x that 21 tok/s needs.** The route to anything better is dividing the *dense* work, not the experts.
