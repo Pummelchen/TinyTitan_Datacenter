@@ -8941,3 +8941,32 @@ all ok, with `converter-expert-order` SKIP for a missing `numpy` - reported, not
 0 failure markers. `--sanitize=thread --filter Shard`: 0 warnings. **Not run: the Markdown link check**, which the
 fork's CI also performs and which this session has not executed once. Its documentation has been edited heavily, so
 that is the next thing to run rather than the next thing to assume.
+
+## D256 — All five of the fork's CI gates have now been run, and three of them found defects this session introduced
+
+`D253` found that the fork was being verified with `swift test` alone against a CI that runs five steps. All five have
+now been run, and the tally is not flattering:
+
+| step | first run | defect found |
+| --- | --- | --- |
+| build release, 0-warnings grep | **1 warning** | an unnecessary `try` in `ShardExchange.swift:195` |
+| `tools/lint.sh` | **FAIL** | `ShardPeerSet`'s `@unchecked Sendable` had no `unchecked-invariant:` marker |
+| `swift test --no-parallel` | pass | - |
+| Markdown links | **1 broken** | a Swift code sample read as a link: `[Float](repeating: 0, count: dims)` |
+| `--sanitize=thread --filter Shard` | **clean** | - |
+
+**Three of the five found real defects, and every one was introduced by this session's own commits.** All three are
+fixed and every gate now passes: 0 gate-matching warnings, lint all-ok (with `converter-expert-order` SKIP for a
+missing `numpy`, reported rather than passed), 0 test failures, 87 links with 0 broken, 0 TSan warnings.
+
+**The Markdown failure is worth its own line** because the mechanism is not obvious: the fork's link check is a Ruby
+script that scans every `.md` for `[text](target)` **without respecting code fences**, so `[Float](repeating:...)`
+inside a fenced Swift sample is a link as far as it is concerned, and the target is `repeating: 0, count: dims`. **Any
+Swift array literal written as `[Type](...)` in documentation is a broken link**, and the fix is `Array<Type>(...)` -
+the same type, not a link. That is a trap for anyone documenting this codebase, and it is not in the repository's
+trap list.
+
+**What this says about the hundred rounds before it.** The code was measured carefully and the *verification* was not:
+`swift test` reported green throughout and would have continued to, through a failing lint, a warning-emitting build
+and a broken link. **The session's own rule - run the measurement rather than reason about it - had been applied to
+every claim about the engine and to none of the claims about its own work.**
