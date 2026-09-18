@@ -8751,3 +8751,38 @@ stop reading; it is a reason not to write the call from what has been read so fa
 **Nothing changed in the tree this round.** The closure seam remains inert: `nil` on every run without a plan, build
 clean, whole suite green. The value of the round is that a plausible candidate was examined and **rejected on its
 own naming**, before it became a wrong number on four nodes.
+
+## D250 — Every input the call site needs is now named, and `routedX` is confirmed from the other side
+
+`D249` left one item, the router's chosen expert ids, and rejected a plausible wrong candidate rather than guessing.
+It closes here, and the same read confirms `D248` independently.
+
+    try moe.encodeRouter(commandBuffer: tailCB,
+        hidden: routedX,                                   // <- the router's input IS routedX
+        outIndices: outIndices, outWeights: outWeights,
+        numExperts: UInt32(cfg.numExperts), d: D, topK: UInt32(cfg.topKExperts))   // MoE.swift:246, called at :309
+
+**`outIndices` is the router's decision** - a `topKExperts`-long `UInt32` buffer of expert ids - and `outWeights` is
+the routing weights, which phase 2 already receives. So the three inputs the call site needs are:
+
+    routedX      the activation every routed expert is evaluated on   fp16 (D248)
+    outIndices   the router's chosen expert ids                      UInt32, topKExperts
+    outWeights   already passed to phase 2 as `routingWeights`       -
+    + one persistent 2048 * 8 float buffer for the reply, its own slots zeroed (D168)
+
+**And `routedX` is now confirmed twice over.** `D248` found it as the input to the phase-1 encodes; this finds it as
+the `hidden:` argument to the router itself. A buffer named by a kernel's parameter *and* by the router's own input
+is a different kind of evidence from the positional inference that `D246` got wrong - which is the distinction this
+run of records was about.
+
+**What that leaves is an edit, not an investigation.** The provider is called with the layer, `outIndices`, the slot
+indices `0..<topK`, `routedX` widened to fp32, and `D`; it returns `D * 8` floats or `nil`; the reply is uploaded to
+a persistent buffer whose own slots are zeroed; and the buffer is passed as `remotePartials:` to a kernel that is
+already verified inert when it is `nil` - which every existing measurement depends on and which the closure's `nil`
+default preserves.
+
+**Nothing changed in the tree this round either.** The closure seam is inert and the suite is green. What changed is
+that the call site is no longer a question: four rounds went into identifying three buffers and one index array, and
+each round's answer was corrected by the next - `moeActs` to `h1Buf` to `routedX`, and a slot array rejected before
+it could become a wrong number on four nodes. **That is slower than writing it, and it is the reason the eventual
+number will mean something.**
