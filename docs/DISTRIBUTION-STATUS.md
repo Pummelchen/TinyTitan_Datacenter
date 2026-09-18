@@ -1,4 +1,30 @@
-# The distribution: what is built, what is proven, and what is not
+# Distribution status
+
+> **RESUME HERE (written at round 92, session context exhausted).**
+>
+> **Done and verified:** the exchange on both sides, bit-identical to the single-node answer over a real socket;
+> the remote-buffer kernel, inert when unsharded; **the requesting half is wired** - the call site in
+> `encodeDecodeRoutedMoE` (`52e24d9`), the CLI provider from `--shard-plan`/`--shard-node`/`--shard-peers`
+> (`9b072ce`), both `nil` by default, behaviourally verified (unreachable peers exit 1; no peers runs single-node at
+> 7.151 tok/s) and the single-node path confirmed unregressed by measurement (7.610-7.735 tok/s).
+>
+> **The one thing left: the serving half's real `Compute`.** `ShardExchangeServer` takes it as an injected closure
+> and it is unwritten. Everything about it is specified below - its shape (`fetchRoutedExperts` ->
+> `makeRoutedArgumentBuffer` -> phase 1 -> a down projection -> readback), its cache-sharing (free, because
+> `fetchRoutedExperts(layer:experts:)` is the entry point the request path already uses), and **its silent-failure
+> mode, recorded before the code** (the existing down projection applies the routing weight, so a peer built on it
+> would send `w * value` and the requester would multiply by `w` again - a wrong number the bit-exactness contract
+> cannot catch).
+>
+> **Then the four-node run**, with loads, a median over repeats, and the generation length recorded together. The
+> prediction is **~8-9 tok/s (about 1.12x)** and it would **falsify** the 21 tok/s target rather than meet it - which
+> is what the goal asked for.
+>
+> **Do not re-derive these** (each cost records to establish): the expert read is *not* on the critical path
+> (`D239`, measured directly, two sweeps agreeing); the cache slot count is the lever and the candidate set is not
+> (`D243`); the exchange costs 3.2 ms/step on raw frames, excluding the serving node's own work (`D208`);
+> `totalExposedIoNanos` never increments in this configuration so the server's `exposedIo` reads zero for a reason
+> unrelated to IO (`D237`, `D238`).
 
 A handover note. This fork carries work that exists on **one disk with no remote it may be pushed to**
 (`DC-135`), so the state is written down here rather than left to be rediscovered from `git log`.
