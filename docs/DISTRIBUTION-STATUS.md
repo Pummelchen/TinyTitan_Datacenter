@@ -547,3 +547,61 @@ dispatches. **The four-node number this produces will be dominated by the servin
 the exchange**, and that must be said when it is reported.
 
 **The clean alternative remains a down-only kernel** writing `[expert][d]` in one pass, which removes all of it.
+
+## The one change left, as a checklist
+
+`D264` established the serving path must be async, because **the streaming read is** and every synchronous route
+requires a *plan*, which requires placement in this node's bank - the operation that fails with "8 experts do not fit
+in 40 cache slots". Six sites, and they must change together or nothing compiles.
+
+**1. `sources/TinyTitanDecodeProtocol/ShardExchangeServer.swift`**
+
+```swift
+public typealias Compute = (_ layer: Int, _ experts: [Int], _ activation: [Float]) async throws -> [Float]
+
+public func answer(_ handles: (input: FileHandle, output: FileHandle)) async throws   // add `async`
+
+    let values = try await compute(request.layer, request.experts, request.activation)  // add `await`
+
+public func serve(connections: Int) async throws                                      // add `async`
+    try await answer(accepted)                                                        // add `await`
+```
+
+**2. `sources/TinyTitan/Runtime/Inference/RealForwardRunner+ShardServe.swift`**
+
+`remoteExpertValues` becomes `async throws`, and its first three lines change from the planning route to the
+streaming one:
+
+```swift
+// was:  planRoutedExperts -> routedExpertBuffers(for:) -> routedExpertOffsets(layer:)
+// now:  the streaming read, which does not require placement
+let views = try await model.fetchRoutedExperts(layer: layer, experts: experts)   // ModelExpertIO.swift:266
+let offsets = try model.routedExpertOffsets(layer: layer)                        // unchanged, still synchronous
+```
+
+**Everything after that is unchanged**: the eight-slot one-hot (`topK == maxStreamedExperts` is a precondition, so a
+request always has eight slots and `remoteWeight` is `[1,0,0,0,0,0,0,0]`), the argument buffer with its third
+argument, the two encodes, and the readback. The command buffer's `waitUntilCompleted()` is still synchronous and
+that is fine - it is a GPU wait, not a cooperative-pool block.
+
+**3. `sources/TinyTitanCLI/Run.swift`** - the closure becomes async and the call becomes a `Task`:
+
+```swift
+let server = ShardExchangeServer(port: UInt16(servePort)) { layer, experts, activation in
+    try await runner.remoteExpertValues(layer: layer, experts: experts,
+                                        activation: activation, dims: activation.count)
+}
+Task { do { try await server.serve(connections: Int.max) } catch { ... } }
+```
+
+`Task` rather than `DispatchQueue.global()` is now correct: the loop awaits rather than blocking, so it does not hold
+a thread, which is the opposite of the reason `D197` moved the accept to a global queue.
+
+**4 and 5. `tests/TinyTitanDecodeService/ShardExchangeServerTests.swift` and `ShardExchangeEndToEndTests.swift`**
+
+Their `Compute` closures gain `async` and their `serve` calls gain `await`. This is the cost `D255` was trying to
+avoid - the server's signature and its tests change - and it is now simply the price.
+
+**Then run, and compare against the prediction the records have carried since `D235`:** about **1.12x** expert-only,
+on a step whose routed MoE is **19.4 ms of 137.0 ms**. The two numbers so far - 7.095 and 4.039 tok/s on node1 - are
+**not** measurements of the exchange, because in both runs the peers were refusing almost every request.
