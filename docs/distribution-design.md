@@ -56,8 +56,7 @@ tok/s  =  min(  compute_per_stage ,
 2. **Streaming must be partitioned, not shared.** If every node streams the same misses, four
    nodes produce one node's throughput. Each node must stream only its own share.
 3. **The cache is the only thing that beats the law.** 566 MB per token at 1.8 GB/s is
-   314 ms/token with no cache. **21 tok/s needs roughly a 70% hit rate.** That number is an
-   assumption today and is the first thing to measure.
+   314 ms/token with no cache. **21 tok/s needs roughly a 70% hit rate** - and that is now measured rather than assumed: **68.1%** at the configuration the engine and the reference both ship, from an LRU simulation over 878,400 recorded routing decisions (section 9).
 
 **The target: 21 tok/s = 47.6 ms per step.**
 
@@ -73,10 +72,20 @@ and keeps its own cache. Activations flow forward; nothing else crosses the wire
 | Stream at a 70% hit rate | **24 ms** | 80 ms |
 | Compute per stage | **~21 ms** | ~71 ms |
 | Wire per token | 3 x 4 KB = 12 KB = **0.1 ms** | 0.1 ms |
-| **Projection** | **21–40 tok/s** | **7–12 tok/s** |
+| **Projection** | **~31 tok/s** (derived in section 9) | scales with stage count |
 
-**Why it is the right shape.** Both the compute *and* the SSD bandwidth divide by the number of
-nodes — the property no other design here has. The wire carries three hidden states per token,
+**The projection, derived rather than asserted.** From the measured single-node numbers - 130 ms of compute, a 68.1% measured cache hit rate, 566 MB of active expert bytes a token, 1.8 GB/s of local SSD - a four-stage pipeline gives:
+
+```
+compute per stage   130 / 4                 = 32.5 ms
+stream per stage    (1 - 0.681) x 566 / 4   = 45.1 MB -> 25.1 ms
+wire per stage      12 KB                   ->  0.1 ms
+stage time          max(32.5, 25.1, 0.1)    = 32.5 ms  ->  30.8 tok/s
+```
+
+**The same arithmetic reproduces the machine it came from**: at one stage it gives 130 ms and 7.7 tok/s against a measured **7.377–7.974**. The binding constraint after scaling is **compute**, which is what a layer pipeline divides.
+
+**Why it is the right shape.** Both the compute *and* the SSD bandwidth divide by the number of nodes — the property no other design here has. The wire carries three hidden states per token,
 so 118 MB/s is irrelevant. It degrades gracefully: at 180 B, add nodes and both axes scale.
 
 **Where it hurts.** Streaming is on the critical path, so stage time is `max(compute, stream)`
@@ -139,7 +148,13 @@ not the dense compute, and adds latency. C divides both but adds more latency an
 locality. **A divides compute and SSD and its latency is a rounding error** — 12 KB on a wire
 that carries 118 MB/s.
 
-## 8. Routing affinity — placing experts by how they are actually used
+## 8. Routing affinity — WITHDRAWN, measured and not justified
+
+> **This section is withdrawn.** The measurement it called for was taken: over 20 prompts, 2,745 tokens and 109,800 layer-routing decisions, the **median per-layer Gini is 0.431** and the **median normalised entropy is 0.943** where 1.0 is perfectly uniform. All 256 experts are used, and the hottest expert takes 0.604% of picks against 0.391% for uniform - **1.5x the uniform rate**. Against this document's own thresholds that is the middle case at best, and the entropy argues for the lower end: **there is no hot core to replicate and no structure for a graph partition to exploit.** The instrument cost a few hours and the answer is no. It is kept because a withdrawn design with its measurement is worth more than a deleted one.
+>
+> **It also settled a contradiction this document flagged**: the reference's near-linear cache curve argued for weak skew while a measured 1.78x slot-count lever argued for real structure. The curve was right; the lever was never evidence of skew - slot count matters because misses are expensive, not because routing concentrates.
+
+### The original proposal, for the record
 
 The router already decides which eight experts a token uses, per layer, and the engine already
 reads those indices at the point where it builds the phase-2 buffer. **The routing trace is
@@ -191,7 +206,20 @@ cache curve — 5.164, 6.019 and 7.075 tok/s at 1, 2 and 3 GB — is close to *l
 for weak skew. But a slot-count sweep measured a **1.78x** lever, which argues there is real
 structure to exploit. Those two readings cannot both be right.
 
-## 9. The measurements that decide, in order, before any engine work
+## 9. The measurements that decide — TAKEN
+
+**All four are done, and each carries its result.**
+
+| | measurement | result |
+| --- | --- | --- |
+| 1 | Is routing skewed? | **No.** Per-layer Gini median 0.431, entropy 0.943, hottest expert 1.5x uniform. Affinity withdrawn. |
+| 2 | Does a cache hold its working set? | **68.1%** hit at 40 slots/layer (2.83 GB, the shipping configuration); 78.6% at 64/layer. |
+| 3 | What is the wire? | **1 GbE, 117.8 MB/s**, and **1, 4 and 8 parallel streams all give the same** - no concurrency headroom. |
+| 4 | Is streaming hideable behind compute? | **Yes, and compute binds.** Stream 100 ms against 130 ms of compute. |
+
+**The model built from these four reproduces the measured single-node throughput to within 4%**, and its four-stage projection is **~31 tok/s against a target of 21**. **The binding constraint is compute** - which is what a layer pipeline divides and what neither expert-parallel nor tensor-parallel designs divide as cleanly.
+
+### The plan as it was written, for the record
 
 **1. Is routing skewed?** Twenty prompts x 128 tokens, a few minutes of a single node's normal
 work, ~1.6 MB of trace. The per-layer frequency distribution answers it:
@@ -234,6 +262,8 @@ accident, not the design.
 
 ## 12. Status against the objective
 
-The objective asks for **21 tok/s across four nodes**. Measured today: **7.377–7.974 tok/s on
-one node**, and **0.85x of that across three**. The gap is analysed above and is not closed.
-The designs in this document are proposals; **none of them has been built or measured.**
+The objective asks for **21 tok/s across four nodes**. Measured today: **7.377–7.974 tok/s on one node**, and **0.85x of that across three**. The gap is analysed above and is not closed.
+
+**The tests and analysis this document called for are complete.** Four measurements were taken, one design (routing affinity) was withdrawn by its own test, the assumed cache hit rate is a measured 68.1%, the wire is measured at 1 GbE with no concurrency headroom, and the model built from all four **reproduces the measured single-node throughput to within 4%**.
+
+**What has not happened: none of the three designs has been built.** The ~31 tok/s figure for Design A is a projection from measured inputs, not an observation, and it is recorded as one until a two-stage prototype exists.
