@@ -38,6 +38,69 @@ public final class ModelCache {
 }
 
 extension Qwen3_5Forward {
+    /// The first error any head block raised, so a fan-out cannot swallow a failure.
+    private final class HeadBlockFailure: @unchecked Sendable {
+        private let lock = NSLock()
+        // `Swift.Error`, spelled out: inside `extension Qwen3_5Forward` the bare name resolves to the model's
+        // own nested `Error` type, which is a different thing and does not accept the reader's failures.
+        private var stored: (any Swift.Error)?
+        func record(_ error: any Swift.Error) {
+            lock.lock(); if stored == nil { stored = error }; lock.unlock()
+        }
+        var first: (any Swift.Error)? { lock.lock(); defer { lock.unlock() }; return stored }
+    }
+
+    /// The LM head's logits for one row, a vocabulary block at a time — the **safe half of `DC-122`**.
+    ///
+    /// **Why this may be threaded where the general matmul could not be.** `DC-122` threaded
+    /// `Ops.orderedMatmulVectorized` and it **moved bits**: bounding each thread's work by its own `last`
+    /// regrouped the four-wide columns and moved the scalar tail, and a comparison that had held since `D9`
+    /// caught it — so that function is the original single-threaded body and the attempt is on the record
+    /// rather than shipped. The unit here is a **whole vocabulary block of rows**. Every block runs the *same*
+    /// `Ops.orderedMatmul` call, over the same ascending `k`, with the same internal grouping; the only thing
+    /// the decomposition changes is **which thread** runs it, which is exactly what `D63` allows. Nothing is
+    /// regrouped because no block is ever split, and that is a structural argument rather than a measurement —
+    /// which is why `HeadLogitsTests` walks a grid of block sizes and compares bit patterns.
+    ///
+    /// The reads happen inside the blocks and are therefore concurrent. That is safe for the same reason the
+    /// expert fan-out of `D101` is: the reader's counters are write-locked and `pread` carries its own offset.
+    ///
+    /// `rows` is the vocabulary slice this node owns — the whole vocabulary when there is no shard — and the
+    /// returned array is always `vocabulary` wide, so a sharded gather still receives the full logits array.
+    static func headLogits(
+        x: [Float], source: any WeightSource, name: String, rows: Range<Int>, vocabulary: Int,
+        hiddenSize: Int, blockRows: Int, threads: Int
+    ) throws -> [Float] {
+        var logits = [Float](repeating: 0, count: vocabulary)
+        let blocks = rows.isEmpty ? 0 : (rows.count + blockRows - 1) / blockRows
+        guard blocks > 0 else { return logits }
+        let failure = HeadBlockFailure()
+        nonisolated(unsafe) let upstream = source
+        logits.withUnsafeMutableBufferPointer { buffer in
+            nonisolated(unsafe) let target = buffer.baseAddress!
+            let body: @Sendable (Int) -> Void = { block in
+                let lower = rows.lowerBound + block * blockRows
+                let upper = min(lower + blockRows, rows.upperBound)
+                do {
+                    let weights = try upstream.rows(named: name, range: lower..<upper)
+                    let product = Ops.orderedMatmul(
+                        x: x, w: weights, rows: 1, k: hiddenSize, out: upper - lower
+                    )
+                    for column in 0..<(upper - lower) { target[lower + column] = product[column] }
+                } catch {
+                    failure.record(error)
+                }
+            }
+            if threads > 1 && blocks > 1 {
+                DispatchQueue.concurrentPerform(iterations: blocks, execute: body)
+            } else {
+                for block in 0..<blocks { body(block) }
+            }
+        }
+        if let error = failure.first { throw error }
+        return logits
+    }
+
     /// Build the decode state for a prompt.
     ///
     /// The prompt's **outputs** come from the verified sequence path — that is what M1's gate
@@ -196,19 +259,14 @@ extension Qwen3_5Forward {
         // so every node ends with the same array: the head is 1.05 s/step of replicated work (`D88`), and
         // `D93` splits it without moving a single value — the dot product for a row does not depend on which
         // other rows the same node computed.
-        var logits = [Float](repeating: 0, count: config.vocabSize)
         let slice = shard.map {
             VocabSlice(node: $0.node, nodes: $0.ownership.nodes, vocabSize: config.vocabSize)
         }
         let rows = slice?.range ?? 0..<config.vocabSize
-        var row = rows.lowerBound
-        while row < rows.upperBound {
-            let upper = min(row + Self.headBlockRows, rows.upperBound)
-            let block = try source.rows(named: headName, range: row..<upper)
-            let product = Ops.orderedMatmul(x: hidden, w: block, rows: 1, k: hiddenSize, out: upper - row)
-            for column in 0..<(upper - row) { logits[row + column] = product[column] }
-            row = upper
-        }
+        var logits = try Self.headLogits(
+            x: hidden, source: source, name: headName, rows: rows, vocabulary: config.vocabSize,
+            hiddenSize: hiddenSize, blockRows: Self.headBlockRows, threads: DecodeThreads.count
+        )
         profiler?.mark("head")
         if let shard, let slice {
             try shard.gatherHeadSlice(into: &logits, slice: slice)

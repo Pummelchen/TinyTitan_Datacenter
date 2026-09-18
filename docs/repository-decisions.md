@@ -2849,3 +2849,41 @@ The remaining levers are unchanged in kind and now better ordered: the unpack is
 `DC-120` (fuse the dequantise into the matmul, never materialise the fp32 slice) removes it; `DC-122` (the
 threaded CPU matmul) is still open with its failure on the record; and `DC-121` (prefetching the *next* token's
 experts) is now cheap to try, because the fan-out it would feed already exists.
+
+## D102 — The head's blocks fan out, and why that is legal where the general matmul was not
+
+`head` was 0.43 s/step, and it is the one matmul in the engine whose decomposition is *obviously* sound. `DC-122`
+had already tried threading the general `Ops.orderedMatmulVectorized` and it **moved bits** — bounding each
+thread's work by its own `last` regrouped the four-wide columns and moved the scalar tail, and a comparison that
+had held since `D9` caught it. That function is therefore the original single-threaded body, and the experiment
+lives in the tracker rather than in the source.
+
+**The distinction is structural, not a matter of luck.** In the general kernel the unit of work is a *column
+range inside one row*, so a decomposition has to decide where one thread's columns end — and that is where the
+grouping moves. In the head the unit is a **whole vocabulary block of rows**: `Ops.orderedMatmul` is called
+exactly as it was, with the same `k` order and the same internal grouping, for a set of rows that a given thread
+owns outright. Nothing is split, so nothing can be regrouped, and the only thing the decomposition changes is
+**which thread** runs a block — precisely what `D63` allows. That is an argument, and an argument is not evidence,
+which is why `HeadLogitsTests` walks block widths **1, 3, 7, 64 and 512** and compares bit patterns: `1`, `3` and
+`7` are the `out % 4 != 0` regime that broke the earlier attempt. Two more tests carry the rest of the contract:
+a node's vocabulary slice is bit-identical to the same rows of the full array with the remainder left at zero, and
+a block that throws is **raised** rather than swallowed — a fan-out that dropped an error would hand back zeros
+that look like logits.
+
+**Measured**, alternated, one binary, 8-step decode, load average 2.84:
+
+| `head` | step | digest |
+| --- | --- | --- |
+| 0.434 / 0.439 s (one thread) | 4.142 / 4.077 s | `89d654ff54b0fd03` |
+| **0.259 / 0.255 s** (fan-out) | **2.270 / 2.246 s** | `89d654ff54b0fd03` |
+
+The `head` column is the isolated measurement: **1.7x on that phase**, 0.43 → 0.26 s, digest identical in every
+arm. The step column is *not* the head's alone — `SHARD_DECODE_THREADS=1` switches off `D99`'s element-wise
+threading and `D101`'s expert fan-out as well as this one — so the honest attribution is the phase, not the step.
+With all three on, the step is **2.246 s = 0.443 tok/s**, from 0.400 before this change and 0.230 when the
+operator re-scoped the work.
+
+**What is still open** is the general matmul, and it now has a menu rather than a mystery: a case split per output
+so no thread ever owns a partial group, `x`-major blocking where each thread keeps a private accumulator, or
+accepting the four-wide grouping as part of the contract and asserting it. The third is a contract change and
+would need the reference re-derived, so it is the last resort; the first two are `DC-122`.
