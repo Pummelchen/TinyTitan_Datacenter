@@ -6762,3 +6762,48 @@ depth, access order, read size, the reader itself - and the composition has prod
 whole target and has a known mechanism that is not delivering it. That is a much better place to stop than the
 ~70% host loop estimate the goal opened with, which was itself an artefact of an instrument that could not see
 I/O.
+
+## D199 — The overlap knobs are all closed: the remaining 3.2x needs a code change, not a setting
+
+`D198` established that the step is the **sum** of device time and read time - they do not overlap - and that
+overlapping them is worth up to 3.2x, with a prefetch ring that exists and delivers only 5%. Every knob that could
+plausibly move that, and which had not already been measured, was swept on node3 with the reference's install at
+40 slots, 32 tokens, three alternating pairs:
+
+| pair | load | default | `EARLY_HITS=1` | `KEEP_WIRED=1` | `IO_TIER=utility` |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 2.53 | 6.879 | 6.554 | 5.806 | 6.387 |
+| 2 | 4.31 | **7.153** | 7.109 | 7.062 | 6.849 |
+| 3 | 3.63 | 7.049 | 5.483 | 6.837 | 6.910 |
+| **median** | | **7.049** | 6.554 | 6.837 | 6.849 |
+
+**None of them beats the default.** `EARLY_HITS` is clearly worse (6.554 against 7.049, and 5.483 in one pair);
+`KEEP_WIRED` and `IO_TIER=utility` are within the run-to-run spread this farm produces (`D187`) and are not
+improvements.
+
+**`KEEP_WIRED` is worth noting against the repository's own record.** `D122` measured `mlock`ing the slab bank at
+**+5.7%** (0.648 s against 0.686) on this repository's *other* engine, and it was the first time a larger expert
+cache had not regressed phases that never touch it. Here it is **not** an improvement, which is consistent with
+`D198`: if the step is serialised on reads, locking the cache changes which reads are served from RAM but not
+whether they overlap the compute, and the concurrency that would pay is absent either way.
+
+### So the setting space is exhausted, and the finding is that it is
+
+Across fourteen rounds the following have been measured and closed, every one on node3 with the reference's
+install, the load recorded, and repeats:
+
+| lever | result | record |
+| --- | --- | --- |
+| speculative decoding / MTP | install has no draft head | `D187` |
+| prefetch depth > 1 | **28% worse** at depth 8 | `D197` |
+| prefetch off | costs 5% | `D190` |
+| access order | identical to 0.5% | `D196` |
+| read size | already one expert per `pread` | `D193` |
+| the reader | serial is right at this batch size | `D193` |
+| `EARLY_HITS`, `KEEP_WIRED`, `IO_TIER` | no improvement | `D199` |
+| expert-cache slots | 40 is the optimum, 64 collapses | `D178` |
+
+**What is left is a change to how the decode loop issues and waits on reads**, which is why no setting reaches it:
+the composition says the device and the read path each idle while the other works, and a configuration knob cannot
+make two serialised things concurrent. `D114` is the precedent for the size of such a change - batching 640
+synchronous dispatches into 80 was **1.27x** by removing waits - and `D198` says the prize here is **3.2x**.
