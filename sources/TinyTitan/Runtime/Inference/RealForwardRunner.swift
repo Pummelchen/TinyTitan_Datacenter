@@ -299,7 +299,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     /// Serve-side scratch, see `init`. fp16 activation [D], fp16 acts [FmoE], float y/residual [D], float weight [1].
     var remoteActivation: MTLBuffer!
     var remoteActs: MTLBuffer!
-    var remoteY: MTLBuffer!
+    /// ONE PER EXPERT IN A REQUEST. A single `y` would keep only the last dispatch's answer, so a batched
+    /// request needs a destination each - which is what `actsOffset` already provides for `acts` (D276).
+    var remoteY: [MTLBuffer] = []
     var remoteResidual: MTLBuffer!
     var remoteWeight: MTLBuffer!
     /// Width-2 MTP verify scratch (B2 pair schedule): per-row activation and
@@ -817,11 +819,11 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         // EIGHT SLOTS. The kernels validate `topK == maxStreamedExperts` and write all eight, so a
         // single-slot buffer here would be overrun by the first request. One slot was the original
         // allocation and the overrun was caught before it ran, not by it.
-        self.remoteActs = try buf(cfg.moeIntermediateSize, label: "shard.acts")
+        self.remoteActs = try buf(8 * cfg.moeIntermediateSize, label: "shard.acts")
 // FP16, like `routing_w`. The kernel declares `device half* y` and `device const half* residual`, and
         // a Float `y` is written as halfs and read back as floats - which is garbage, and was node1's NaN. The
         // residual happened to survive because zero is zero in both widths; `y` did not.
-        self.remoteY = context.device.makeBuffer(length: D * MemoryLayout<Float16>.stride, options: .storageModeShared)!
+        self.remoteY = try (0..<8).map { _ in context.device.makeBuffer(length: D * MemoryLayout<Float16>.stride, options: .storageModeShared)! }
         self.remoteResidual = context.device.makeBuffer(length: D * MemoryLayout<Float16>.stride, options: .storageModeShared)!
         // Eight, not one: the kernels validate `topK == maxStreamedExperts`, so a request always has eight slots
         // and only the first is weighted. The other seven compute the same expert and contribute zero.
@@ -840,7 +842,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         // correct on its own merits - and it discriminates: if the NaN becomes a finite wrong number the kernel is
         // not writing, and if it survives the values are being written and are wrong.
         memset(self.remoteActs.contents(), 0, cfg.moeIntermediateSize * MemoryLayout<Float16>.stride)
-        memset(self.remoteY.contents(), 0, D * MemoryLayout<Float16>.stride)
+        for buffer in self.remoteY { memset(buffer.contents(), 0, D * MemoryLayout<Float16>.stride) }
         memset(self.remoteResidual.contents(), 0, D * MemoryLayout<Float16>.stride)
         self.moeHitActiveSlots = try buf(cfg.topKExperts, MemoryLayout<UInt32>.size, label: "decode.moeHitActiveSlots")
         self.moeMissActiveSlots = try buf(cfg.topKExperts, MemoryLayout<UInt32>.size, label: "decode.moeMissActiveSlots")

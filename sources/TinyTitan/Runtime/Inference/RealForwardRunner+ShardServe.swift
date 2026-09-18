@@ -46,38 +46,43 @@ extension RealForwardRunner {
 
         // FmoE is a decode-path local, not a property, but `remoteActs` was allocated from it in `init` - so its
         // length gives it back and the two cannot drift.
-        let f = UInt32(remoteActs.length / MemoryLayout<Float16>.stride)
+        let f = UInt32(remoteActs.length / MemoryLayout<Float16>.stride / 8)
 
         var out = [Float](repeating: 0, count: experts.count * dims)
+
+        // ONE COMMAND BUFFER FOR THE WHOLE REQUEST. This loop committed and awaited once per expert, so eight
+        // experts meant eight commits and eight blocking waits - and at these shapes the kernel is microseconds of
+        // the call, so the wait was the cost. D114 made exactly this change single-node (640 dispatches to 80,
+        // 179 -> 84 ms on the phase). The argument buffers are held in an array because they must outlive the
+        // commit: released early, the failure is wrong values rather than an error, which is the shape of D269.
+        guard let cb = ctx.queue.makeCommandBuffer() else {
+            throw ShardServeError.commandBufferUnavailable
+        }
+        var argumentBuffers: [MTLBuffer] = []
+        argumentBuffers.reserveCapacity(experts.count)
+        let slotBytes = Int(f) * MemoryLayout<Float16>.stride
         for (index, _) in experts.enumerated() {
-            // EIGHT SLOTS, ALWAYS. `validate(routedBlobs:topK:)` preconditions `topK == maxStreamedExperts`, so a
-            // request cannot ask for one expert - the kernels address a fixed eight-slot bank with no sub-batch.
-            // The same expert is placed in every slot and `remoteWeight` is [1,0,0,0,0,0,0,0], so the phase-2
-            // reduce sums eight terms of which seven are multiplied by zero. That yields one expert's down output
-            // without a new kernel. D260 has the crash report that established the constraint.
-            let slots = 1
-            let blob = views[index].buffer
-            let blobs = [blob]
+            let blobs = [views[index].buffer]
             let blobOffsets = [Int(views[index].offset)]
             guard let argBuf = serveMoE.makeRoutedArgumentBuffer(
-                routedBlobs: blobs, topK: UInt32(slots), routedBufferOffsets: blobOffsets)
+                routedBlobs: blobs, topK: 1, routedBufferOffsets: blobOffsets)
             else { throw ShardServeError.argumentBufferUnavailable }
-            guard let cb = ctx.queue.makeCommandBuffer() else {
-                throw ShardServeError.commandBufferUnavailable
-            }
+            argumentBuffers.append(argBuf)
             try serveMoE.encodeRoutedPersistentPhase1U16Load(
                 commandBuffer: cb, routedArgBuffer: argBuf, routedBlobs: blobs, routedOffsets: offsets,
-                x: remoteActivation, acts: remoteActs, d: UInt32(dims), f: f, topK: UInt32(slots))
+                x: remoteActivation, acts: remoteActs, actsOffset: index * slotBytes,
+                d: UInt32(dims), f: f, topK: 1)
             try serveMoE.encodeRoutedPersistentPhase2Reduce(
                 commandBuffer: cb, routedArgBuffer: argBuf, routedBlobs: blobs, routedOffsets: offsets,
-                acts: remoteActs, routingWeights: remoteWeight, residual: remoteResidual,
-                y: remoteY, d: UInt32(dims), f: f, topK: UInt32(slots))
-            cb.commit()
-            // `await completed()`, NOT `waitUntilCompleted()`: Swift marks the blocking form unavailable from an
-            // asynchronous context, which is the compiler saying a cooperative-pool thread must not be parked.
-            await cb.completed()
-            // `half`, matching the kernel's `device half* y`.
-            let src = remoteY.contents().bindMemory(to: Float16.self, capacity: dims)
+                acts: remoteActs, actsOffset: index * slotBytes, routingWeights: remoteWeight,
+                residual: remoteResidual, y: remoteY[index], d: UInt32(dims), f: f, topK: 1)
+        }
+        cb.commit()
+        // `await completed()`, NOT `waitUntilCompleted()`: Swift marks the blocking form unavailable from an
+        // asynchronous context, which is the compiler saying a cooperative-pool thread must not be parked.
+        await cb.completed()
+        for (index, _) in experts.enumerated() {
+            let src = remoteY[index].contents().bindMemory(to: Float16.self, capacity: dims)
             for d in 0..<dims { out[index * dims + d] = Float(src[d]) }
         }
         return out
