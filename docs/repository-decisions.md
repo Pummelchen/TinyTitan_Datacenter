@@ -8068,3 +8068,37 @@ number in the command line, not another measurement.
 overlap both built) was computed from a 24-token trace and is therefore **optimistic**: at longer generations the
 attention term grows and the projection falls. It should be read as an upper bound on that configuration rather than
 as an expectation, which is how `D228` already marked it.
+
+## D232 — The length curve, and why 7.4 and 8.0 are both correct answers to the same question
+
+`D231` said the generation length belongs beside every tok/s claim. Measuring it makes the point concrete. Node3,
+the reference install, 40 slots, `--temperature 0`, two runs each:
+
+| max-new | tok/s | load |
+| --- | --- | --- |
+| 32 | 7.377 | 1.04 |
+| 32 | 7.503 | 1.26 |
+| 128 | **7.974** | 1.23 |
+| 128 | **7.815** | 1.33 |
+| 256 | 7.756 | 1.31 |
+| 256 | 7.546 | 1.49 |
+
+**The curve is not monotonic, and both of its ends matter.** Throughput *rises* from 32 to 128 tokens and *falls*
+from 128 to 256. The rise is the fixed cost of a run being amortised - model bring-up, the first layer's cold reads,
+the first tokens where the expert cache is still filling - and the fall is `D230`'s context growth: the attention
+kernel over a longer KV, 47% larger by position 288.
+
+**So 7.377 and 7.974 are the same binary, the same install, the same flag and the same node**, differing only in how
+many tokens were asked for. Any claim of the form "this engine does N tok/s" is under-specified without N's
+companion, and the peak near 128 tokens is the most favourable point on the curve rather than a representative one.
+
+**What that means for the comparison against the reference's 7.075.** It is beaten **at every length measured** - the
+worst point on this curve, 7.377 at 32 tokens, is still 4.3% above it, and the best is 12.7% above. **That is a
+stronger statement than the single figure this session has been quoting**, because it does not depend on the
+reference having been measured at any particular length: the curve is above 7.075 across its whole range from 32 to
+256 tokens, and the reference's own length is unknown.
+
+**And it bounds the four-node projection the same way.** `D228`'s 19.42 tok/s was computed from a 24-token trace,
+where the curve has not yet reached its peak and the attention term has not yet grown; a four-node run will have to
+name its length to be comparable with it. **The prediction to test is therefore a curve and not a number**: about
+**19.4 tok/s near 24-32 tokens**, falling as the generation lengthens.
