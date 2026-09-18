@@ -107,6 +107,43 @@ struct ShardExchangeParticipantTests {
     #expect(reference[0] == 36)   // 1 + 2 + ... + 8, so the comparison is not vacuous
   }
 
+  /// The kernel indexes `remote[d * 8 + sg]`, so this buffer is `[dimension][slot]` while `ShardReduce`'s rows
+  /// are `[slot][dimension]`. A transpose error here produces plausible wrong numbers rather than an error, so
+  /// the layout is pinned with values chosen to be unequal under transposition.
+  @Test func theRemoteBufferIsLaidOutDimensionMajorForTheKernel() throws {
+    let p = plan()
+    let dims = 3
+    // Peer 1 owns slot 1 and answers with a row whose dimensions are distinct.
+    let transport = FakeTransport(answers: [1: (slots: [1], values: [1, 2, 3])], node: 0, dims: dims)
+    let participant = ShardExchangeParticipant(plan: p, node: 0, transport: transport)
+
+    let buf = try participant.remotePartials(layer: 0, experts: [1], slots: [1],
+                                             activation: [0], dims: dims)
+    #expect(buf.count == dims * 8)
+    // Slot 1 is the ONLY non-zero slot: everything else is this node's own zero.
+    for slot in 0..<8 where slot != 1 {
+      for d in 0..<dims { #expect(buf[d * 8 + slot] == 0) }
+    }
+    // `remote[d * 8 + 1]` carries dimension d of slot 1 - so 1, 2, 3 at stride 8, NOT contiguous.
+    #expect(buf[0 * 8 + 1] == 1)
+    #expect(buf[1 * 8 + 1] == 2)
+    #expect(buf[2 * 8 + 1] == 3)
+    // The index that DISTINGUISHES the two layouts is 3. Under this layout it is `d=0, slot=3`, which is a slot
+    // this node owns and therefore an explicit zero; under a row-major `[slot][dimension]` reading it would be
+    // slot 1's dimension 0, which is 1. An earlier version of this test asserted `buf[1] == 0`, which is the
+    // same under BOTH layouts and so distinguished nothing.
+    #expect(buf[3] == 0)
+  }
+
+  @Test func aNodeWithNoPeersProducesAnAllZeroRemoteBuffer() throws {
+    let p = plan(experts: 4, nodes: 1)
+    let participant = ShardExchangeParticipant(plan: p, node: 0, transport: nilTransport)
+    let buf = try participant.remotePartials(layer: 0, experts: [0, 1], slots: [0, 1],
+                                             activation: [0], dims: 2)
+    #expect(buf.allSatisfy { $0 == 0 })
+    #expect(buf.count == 16)
+  }
+
   @Test func aReplyForTheWrongLayerIsRefused() throws {
     struct WrongLayer: ShardTransport {
       func exchange(_ request: ShardExchange.Request, to peer: Int) throws -> ShardExchange.Reply {

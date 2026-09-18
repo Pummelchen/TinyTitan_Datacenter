@@ -93,6 +93,38 @@ public struct ShardExchangeParticipant {
             .map { try transport.exchange($0.request, to: $0.peer) }
     }
 
+    /// The remote buffer the sharded phase-2 kernel reads, laid out `[d][8]` fp32 exactly as
+    /// `moe_phase2_down_reduce_k8_remote` indexes it: `remote[d * 8 + sg]`.
+    ///
+    /// This is the whole CPU side of the call site. The kernel adds `remote[d*8+sg]` into `partial[sg]`
+    /// **before** the ordered k = 8 sum, so what crosses the wire has to be a per-slot partial and not a
+    /// reduced value - a peer that returned a sum could not be merged exactly, because the association would
+    /// already have been chosen (`D180`).
+    ///
+    /// **This node's own slots are left at zero**, and that is not a placeholder: the kernel computes them
+    /// itself from its own blobs, and adding a peer's zero for a slot it owns is exact (`ShardReduce`), while
+    /// writing this node's own value here would count it twice.
+    ///
+    /// The layout is transposed relative to `ShardReduce`'s rows - rows are `[slot][dimension]` and this is
+    /// `[dimension][slot]` - because the kernel indexes by dimension and runs one threadgroup per `d`.
+    public func remotePartials(layer: Int,
+                               experts: [Int],
+                               slots: [Int],
+                               activation: [Float],
+                               dims: Int) throws -> [Float] {
+        let rows = try contributions(layer: layer, experts: experts, slots: slots,
+                                     activation: activation, dims: dims)
+        var out = [Float](repeating: 0, count: dims * ShardReduce.k8)
+        for slot in 0..<ShardReduce.k8 {
+            guard slot < rows.count else { break }
+            let row = rows[slot]
+            for d in 0..<min(dims, row.count) {
+                out[d * ShardReduce.k8 + slot] = row[d]
+            }
+        }
+        return out
+    }
+
     /// The peer contributions, ready to be added to this node's own partials.
     ///
     /// Returned as `[slot][dimension]` rows for `ShardReduce.reduceRows`, and **re-sorted by the slot each row
