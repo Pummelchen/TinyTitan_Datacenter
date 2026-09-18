@@ -280,7 +280,7 @@ if let provider = remotePartialsProvider {
     let dims = Int(D), k = Int(topK)
     // routedX is [D] fp16 - ONE row, because a decode step's single hidden state feeds every routed expert.
     let src = routedX.contents().bindMemory(to: Float16.self, capacity: dims)
-    var activation = [Float](repeating: 0, count: dims)
+    var activation = Array<Float>(repeating: 0, count: dims)
     for i in 0..<dims { activation[i] = Float(src[i]) }
     let ids = outIndices.contents().bindMemory(to: UInt32.self, capacity: k)
     let experts = (0..<k).map { Int(ids[$0]) }
