@@ -8718,3 +8718,36 @@ they are not bound by a recognisable name in the window around the phase-2 call.
 **The next attempt should find where the router's chosen ids are bound and confirm they are the ones phase 1 was
 given, not the prediction** - because `D245` through `D247` are a record of what happens when a plausible nearby
 buffer is used without checking that it is the one the arithmetic used.
+
+## D249 — The expert-id search, narrowed, and stopped rather than guessed
+
+`D248` left one item: the **router's chosen expert ids**, which the provider needs because it asks peers only for the
+experts this node does not own. Following it into `encodeDecodeRoutedMoE` narrows the search and does not close it.
+
+What the function body shows **is not** the router's output. Under `decodeExpertExecution == .gpuResidency` it binds
+
+    residencyHitPositions.contents().bindMemory(to: UInt32.self, capacity: cfg.topKExperts)
+    residencyMissPositions.contents().bindMemory(to: UInt32.self, capacity: cfg.topKExperts)
+
+into `decodeHitSlotsScratch` and `decodeMissSlotsScratch` - and **those names say `Slots`, not experts**, which is
+exactly the distinction that matters here. The MoE path addresses experts *by the slot they occupy in the layer's
+bank*, and the router's decision is a list of **expert ids** that has to be resolved to slots before phase 1 can use
+it. A provider handed slot numbers would ask for the wrong experts and, worse, would ask coherently - the exchange
+would return real expert outputs for the wrong experts, which is the class of failure `D247` just recorded.
+
+**So the honest position is that the candidate found is the wrong one on its own evidence**, and this is the fourth
+consecutive round in which reading one layer further corrected the previous round's answer. That is not a reason to
+stop reading; it is a reason not to write the call from what has been read so far.
+
+**What the next attempt should do, in order, and it is one command each:**
+
+  1. find where the **router kernel's output** is bound - it will be an expert-id buffer of `topKExperts` `UInt32`,
+     produced by the gate/router kernel rather than consumed by the residency classifier;
+  2. confirm it is the same list phase 1 was given, by checking the value flows from the router into
+     `encodeRoutedPersistentPhase1*`'s expert addressing rather than into a slot table;
+  3. only then write the call, with `routedX` widened fp16 -> fp32 (`D248`), the reply uploaded to a persistent
+     `2048 * 8` float buffer, and the buffer's own slots **zeroed** so they do not double-count (`D168`).
+
+**Nothing changed in the tree this round.** The closure seam remains inert: `nil` on every run without a plan, build
+clean, whole suite green. The value of the round is that a plausible candidate was examined and **rejected on its
+own naming**, before it became a wrong number on four nodes.
