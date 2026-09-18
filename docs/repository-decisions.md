@@ -3936,3 +3936,58 @@ against 0.634-0.648 measured earlier, with `mix.read` — a phase this change ca
 123 ms. That is machine state, not this change, and it cannot be separated now that the previous code is gone.
 It is recorded because a later reader comparing those numbers would otherwise conclude the change was a
 regression, and neither reading is safe: the earlier ones and these are not a controlled pair.
+
+## D127 — What the reference actually does with the head and the embedding, and it is not what I assumed
+
+A source study of the reference at `bea4034`. **The premise this engine has been carrying is wrong: the
+reference's 35B head is `int8` by default, not int4.** The ~286 MB figure is its opt-in `--head-bits 4` build.
+For 248320x2048 with group 64 the arithmetic is exact: weights 254,279,680 B + bf16 scales 15,892,480 +
+bf16 biases 15,892,480 = **286,064,640 B** at 4 bits, and **540,344,320 B** at 8. The converter's own help text
+says it: *"embedding and lm_head width (default 8; the head is ~0.5 GB at 8-bit)"*, and the release notes give
+the only head-width measurement that exists — *"the same build with a 4-bit head decodes at 23.0 tok/s against
+19.2. 8-bit stays the default for quality; the converter's `--head-bits 4` is there for anyone who wants the
+20% back."*
+
+**Head and embedding are always the same width, and the tie is resolved by an accessor, not a shared slot.**
+`lmHead()` returns the embedding view directly when `config.tieWordEmbeddings`, and the width resolves through
+the *embedding slot*: a separate `lm_head` is *"quantized with the embedding slot layout (padded to the same
+vocab rows)"*. Their own test names it: `theEmbeddingSlotGovernsTheTiedHead()`. Their 35B checkpoints are
+**untied** — `crossCheckProductionQwen35MoE` hard-requires `tieWordEmbeddings: false` for exactly this geometry
+(hidden 2048, 40 layers, vocab 248320, 256 experts) — so the 35B stores the two tensors separately, each 286 MB
+at a 4-bit head. The tied single-copy path is exercised on their dense 2B/4B, not on the 35B.
+
+**The prompt path already works from packed bytes.** Embedding lookup is a **row gather straight from the
+packed region** (`row_q = table + token_id*(D/2)`, one byte per two elements), never a dequantisation of the
+matrix. So quantising the embedding costs this engine nothing structurally: it is already the accessor we have
+for int4.
+
+**And the number I actually need does not exist in their repository.** There is **no** fidelity measurement of an
+int4 or int8 head against bf16 — no perplexity, no KL, no token agreement, no logit difference. It is a change
+they *decided not to make*, justified qualitatively, with only the speed figure above. Any fidelity claim for
+this engine's requantisation must be measured here.
+
+### The decision, and the work it implies
+
+**Quantise both the head and the embedding, as one shared int4 tensor.** The reason is not the width, it is the
+**single-copy property**: if the embedding is the same quantised tensor the head multiplies, then what the
+prompt read and what the output read are the same numbers *by construction*. Split storage — a bf16 embedding
+for the prompt beside an int4 head for the output — would have the two paths reading different weights for one
+matrix, which is exactly the `D56` failure this repository already records ("it was never the arithmetic").
+With this engine's container (fp32 scales, int8 zeros) one int4 copy is
+254,279,680 + 31,784,960 + 7,946,240 = **294 MB**, so two copies cost **588 MB** against the **2,034 MB** the
+two bf16 copies cost today — **~1.45 GB recovered**, which is precisely the residency the expert bank needs.
+
+**It cannot be a policy change alone.** `ModelCache`'s head path is guarded on `whole.dtype == "bf16"`; with an
+int4 head that guard fails and the engine falls back to `upstream.rows(named:)`, the fp32 dequantise path —
+2 GB of `Float` per step. So the policy change (`quant.head.lm` and `quant.token.embedding` to `int4-affine`)
+must land **with** an int4 head path. The pieces already exist: `packedTensor` maps a whole dense tensor once
+(`D116`) and `MetalInt4Matmul.matmulResident` multiplies it by offset. What is missing is the head call site and
+a fused variant worth having. **The reference's fused norm+GEMV+argmax is int4-only** (it is gated on
+`lmHeadWeightBits == 4 && attentionWeightBits == 4`) and never materialises vocab-sized logits, which is the
+shape to copy.
+
+**Accepted risk, stated plainly.** This changes the trace digest, which the operator authorised. The reference
+gives no accuracy figure, so the requantisation is a fidelity experiment to be measured here — greedy token
+agreement against the current bf16-head run on the frozen prompts, plus the trace contract — and **not** a step
+the reference has already validated. If the agreement is unacceptable, the fallback is the reference's own
+shipped posture: **int8** for the shared tensor, 540 MB one copy, still ~1.5 GB better than today.
