@@ -211,3 +211,31 @@ exchange cost rather than assumed free — `D208`'s 3.2 ms/step was measured on 
 
 **And the participant must be optional in the same way the ownership filter is** (`D164`): absent, not an identity,
 so the single-node path is untouched when no plan is given.
+
+### The participant property forces a module decision, and there are two ways to avoid the obvious one
+
+`01f54eb` narrowed the remaining work to "one property and one call". The property is the awkward part, because of
+where the two types live:
+
+* `ShardExchangeParticipant` is in **`TinyTitanDecodeProtocol`**, which `Package.swift:110` declares with **no
+  `dependencies:` at all** — it is standalone;
+* `RealForwardRunner` is in **`TinyTitan`**, and **no file under `sources/TinyTitan/` imports the protocol module**.
+  The engine has never depended on the distribution.
+
+So holding a `ShardExchangeParticipant` on the runner means adding **`TinyTitan` → `TinyTitanDecodeProtocol`**. There
+is no cycle to worry about (the protocol module depends on nothing), so it compiles — but it is a **structural**
+change: the single-node engine becomes coupled to the sharding code, in a repository whose whole measured record
+rests on the single-node path being untouched when no plan is given (`D164`).
+
+**Two ways to avoid it, and the second is the one this repository's own pattern suggests:**
+
+1. **Put the exchange behind a protocol declared in the engine** — `func remotePartials(...) -> [Float]?` — and have
+   the CLI supply the conforming participant. The engine then depends on nothing new, and the single-node path holds
+   an optional existential that is `nil` unless a plan was given.
+2. **Take a closure**, which is what `ShardExchangeServer` already does for its compute and what
+   `PreadExpertStreamer.ownedExpertFilter` already does for ownership. **Both seams this session added to the engine
+   are closures**, and both are `nil` by default — so a third one would be consistent rather than novel.
+
+**This is a decision, not a measurement, and it should be made deliberately rather than by reaching for the first
+thing that compiles.** The cost of getting it wrong is the one this document keeps warning about: a dependency that
+makes the single-node path anything other than untouched invalidates the measurements that path produced.
