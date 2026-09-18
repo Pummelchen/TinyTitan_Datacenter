@@ -5569,3 +5569,54 @@ login here, would both unblock it.
 key added to their `authorized_keys`), or **Local Network permission granted to this session's application** so
 this node can open LAN connections itself. Either one turns the farm from three reachable-but-locked hosts into a
 cluster.
+
+## D171 — The wired link measured: 118 MB/s and 0.5 ms, which reopens per-layer exchange and confirms the target
+
+`DC-130`'s measurement, taken the way it should have been taken from the start — **between two farm nodes, not to
+`macbook-ab`**. The operator pointed out that the node's SSH keys already exist and the username is the node name,
+and they do:
+
+```
+node1  192.168.18.27     node2  192.168.18.25     node3  192.168.18.29     node4  192.168.18.26
+```
+
+| measurement | node1 → node2 | node1 → node3 | node1 → node4 |
+| --- | --- | --- | --- |
+| round trip (ping, 5) | **0.612 / 0.677 / 0.779 ms** | 0.378 / 0.495 / 0.616 | 0.475 / 0.538 / 0.596 |
+| TCP throughput (2097 MB, sockets) | **118 MB/s** both ends (0.94 Gbit/s) | — | — |
+
+**Against the Wi-Fi pair every earlier figure came from:** 15.0 ms RPC → **~0.5–0.7 ms** round trip, a **~22×**
+improvement, and 40 MB/s → **118 MB/s**, a **~3×** one. `D155` and `D158` were measuring the slowest node in the
+farm. **`R4`'s trap is confirmed and is not hypothetical**: `node2`, `node3` and `node4` all resolve to **100.x
+Tailscale** addresses, so every `ssh node2` in this session has taken the VPN path while `192.168.18.25` is the
+gigabit one — a run that binds a host name silently gets the slow link.
+
+**The throughput table re-derived at 118 MB/s** (fp32 partials, `D168`; compute floor 35.3 ms):
+
+| replicated | slots | MB/step | exchange | step | tok/s | extra MB/node |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0 | 6.0 | 1.97 | 16.7 ms | 52.0 ms | **19.2** | 0 |
+| 32 | 5.0 | 1.64 | 13.9 ms | 49.2 ms | 20.3 | 58 |
+| **64** | **4.0** | **1.31** | **11.1 ms** | **46.4 ms** | **21.5** | **116** |
+| 96 | 3.0 | 0.98 | 8.3 ms | 43.7 ms | 22.9 | 175 |
+
+So on the real farm: **19.2 tok/s with no replication (2.72×), and 21.5 tok/s with 64 replicated experts at
+116 MB/node** — the target with a modest replication cost, on the same optimistic compute floor as before.
+
+**But the more interesting result is the latency.** `D158` concluded from a **15.0 ms** round trip that a
+per-layer exchange costs ~600 ms/step and is ~4× *slower* than a single node, which is why the design exchanges
+**once per step**. At the measured **0.5 ms**:
+
+```
+40 per-layer exchanges x 0.5 ms          = 20.0 ms
+one per-step exchange of 1.97 MB         = 16.7 ms
+```
+
+**Those are comparable, not 4× apart.** So the wired link **reopens the design space**: per-layer exchange is
+viable, it needs no whole-step buffering, and it pipelines naturally with the layer that produced it. The
+once-per-step shape is no longer *forced*; it is one of two viable choices, and the choice should be made on
+engineering grounds rather than on a latency number taken from the wrong machine.
+
+**What remains arithmetic.** The compute floor is still 141.3/4 with perfect scaling, which this repository's own
+history says is optimistic (`D87`, `D93`: dense weights and the head are replicated). No overlap is modelled. And
+these are **ping and socket measurements, not a sharded run** — the exchange frames have not crossed the switch.
