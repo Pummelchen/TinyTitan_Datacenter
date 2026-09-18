@@ -437,3 +437,26 @@ thing to look up before writing the function**, and it is a one-line question ra
 because the requester applies it. A `Compute` built on `encodeRoutedPersistentPhase2Reduce` as it stands would send
 `w * value` and the requester would multiply by `w` again - silently, and invisibly to a bit-exactness contract that
 each side satisfies on its own terms.
+
+### The last unknown is closed: the queue is `ctx.queue`
+
+The serve method needs a command queue and the runner holds no such property directly. The decode path shows where
+it comes from - `ctx.queue.makeCommandBuffer()`, used at `RealForwardRunner+Decode.swift:249`, `:286` and `:391` -
+so `ctx` is in scope on the runner and carries the queue.
+
+**That completes the specification, and every part of it is now a checked fact rather than a plan:**
+
+| piece | where | state |
+| --- | --- | --- |
+| the model and kernels | `RealForwardRunner.model` `:144`, `.moe` `:173`, `.moeActs` `:270` | in scope |
+| a synchronous expert fetch | `planRoutedExperts` `ModelExpertIO.swift:107`, `routedExpertBuffers(for:)` `:165` | synchronous, no server change |
+| the argument buffer | `moe.makeRoutedArgumentBuffer(routedBlobs:)` `MoE.swift:330` | exists |
+| the phase-1 encode | `encodeRoutedPersistentPhase1U16Load(x:acts:…)`, called at `:1528` | exists |
+| a command queue | `ctx.queue`, used at `:249`, `:286`, `:391` | in scope |
+| the reply layout | `[d * 8 + slot]`, `ShardExchangeParticipant.remotePartials` | tested |
+| the weight trap | the down projection must **not** apply the routing weight | recorded |
+
+**What remains is the function and the four-node run, and nothing else.** The method is synchronous, it shares the
+node's cache because `planRoutedExperts`/`routedExpertBuffers` are the same entry points the request path uses, it
+needs no change to `ShardExchangeServer`, and its one silent-failure mode - sending `w * value` when the requester
+also multiplies by `w` - is written down before the code.
