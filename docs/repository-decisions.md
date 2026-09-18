@@ -9040,3 +9040,32 @@ serving node's cost, which `D257`'s caveat says will dominate: `remoteExpertValu
 blocking waits per request, so a peer's answer costs 85 experts' worth of dispatches a layer. **A down-only kernel
 writing `[expert][d]` in one pass is what removes that**, and until it exists a distributed run measures the serving
 node's dispatch pattern at least as much as it measures the plan.
+
+## D259 — The served nodes die silently: the serving path is the suspect, and it is the one path with no test
+
+`D258` recorded node1 completing at 7.095 tok/s with the exchange live. What it could not explain is node2 and
+node3: read again after the run, **neither is still running and neither produced a `tok/s` line** - and neither
+produced an error either. Their logs end at
+
+    [shard] serving peer expert requests on port 9150.
+
+**That is the last line before they would be asked to answer a request**, and the next thing the process does is call
+`remoteExpertValues` for the first time. So the two facts together - node1 finishes its whole generation, node2 and
+node3 vanish without output - point at **the serving path**, not at the client, the plan, or the wiring.
+
+**And it is the one path in this whole exchange with no test.** Every other piece has one: the plan, the frames, the
+channel, the peer set, the reduce, the replication selector, the participant, the server's accept loop, and the
+requesting call site (verified by running it). `remoteExpertValues` was written last round, compiled, passed every
+gate the repository defines - **and has never been executed once, by anything.** `D257`'s two defects were both found
+by running; this is the same lesson one layer down, and the reason it is worth stating before the investigation is
+that the fix is not to debug it on three loaded nodes but to call it once, on one node, and see.
+
+**A silent death is the hardest kind to attribute and the easiest to prevent.** A `Compute` that throws is refused by
+the server and reported (`ShardExchangeServer` refuses a wrong-width reply rather than padding it); a `Compute` that
+**traps** takes the process with it and writes nothing. So the first thing to establish is whether the process died
+of a thrown error that was swallowed by the server's loop, or of a trap inside the method - and the cheapest way is a
+single-node test that calls `remoteExpertValues` directly, not a rerun on the farm.
+
+**What this does not change.** The client side is proven: plans, peers, servers, contributions and a token stream, all
+on real hardware. **What is unproven is the answer**, and until it is proven the 0.92x of `D258` is a measurement of a
+run in which two of the three nodes did not survive it.
