@@ -239,3 +239,43 @@ rests on the single-node path being untouched when no plan is given (`D164`).
 **This is a decision, not a measurement, and it should be made deliberately rather than by reaching for the first
 thing that compiles.** The cost of getting it wrong is the one this document keeps warning about: a dependency that
 makes the single-node path anything other than untouched invalidates the measurements that path produced.
+
+### The call, in the shape it should take
+
+Everything it needs is in scope at `RealForwardRunner+Decode.swift:~1787` and verified: `routedX` (`[D]` **fp16**, the
+router's `hidden:` input and phase 1's `x:` input), `outIndices` (`topKExperts` `UInt32`, the router's ids),
+`outWeights` (already passed as `routingWeights`), `D`, `topK`, and `L` for the layer. `remotePartialsProvider`
+exists on the runner and is `nil` by default.
+
+```swift
+// before the encodeRoutedPersistentPhase2Reduce call
+var remotePartialsBuffer: MTLBuffer? = nil
+if let provider = remotePartialsProvider {
+    let dims = Int(D), k = Int(topK)
+    // routedX is [D] fp16 - ONE row, because a decode step's single hidden state feeds every routed expert.
+    let src = routedX.contents().bindMemory(to: Float16.self, capacity: dims)
+    var activation = [Float](repeating: 0, count: dims)
+    for i in 0..<dims { activation[i] = Float(src[i]) }
+    let ids = outIndices.contents().bindMemory(to: UInt32.self, capacity: k)
+    let experts = (0..<k).map { Int(ids[$0]) }
+    if let partials = provider(L, experts, Array(0..<k), activation, dims) {
+        remotePartialsBuffer = try persistentRemotePartials(dims: dims)   // lazily created, see below
+        remotePartialsBuffer!.contents().copyMemory(from: partials, byteCount: dims * 8 * 4)
+        // THE NODE'S OWN SLOTS MUST BE ZERO (D168), or its own contribution is counted twice.
+        let p = remotePartialsBuffer!.contents().bindMemory(to: Float.self, capacity: dims * 8)
+        for slot in 0..<k where !isRemote(experts[slot]) { for d in 0..<dims { p[d * 8 + slot] = 0 } }
+    }
+}
+// ... and pass `remotePartials: remotePartialsBuffer` to encodeRoutedPersistentPhase2Reduce
+```
+
+**Two things the shape makes explicit that prose kept losing.** The provider must decide ownership - the engine
+does not know the plan - so `isRemote` is the provider's business and the zeroing has to agree with it, or a slot is
+either double-counted or dropped. And `persistentRemotePartials` must be a **stored, lazily created** buffer, not a
+per-layer allocation: 40 a token against a shared `MetalBufferCache` is `D114`'s failure exactly - 2.47 s/step
+against 0.92, with the damage in a phase the change never named.
+
+**Then the run.** Four nodes, `--shard-plan`/`--shard-node`, one `TinyTitanDecodeServer` per node with the real
+`Compute` wired to `ShardExchangeServer`, and the loads, the repeat count with a median, and the generation length
+recorded together. The prediction to test is **~8-9 tok/s** (about 1.12x), and it would falsify the 21 target rather
+than meet it - which is what the goal asked for.
