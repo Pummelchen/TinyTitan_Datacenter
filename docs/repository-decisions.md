@@ -13288,3 +13288,38 @@ cannot be argued with, which is what the last three rounds have lacked.
 (`D358`); **the reverse edge proven to connect - now repeatedly** (`D375`); and no run with both live yet.
 **The blocker is no longer a specific fault: it is that this leg succeeds most of the time and fails sometimes, and
 nobody has measured how often.** The sequence run may simply need to be attempted again.
+
+## D376 — The discriminator is the workload, not the peer's configuration, and the mechanism is unexplained
+
+**The full-prompt run, attempted again after `D375` withdrew the previous explanation:**
+
+    'The capital of France is'  --max-new 4   -> EHOSTUNREACH, 450 attempts   (2 of 2 runs)
+    'x'                         --max-new 1   -> [back] connected             (4 of 4 runs)
+
+**So there is a discriminator and it is reproducible from both sides** - which is a better position than `D375`
+left, where nothing was. **But it is not the discriminator anyone proposed.** `D374` named B's second listener;
+`D371` named the peer's configuration; `D369` named A's forward edge. **All three are held constant across the
+succeeding and failing runs, and the only thing that differs is the prompt and the generation length.**
+
+**And the mechanism is not apparent, which is stated rather than invented.** The prompt is an argument, and the
+generation length is a count; **neither should reach a socket that is opened before either is used.** The stages load
+their models, then wire, then compute - so by the time the reverse connect happens, the workload has not been
+touched. **Something about the invocation changes the outcome and the change is not in the code that is being read.**
+
+**What that leaves, and it is a hypothesis rather than a finding.** The two invocations differ in **how long each
+process lives before the connect** - a longer prompt means more work after the wiring, and `--max-new 4` means more
+after that - but the connect happens *before* both. **A process's memory footprint, its argument list length, or
+simply the wall-clock time since launch could each interact with whatever is refusing the connection**, and none of
+them is a thing this record can name with evidence. **`D287`'s Local Network Privacy is the only mechanism in this
+record that produces `EHOSTUNREACH` from a process like this one**, and **it is per-process and decided at launch** -
+which would fit a difference that tracks the invocation rather than the code.
+
+**And the test that separates those is cheap and does not require a theory.** Hold the prompt at `'x'` and raise
+`--max-new` to 4; then hold `--max-new` at 1 and use the long prompt. **Whichever of the two, alone, flips the
+outcome is the variable** - and if neither does, the discriminator is something about the pair, which would be a
+stranger and more useful fact than either.
+
+**Where the objective stands.** Four legs written and tested; the forward edge proven with a correct token (`D358`);
+the reverse edge **now measured to connect in four runs out of six** (`D375`, `D376`); and no run with both live.
+**The blocker is a reproducible correlation whose mechanism is unknown, and the honest next act is to isolate the
+correlation rather than to explain it.**
