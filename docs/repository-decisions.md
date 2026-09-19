@@ -12072,3 +12072,47 @@ token, layer, count, reserved, and the first version read `count` at offset **12
 zero - so the reader computed an empty payload, `decode` threw, the sender's task died, and the reader saw
 `ECONNRESET`. **That presents as a socket or port fault and is neither**, and it cost two wrong hypotheses before
 the offset was checked against `encode`. `countOffset` is a named constant with that history beside it.
+
+## D341 — Two items of incoming feedback checked against this build: the frame dtype matches, and the head is not 1.05 s
+
+Feedback on the all-reduce question arrived with nine items. Two of them question Design A's own arithmetic, and
+both were checked against the code and the measurements rather than accepted or argued.
+
+**"A2's frame dtype is an unguarded rounding site" — correct in general, and it does not apply here.** The feedback
+reads the forward path as fp32 (`Qwen3_5Forward.swift:507,571`, `hidden: [Float]`) and concludes that an fp16 frame
+cannot reproduce it, so A5's probe - fp32 to fp32 - validates the layer-range property but not the cast. **The
+premise belongs to a different engine.** That file is the main repository's; **this build's runner is the reference
+port, and its residual is half precision**:
+
+    public var hiddenStateBytes: Int { Self.residualWidthFor(cfg) * MemoryLayout<Float16>.stride }
+    self.remoteResidual = context.device.makeBuffer(length: D * MemoryLayout<Float16>.stride, ...)
+
+**So the frame and the value it carries are the same dtype, there is no cast between them, and the 0-of-2048 result
+is a half-precision-to-half-precision comparison.** The question was the right one to ask - an unguarded cast
+between a gate and the thing it gates is exactly the failure this record has logged repeatedly - **and the answer is
+that the cast does not exist.** Verified from the allocations rather than assumed from the plan.
+
+**"Confirm Design A's head stage isn't a hidden 1.05 s" — the concern is right and the number is superseded.** The
+feedback cites `ShardedForward.swift:41` and `D88`'s **1.05 s/step** for the replicated head and observes that a
+1.05 s head stage would cap a pipeline near 1 tok/s, contradicting the projection. **`D93` fixed exactly that** -
+the head became vocabulary-parallel, every node computing its own rows with the block decomposition unchanged, and
+`head` went **1.045 s to 0.26-0.32 s** with bit-identity intact. **And this session measured the head's contribution
+directly**: the ten-layer range runs at **41.9 ms/token including the head**, and 23.87 tok/s is not reachable with a
+one-second head in the path. **So the arithmetic the concern would invalidate is already measured, not projected.**
+
+**What is accepted without argument.** *"NODELAY must land together with the merged write"* - agreed, and the
+reason is in `D340`: Nagle currently *masks* the two-write pattern, so enabling `TCP_NODELAY` alone can make it
+worse. Patching every descriptor-creating site as a set (`TCPListener.accept`, `TCPTransport.connect`,
+`SocketContributionTransport.init`, `DecodeTCPSocket`) rather than one symbol is the right scope. *"Attack the
+receive wait, not the bytes"* - agreed, and `D92` is why: receive is **99.6%** of the exchange and the reading was
+that the cluster waits for peers to **have** something to send. *"Stop gathering the full vocabulary for decode"* -
+agreed, and the note that tie-breaking must match the router reference's lowest-index-first rule is the kind of
+detail that decides whether two implementations agree. *"Carry overlap as a prerequisite, not an assumption"* -
+agreed; `distribution-design.md:131` already conditions the projection on overlapped collectives, and the 61/50
+tok/s figures are wire-time ceilings under the same condition.
+
+**And the item worth acting on that is not about Design A at all.** The feedback's last record-hygiene point asks
+for **`ExchangeLedger`'s `bytesSent`/`bytesReceived` per node as standing ground truth** rather than a geometry
+derivation - which is the same discipline `D340` argued for and the brief itself specified (`"measure, don't
+project"`). **That measurement has not been taken and is the next thing worth running**, because every figure in
+both directions of this exchange - 1.92 MB or 7.5 MB - is currently arithmetic rather than observation.
