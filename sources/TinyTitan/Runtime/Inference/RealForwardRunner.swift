@@ -250,6 +250,13 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     let routerInput: MTLBuffer   // [D] FP16 (rmsnorm_no_scale(h))
     let zeroResidual: MTLBuffer  // [D] FP16 zeros — for routed branch base
     let outIndices: MTLBuffer    // [topK] UInt32
+
+    /// WHICH LAYERS THIS NODE OWNS. `nil` means all of them, so a single node behaves exactly as it did
+    /// before this existed - which is the gate for the change: with the range unset the tokens must be
+    /// identical, and only then can a sub-range be trusted as the basis of a layer pipeline. A node owning
+    /// `0..<10` embeds and stops after layer 9, and the hidden state left in the residual buffer is what a
+    /// pipeline stage would send (`docs/design-a-plan.md` A1).
+    public var layerRange: Range<Int>?
     let outWeights: MTLBuffer    // [topK] FP16
     /// Trace-only next-layer router result. It is never read by inference.
     let prefetchPredictionIndices: MTLBuffer

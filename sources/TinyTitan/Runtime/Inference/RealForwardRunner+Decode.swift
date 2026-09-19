@@ -189,7 +189,7 @@ extension RealForwardRunner {
             }
         }
 
-        for L in 0..<cfg.numLayers {
+        for L in layerRange ?? 0..<cfg.numLayers {
             // Dumping drains the previous layer's routed command first. The
             // residual is only settled once that has landed, and a dump taken
             // at encode time would read whatever the buffer held before the
