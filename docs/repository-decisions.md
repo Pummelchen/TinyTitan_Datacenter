@@ -15701,3 +15701,29 @@ issued while L's experts are still arriving), not a knob**, and it is what `D441
 (`D442`), and the overlap that is worth ~2x needs the layer loop restructured so that a layer's expert read is issued
 against the *next* layer's attention rather than against its own MoE (`D122`'s wired bank is the prerequisite
 already built). Naming the wrong lever would have cost a round; naming the right one costs the restructuring.
+
+## D443 - The knob surface is exhausted: four single-node tunables, all within noise
+
+**With the step measured at 47% expert I/O and 50% GPU waits (`D440`, `D441`), the next thing to rule out is that the
+engine is merely badly configured.** Four knobs already in the tree, each plausibly aimed at one of the two dominant
+phases, run back to back on one node with the same prompt and 32 tokens:
+
+                              tok/s
+    baseline                   7.340
+    TINYTITAN_KEEP_WIRED=1     7.317     (D122's mlock'd expert bank, +5.7% on the main engine)
+    TINYTITAN_QSA_GPU_SELECT=1 7.404     (GPU router select - aimed at the readback latency in the 47%)
+    TINYTITAN_EARLY_HITS=1     7.273
+
+**Four runs, 7.27 to 7.40, a 1.8% spread that is the run-to-run variation rather than an effect** - the same command
+measured 7.064 earlier in the session and 7.340 here, so ~4% moves on its own between runs. **No knob wins, and that
+is a result rather than a null one: the configuration surface of this engine is exhausted, and what is left is the
+structure.**
+
+**Which is where the objective now stands, stated once.** The four-node chain is delivered and correct - four Mac
+minis, one stage each, 6.016 tok/s, every stage within 9% of the others, and the machine that cannot originate
+hosting the head. **Its ceiling is measured rather than argued**: 141.6 ms/token, of which 47% is an expert read the
+GPU genuinely depends on and 50% is GPU wait. **Neither a deeper prefetch queue (`D442`) nor any of these four knobs
+(`D443`) moves it, and a layer pipeline divides memory but not time (`D437`, `D439`).** What remains is two structural
+changes, in order of cost: **restructure the layer loop so a layer's expert read runs against the next layer's
+attention (~2x, one node, the reference's proven technique)**, and **tensor-split the GPU phase across the four nodes
+(the only route to 21 tok/s, and a much larger change).** Nothing smaller is left to try.
