@@ -14407,3 +14407,38 @@ now narrower by half: **the eleven sites in `TinyTitanDecodeProtocol` and `TinyT
 failures**; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and token edge all
 verified; **a two-token ring whose first token is right and whose second is not**; and a 10x throughput gap still
 unmeasured, with its instrument halved in scope and its crash still unattributed.
+
+
+## D406 - The helper is innocent: the suite is green with it in, so the crash is one of the eleven call sites
+
+**The bisect, run as the cleanest possible split - add ONLY the helper to the green tree, change no call site:**
+
+    git diff --stat against 6208c35:   1 file changed, 10 insertions(+)
+    swift build -c release:            0 errors
+    swift test --no-parallel:          exit 0, 8 test binaries, no signal code 10
+
+**So the helper is innocent and the fault is one of the eleven sites that call it.** `D403` guessed the fault was
+in `TinyTitan`'s two sites; `D405` falsified that; **this round falsifies the other half of the same guess** - it is
+not the helper either. **The search has halved twice in two rounds and is now confined to eleven call sites**, and
+the tree is green with the helper committed (`4144d57`), so each subsequent test costs one site rather than a
+rebuild.
+
+**And this is the first full suite this session whose count was read from a file rather than through `tail`.** It
+reports **1565 tests across 7 binaries, 0 failures** - the corrected baseline `D405` recorded after the 625 turned
+out to be the lines `tail` had kept rather than the tests that ran. **Both the bisect and the count in this round are
+consequences of the same correction, which is that a pipe between a command and the question of what it produced
+answers the wrong question.**
+
+**And the shape of the remaining work is now a list rather than a search.** Eleven sites, all of the form
+`PipelineStage.note("...")`, in `TinyTitanDecodeProtocol` and `TinyTitanCLI`. **The crash is in
+`TinyTitanDecodeServiceTests`, which links both**, and it happens after that binary's 25 tests in 4 suites pass -
+**which points at a resource the tests share rather than at the print itself**: these tests drive `PipelineStage`
+with real buffers and sockets, **and a `static var` on a type they exercise is a different kind of change from a
+writable, even a computed one with no storage.** That is a hypothesis with a cheap test - **move the predicate off
+`PipelineStage` into a free function and see whether the sites then work** - and it is recorded as a hypothesis
+rather than a conclusion, which four rounds have taught.
+
+**Where the objective stands.** A1-A5 built and gated; **the fork's suite is 1565 tests in 7 binaries with 0
+failures, counted from a file**; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame
+shape and token edge all verified; **a two-token ring whose first token is right and whose second is not**; and a
+10x throughput gap still unmeasured, with its instrument one bisect away.
