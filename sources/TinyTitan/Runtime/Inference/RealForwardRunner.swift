@@ -265,6 +265,16 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     /// With both nil nothing changes, which keeps the single-node path and A1's gate intact.
     public var hiddenIn: MTLBuffer?
     public var hiddenOut: MTLBuffer?
+
+    /// PER-TOKEN HANDOFF. `hiddenOut` and `hiddenIn` are each a single buffer, so they carry one token's state;
+    /// these two turn them into a sequence. `onHidden` runs after a stage publishes and `nextHidden` before a stage
+    /// consumes, both with the position - which is what lets a file of `PipelineFrame`s stand in for a socket and
+    /// makes the pipeline's exactness testable on one node, before any transport exists.
+    ///
+    /// `nextHidden` returns a non-optional buffer and `nil` means "no source", so the type is not an optional
+    /// closure returning an optional buffer: Swift parses that as an optional closure and then rejects the binding.
+    public var onHidden: ((Int, MTLBuffer) -> Void)?
+    public var nextHidden: ((Int) -> MTLBuffer)?
     let outWeights: MTLBuffer    // [topK] FP16
     /// Trace-only next-layer router result. It is never read by inference.
     let prefetchPredictionIndices: MTLBuffer

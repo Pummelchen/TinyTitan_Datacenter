@@ -192,7 +192,10 @@ extension RealForwardRunner {
         // A3: a stage that is handed a hidden state does not embed. The copy overwrites the embed's result, which
         // is wasted work on a middle stage and harmless - correctness first, and the embed's cost is measured and
         // small against ten layers.
-        if let incoming = hiddenIn {
+        if let source = nextHidden {
+            let bytes = residualWidth * MemoryLayout<Float16>.stride
+            memcpy(hidden.contents(), source(position).contents(), bytes)
+        } else if let incoming = hiddenIn {
             let bytes = residualWidth * MemoryLayout<Float16>.stride
             memcpy(hidden.contents(), incoming.contents(), bytes)
         }
@@ -572,6 +575,7 @@ extension RealForwardRunner {
             let bytes = self.residualWidth * MemoryLayout<Float16>.stride
             memcpy(out.contents(), self.hidden.contents(), bytes)
         }
+        if let out = self.hiddenOut, let sink = self.onHidden { sink(position, out) }
 
             try self.fusionHead.encodeGreedyDecode(
                 commandBuffer: cb,
