@@ -14376,3 +14376,34 @@ of the remaining work on this instrument.
 failures, run and verified**; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape
 and token edge all verified; **a two-token ring whose first token is right and whose second is not**; and a 10x
 throughput gap still unmeasured after three attempts at the instrument that would measure it.
+
+
+## D405 - D403's prediction is wrong, the crash is not in TinyTitan, and the fork's suite is 1565 tests - not 625
+
+**The bisect, done by hand this time, and it produced a clean negative.**
+
+    switch restored, TinyTitan's two sites put back to raw writes, everything else kept:
+    full suite exit = 1
+    684 + 343 + 99 + 131 + 25 + 194 + 89 = 1565 tests PASSED
+    TinyTitanDecodeServiceTests exited with unexpected signal code 10
+
+**So `D403`'s prediction - that the fault was in the two `TinyTitan` sites rather than in `PipelineStage.note` itself
+- is falsified.** Putting those sites back to raw writes changed nothing: the same binary still dies with SIGBUS.
+**The cause is therefore in `PipelineStage.note`, or in one of the eleven sites in `TinyTitanDecodeProtocol` and
+`TinyTitanCLI`, and the `TinyTitan` half is excluded.**
+
+**And the run corrects a number I had been carrying.** The clean tree's suite this round reports **1565 tests across
+seven binaries** - 684, 343, 99, 131, 25, 194, 89 - where `D403` and `D404` both said **625**. **The 625 was a partial
+read**: the earlier runs' output was piped through `tail -6` and `tail -7`, **so I counted the lines I had kept rather
+than the tests that ran, and then wrote the number into two decision records as a measurement.** That is the
+`D359` trap in its purest form - *a pipe between a command and the question of what it produced* - and it is the
+**second time this session that a `tail` has turned a real result into a wrong one.** The count stands corrected:
+**1565 tests, 7 binaries, 0 failures on the clean tree.**
+
+**And the tree is green again at `6208c35`.** The switch's diff is recoverable as `6fc1faa`, and the next bisect is
+now narrower by half: **the eleven sites in `TinyTitanDecodeProtocol` and `TinyTitanCLI`, against the helper itself.**
+
+**Where the objective stands.** A1-A5 built and gated; **the clean tree's suite is 1565 tests in 7 binaries with 0
+failures**; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and token edge all
+verified; **a two-token ring whose first token is right and whose second is not**; and a 10x throughput gap still
+unmeasured, with its instrument halved in scope and its crash still unattributed.
