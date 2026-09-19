@@ -57,8 +57,9 @@ near 26.6 ms.
 - The release gates: force-cast **ok**, func-length **ok** (0 baselined, 0 new, 2186 scanned),
   unchecked-sendable **ok**, arch-path **ok**.
 - A clean scratch release build, and the archive
-  `tinytitan-1.1-macos-arm64.tar.gz` at 25,830,098 bytes,
-  sha256 `b44e151f3f76b5b92609e7a68ad3b9d1cd2e2defd72e429f3bea7904360c71b4`.
+  `tinytitan-1.1-macos-arm64.tar.gz`, sha256: `SHA256_PENDING`.
+  (The digest is filled in at publish time: a clean rebuild is not byte-reproducible, so a
+  digest quoted here goes stale the moment the archive is rebuilt.)
 - **No model, dataset or dependency was fetched to make anything pass.**
 
 ## Not checked, and named here as the gate requires

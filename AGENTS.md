@@ -27,6 +27,19 @@ often than this file, so do not treat any list here as the current matrix.
 nothing streamed from SSD. Ornith 1.5 8-bit is the default install and the default
 golden target; 6-bit is a withdrawn legacy format.
 
+## The README is human-owned — do not edit it
+
+**`README.md` is written and maintained by hand by the human owner. No AI agent may change it** —
+not its prose, headings, images, tables, badges or structure. This rule was asked for after an
+agent replaced this project's README with another project's and then edited that one.
+
+**One standing exception, and it is not yours to make:** the badge statistics are updated by an
+**automatic external script** on its own schedule. Leave those blocks alone as well — a hand edit
+or an agent edit only fights the script.
+
+**If a change to the README looks necessary, say so and leave the file untouched.** Report it;
+do not make it.
+
 ## Working here
 
 This is the development repository — changing source is the point, subject to the
