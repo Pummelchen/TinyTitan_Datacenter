@@ -206,6 +206,7 @@ extension RealForwardRunner {
             if let probeLayer = hiddenProbeLayer, L == probeLayer, let probe = hiddenProbe {
                 memcpy(probe.contents(), hidden.contents(),
                        residualWidth * MemoryLayout<Float16>.stride)
+                if let sink = self.onHidden { sink(position, probe) }
             }
             // Dumping drains the previous layer's routed command first. The
             // residual is only settled once that has landed, and a dump taken

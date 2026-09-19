@@ -281,6 +281,15 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     public var hiddenProbeLayer: Int?
     public var hiddenProbe: MTLBuffer?
 
+    /// A `[D]` fp16 shared buffer - what a probe or a pipeline stage hands between boundaries. The device comes
+    /// from a buffer the runner already owns, because `context` is an init local and not a property.
+    public func makeHiddenStateBuffer() -> MTLBuffer {
+        verificationHidden.device.makeBuffer(length: hiddenStateBytes, options: .storageModeShared)!
+    }
+
+    /// The residual width in bytes, so a caller can size a record without recomputing it.
+    public var hiddenStateBytes: Int { Self.residualWidthFor(cfg) * MemoryLayout<Float16>.stride }
+
     public var onHidden: ((Int, MTLBuffer) -> Void)?
     public var nextHidden: ((Int) -> MTLBuffer)?
     let outWeights: MTLBuffer    // [topK] FP16

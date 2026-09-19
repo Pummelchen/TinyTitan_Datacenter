@@ -277,6 +277,29 @@ public func run(args: Args,
         // reached" from "it was reached silently". Removed once the question is settled.
         FileHandle.standardError.write(Data("[shard] probe: reached the serve block, port \(String(describing: args.shardServePort)), only=\(args.shardServeOnly)\n".utf8))
 
+        // DESIGN A'S PIPELINE SEAMS, driven from the environment so the scaffolding can be removed in one
+        // deletion, matching TINYTITAN_ROUTING_TRACE. TINYTITAN_PROBE_LAYER captures a layer boundary in a full
+        // run; TINYTITAN_DUMP_LAYER_STATE writes whatever state the hook fires with - so a 0:40 run probing layer
+        // 20 and a 0:20 run publishing hiddenOut are dumped by one path, and comparing them is the exactness gate.
+        if let probeText = ProcessInfo.processInfo.environment["TINYTITAN_PROBE_LAYER"],
+           let probeLayer = Int(probeText) {
+            runner.hiddenProbeLayer = probeLayer
+            runner.hiddenProbe = runner.makeHiddenStateBuffer()
+        }
+        if let dumpPath = ProcessInfo.processInfo.environment["TINYTITAN_DUMP_LAYER_STATE"] {
+            runner.onHidden = { position, buffer in
+                var record = Data()
+                var p = UInt32(truncatingIfNeeded: position)
+                withUnsafeBytes(of: &p) { record.append(contentsOf: $0) }
+                record.append(Data(bytes: buffer.contents(), count: runner.hiddenStateBytes))
+                if let handle = FileHandle(forWritingAtPath: dumpPath) {
+                    handle.seekToEndOfFile(); handle.write(record); try? handle.close()
+                } else {
+                    try? record.write(to: URL(fileURLWithPath: dumpPath))
+                }
+            }
+        }
+
         // WHICH LAYERS THIS NODE OWNS. Unset means all of them, and that is the configuration A1 gated as
         // bit-identical, so a sub-range is the only thing this can change (`docs/design-a-plan.md`).
         if let spec = args.layerRange {
