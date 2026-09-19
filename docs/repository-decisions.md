@@ -12733,3 +12733,38 @@ treating evidence about one thing as evidence about another.**
 position alignment, and now the return path for the chosen token. **The first token the pipeline produced was already
 correct (`D358`); the backward edge is what the second one needs.** The next run is the one that says whether the
 objective's central claim holds for a sequence rather than for a single step.
+
+## D360 — The suite is green at 1652, taken rather than assumed, and the backward edge's remaining piece is named
+
+**The full suite, run rather than inferred, after the protocol change `D359` found had been breaking it:**
+
+    swift test --no-parallel   exit=0
+    8 binaries, 1652 tests passed, 0 failures
+
+**1652 is the 1644 recorded in `D346` plus the eight `PipelineStage` tests** - and it is the first time the whole
+suite has been executed since `PipelineEndpoints` gained `publishedRows` in round 57. **The correction `D359` made is
+therefore closed by measurement rather than by the assertion that it would be.**
+
+**And the remaining piece of the ring is now named exactly.** `sendToken` and `receiveToken` exist and are tested
+(`D359`), **and nothing calls them.** Two things are missing, and neither is a one-liner:
+
+  * **the sockets** - a reverse link in `PipelineWiring`, so a downstream stage can send and an upstream one can
+    receive. The environment seam already reserves the shape: `TINYTITAN_STAGE_LISTEN` and `TINYTITAN_STAGE_CONNECT`
+    for the forward edge, and the reverse edge wants its own pair rather than reusing those, because **a ring's
+    forward and backward legs are separate sockets with separate lifetimes** - a stage binds one and connects the
+    other;
+
+  * **a hook, and this is the real work** - `RealForwardRunner` has `onHidden` and `nextHidden` for the activation
+    handoff and **has no equivalent for the token**. The generation loop chooses the next input token itself, so the
+    return path needs a source it can consult before each step - `nextToken` beside `nextHidden`, in the same shape
+    and for the same reason: the pipeline's state has to come from somewhere the runner does not own.
+
+**And the honest position after six rounds of handoff work.** The forward leg carries the right number of rows and
+every frame arrives aligned; the prefill is seeded; the first token the pipeline produces is the one a single node
+produces (`D358`); the backward edge's codec is written and tested; **and no run has yet used it.** The objective's
+central claim is demonstrated for one step and not for a sequence, and the two pieces above are what stand between
+those two statements.
+
+**What is safe.** The suite is green at 1652, the fork is clean, both bundles are current, and the last twenty
+records are the only copy of this work outside this machine because the remote has not accepted a push since
+`f883849`.
