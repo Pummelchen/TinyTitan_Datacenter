@@ -15426,3 +15426,36 @@ across two machines**, which is the first time a multi-stage layer pipeline has 
 target is the same wiring one stage further, and every throughput number taken before this point must be re-measured -
 `D415`'s convergence curve, `D425`'s per-stage cost and `D430`'s residual were all measured on a ring that was
 generating the wrong tokens.**
+
+## D434 - Every ring throughput number this session was an artifact of the broken sequence; the corrected baseline is 7.0 tok/s
+
+**Re-measured at 128 tokens with the sequence verified correct at both lengths:**
+
+    two-stage ring:    A 6.977 tok/s (143 ms/token)    B 7.291 tok/s (137 ms/token)
+    previous, broken:  A 17.116                        B 19.057
+    three-stage chain: 3.436 tok/s
+    previous, broken:  8.893 / 9.265 / 9.718
+
+**The ring was 2.5x faster when it was wrong.** The reason is visible in the fault itself: a first stage with no
+carried token produced from **its own sampler** without ever fetching, so it never blocked on the head - **the wait
+that dominates a correct pipeline was simply absent.** `D415`'s convergence curve, `D425`'s "the stage is the law",
+`D426`/`D427`'s relay accounting and `D430`'s residual were all measured on that.
+
+**And what survives is the part that never involved the ring.** A stage measured **alone** is unaffected by the
+handoff faults, so:
+
+    a 20-layer stage alone:  58 ms/token   17.1 tok/s      (unchanged, and legitimate)
+    a 13-layer stage alone:  48.7 ms/token 20.5 tok/s      (the law's 48.6, unchanged)
+
+**Those two stand, and they are the only throughput numbers this session that do.**
+
+**And the corrected comparison is the clean one the objective needs.** One 20-layer stage does its own work in
+**58 ms**; the two-stage ring does a token in **143 ms**. So the handoff and the wait cost **85 ms per token** - the
+serial dependency by which the first stage cannot produce until the head has chosen, and the head cannot choose until
+the first stage has produced. **That is the real, now-trustworthy statement of the throughput problem**, and it is
+what the 21 tok/s target has to be reasoned against.
+
+**Where the objective stands.** Correctness is closed - the two-stage ring and the three-stage chain both reproduce a
+single node's token sequence byte for byte, and the full suite is green. **Throughput is now measured honestly for the
+first time: 7.0 tok/s in a two-stage ring against 21 wanted across four stages, with the gap identified as the serial
+handoff rather than as anything about the stages themselves, which are exactly the law.**
