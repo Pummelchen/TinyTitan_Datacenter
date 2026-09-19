@@ -9,7 +9,7 @@ import Testing
 ///
 /// The structure is deliberately the one `DecodeTCPSocketTests` arrived at - `.serialized`, a fixed port in the
 /// ephemeral range, and a reader that loops - because that file records what happens without it.
-@Suite("PipelineLink over a socket", .serialized)
+@Suite("PipelineLink framing", .serialized)
 struct PipelineLinkTests {
     /// A port in the ephemeral range, fixed so the test is deterministic and distinct from every other suite's.
     static let port: UInt16 = 47_681
