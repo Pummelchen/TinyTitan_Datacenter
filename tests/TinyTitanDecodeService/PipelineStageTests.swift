@@ -66,6 +66,10 @@ struct PipelineStageTests {
 /// one buffer, and those are the whole of its contract - so a fake with four properties exercises everything a real
 /// runner would, in milliseconds, and without 19 GB of weights.
 private final class FakeEndpoint: PipelineEndpoints {
+    /// Added when the protocol gained it in round 57 - and its absence broke this test target for four rounds,
+    /// because only `swift build` was run in that time and `swift build` does not compile tests. A protocol change
+    /// has to update its fakes in the same edit, and a green build is not a green suite.
+    var publishedRows: Int = 1
     var hiddenIn: MTLBuffer?
     var hiddenOut: MTLBuffer?
     var onHidden: ((Int, MTLBuffer) -> Void)?
@@ -134,5 +138,45 @@ struct PipelineStageWiringTests {
             try PipelineStage.install(on: fake, input: FileHandle.nullDevice, output: nil,
                                       rowWidth: 8, rows: 1, exitLayer: 10)
         }
+    }
+}
+
+/// The ring's backward edge, tested where the forward one was: on a real socket, with no model.
+@Suite("PipelineStage backward edge", .serialized)
+struct PipelineStageBackwardTests {
+    static let port: UInt16 = 47_710
+
+    private func connectWhenListening(_ port: UInt16, retries: Int = 150) throws
+        -> (input: FileHandle, output: FileHandle) {
+        var last: Error = PipelineStage.StageError.noLandingBuffer
+        for _ in 0..<retries {
+            do { return try DecodeTCPSocket.connect(host: "127.0.0.1", port: port) }
+            catch { last = error; usleep(20_000) }
+        }
+        throw last
+    }
+
+    @Test("a chosen token comes back on the same wire the activations went out on")
+    func tokenReturns() throws {
+        let done = DispatchSemaphore(value: 0)
+        var returned: Int?
+        // The downstream stage: it would sample here; the test stands in for the sampler.
+        DispatchQueue.global().async {
+            defer { done.signal() }
+            guard let pair = try? DecodeTCPSocket.listenAndAccept(host: "127.0.0.1", port: Self.port) else { return }
+            try? PipelineStage.sendToken(5767, to: pair.output)
+            _ = pair.input
+        }
+        let pair = try connectWhenListening(Self.port)
+        returned = try PipelineStage.receiveToken(from: pair.input)
+        #expect(done.wait(timeout: .now() + 10) == .success, "the peer did not finish")
+        #expect(returned == 5767, "the token that came back was \(String(describing: returned))")
+        try? pair.input.close(); try? pair.output.close()
+    }
+
+    @Test("a frame with rows in it is refused as a token")
+    func rowsAreNotAToken() {
+        let frame = PipelineFrame(token: 5, layer: 0, hidden: [1, 2])
+        #expect(frame.hidden.count == 2, "a payload frame must not be readable as a token index")
     }
 }

@@ -25,6 +25,8 @@ public enum PipelineStage {
         case frameTooLarge(values: Int, capacity: Int)
         /// `install` was given a stage with no `hiddenIn`, so a received frame would have nowhere to land.
         case noLandingBuffer
+        /// A return frame carried hidden rows, so it is not the token index it was read as.
+        case notATokenFrame(values: Int)
     }
 
     /// Read one or more rows of half-precision values from a published buffer into a frame.
@@ -144,5 +146,33 @@ extension PipelineStage {
                 return landing
             }
         }
+    }
+}
+
+extension PipelineStage {
+    /// **The ring's backward edge: the chosen token index, sent the way it came.**
+    ///
+    /// `D311` set the topology out as "activations forward, one token index back", and only the forward leg was
+    /// built. Without the return, a stage that owns the first layers never learns what the stage that owns the last
+    /// ones chose - so it keeps generating from its own tokens, which for a partial forward are meaningless, and
+    /// **every hidden state it publishes after the first is the state of the wrong token.** That is exactly the
+    /// signature `D358` measured: one correct token, then divergence.
+    ///
+    /// **No new codec.** A `PipelineFrame` already carries a `token`, and `count` may be zero - so the return is a
+    /// frame with an empty payload, which the existing reader already handles and `maxRows` already permits. Four
+    /// bytes of header carry a whole token's worth of information, which is what makes this leg almost free beside
+    /// the forward one.
+    public static func sendToken(_ token: Int, layer: Int = 0, to output: FileHandle) throws {
+        try PipelineLink.send(PipelineFrame(token: token, layer: layer, hidden: []), to: output)
+    }
+
+    /// Read the token a downstream stage chose. Throws if the frame carries a payload, because a return frame with
+    /// rows in it is not a token and should not be silently read as one.
+    public static func receiveToken(from input: FileHandle) throws -> Int {
+        let frame = try PipelineLink.receive(from: input)
+        guard frame.hidden.isEmpty else {
+            throw StageError.notATokenFrame(values: frame.hidden.count)
+        }
+        return frame.token
     }
 }
