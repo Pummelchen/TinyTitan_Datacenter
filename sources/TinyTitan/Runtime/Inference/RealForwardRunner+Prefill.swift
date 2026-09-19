@@ -527,6 +527,8 @@ extension RealForwardRunner {
                 blitCB.commit()
                 await blitCB.completed()
             }
+            FileHandle.standardError.write(Data(
+                "[publish] chunk t=\(t) start=\(startPosition) epilogue=\(runEpilogue) prologue=\(runPrologue)\n".utf8))
             publishedRows = t
             if let sink = onHidden { sink(startPosition, out) }
         }
