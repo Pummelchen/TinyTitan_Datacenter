@@ -12768,3 +12768,33 @@ those two statements.
 **What is safe.** The suite is green at 1652, the fork is clean, both bundles are current, and the last twenty
 records are the only copy of this work outside this machine because the remote has not accepted a push since
 `f883849`.
+
+## D361 — The ring's reverse edge is wired, and the last step is that nothing consults it
+
+`PipelineWiring.installReverseEdge` binds or connects the backward leg from two new environment seams:
+`TINYTITAN_STAGE_BACK_LISTEN` for the stage that **embeds** - it waits for a token to come back - and
+`TINYTITAN_STAGE_BACK_CONNECT` for the stage that **samples**, which sends the one it chose.
+
+**It is a separate socket from the forward edge rather than the other end of it**, and that is a fact about the
+topology rather than a convenience: **the two legs have different lifetimes.** A stage binds the forward edge on a
+port its predecessor connects to, and connects the reverse edge to a port its successor binds, **so one stage is a
+listener on one and a client on the other** - which a single connection could not express, and which `D348`'s
+in-process test could not have revealed because it used one socket for both directions.
+
+**`nextTokenSource` and `nextTokenSink` are plain closures on `RealForwardRunner`, like `hiddenIn` and `hiddenOut`**,
+so the runtime target still needs no import and the module graph is untouched. Both are nil outside a ring.
+
+**And the source returns a sentinel of `-1` rather than an optional**, for the reason `nextHidden` already documents
+in this file: **Swift parses an optional closure returning an optional as an optional closure returning a
+non-optional, and then rejects the binding.** `-1` cannot be a real token, so "nothing has come back yet" is
+distinguishable from "the token is 0" - which matters because 0 is a legitimate token id.
+
+**What is not done, and it is one step: nothing consults either closure.** The token is a **caller parameter** of
+`produce(token:position:slot:into:)`, so the returned token belongs in whatever calls it - **the CLI's generation
+loop** - which must ask `nextTokenSource` before each step and call `nextTokenSink` with what it sampled. **The
+reverse edge is complete except for being used**, and that is a smaller statement than the one `D360` made only
+because the sockets are now built rather than because the pipeline works.
+
+**And the verification discipline held this round.** `swift test --filter PipelineStage` was run rather than a build
+alone, which is the correction `D359` recorded - **a green build is not a green suite**, and the previous four rounds
+had used the two interchangeably.
