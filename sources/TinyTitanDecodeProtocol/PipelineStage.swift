@@ -162,6 +162,16 @@ extension PipelineStage {
     /// frame with an empty payload, which the existing reader already handles and `maxRows` already permits. Four
     /// bytes of header carry a whole token's worth of information, which is what makes this leg almost free beside
     /// the forward one.
+    /// THE HELPER ALONE, no call site changed - the bisect D405 left (D406).
+    public static var quiet: Bool {
+        ProcessInfo.processInfo.environment["TINYTITAN_QUIET"] != nil
+    }
+
+    public static func note(_ message: String) {
+        guard !quiet else { return }
+        FileHandle.standardError.write(Data(message.utf8))
+    }
+
     public static func sendToken(_ token: Int, layer: Int = 0, to output: FileHandle) throws {
         try PipelineLink.send(PipelineFrame(token: token, layer: layer, hidden: []), to: output)
     }
