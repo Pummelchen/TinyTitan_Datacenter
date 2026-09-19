@@ -135,9 +135,12 @@ final class ExpertPrefetchRing: @unchecked Sendable {
     var summary: String {
         let b = Double(max(1, begins))
         let n = Double(max(1, reclaimedOps))
-        return String(format: "prefetch_ring begins=%d free=%.2f submitted=%.2f inflight=%.2f held=%.2f "
-                      + "spec_ops=%d spec_queue_ms=%.2f spec_load_ms=%.2f",
-                      begins, Double(observedFree) / b, Double(observedSubmitted) / b,
+        // `observedSubmitted` is a SAMPLE of slot states taken at `begin`, not a count of submissions (D446); the
+        // count of submissions is `issuedReads`, and `reclaim*Nanos` are only accumulated for ops that were
+        // reclaimed, so avgLoad x reclaimedOps is a lower bound on the await rather than the whole of it.
+        return String(format: "prefetch_ring begins=%d issued=%d free=%.2f sampled_submitted=%.2f "
+                      + "sampled_inflight=%.2f sampled_held=%.2f reclaimed=%d queue_ms=%.2f load_ms=%.2f",
+                      begins, issuedReads, Double(observedFree) / b, Double(observedSubmitted) / b,
                       Double(observedInFlight) / b, Double(observedHeld) / b,
                       reclaimedOps, Double(reclaimedQueueNanos) / n / 1e6, Double(reclaimedLoadNanos) / n / 1e6)
     }
