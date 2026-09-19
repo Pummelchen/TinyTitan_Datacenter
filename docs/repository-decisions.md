@@ -13890,3 +13890,32 @@ the forward edge producing a correct first token (`D389`); the reverse edge veri
 state pairing verified per position** (`D391`); and one sequence whose first token is right. **All four of this
 design's interfaces are now measured correct, and what remains is the state the interfaces carry rather than how they
 carry it.**
+
+
+## D392 — A one-token ring deadlocks, which is a design fact rather than a failed test
+
+**The test `D391` proposed, attempted:**
+
+    single node, --max-new 1:   ' Paris '
+    the ring,    --max-new 1:   (no output; neither stage finished)
+
+**And the reason is structural rather than a fault.** A stage that owns the first layers blocks in
+`nextTokenSource` waiting for the token its successor chose; **a successor generating exactly one token never samples
+one, because its single token comes from the prefill's logits and no decode step runs.** So A waits forever for a
+token that the pipeline has no step to produce.
+
+**Which is worth recording as a property of the design rather than as a bug.** A ring pipeline cannot complete a
+generation shorter than two tokens: the first token is the prompt's answer and needs no return, **but the first stage
+does not know that and blocks for it anyway.** A production pipeline would either have the first stage fall back to
+its own sampler when the ring has nothing to send, or the head stage would signal completion backwards - **and neither
+exists, so `--max-new 1` hangs.**
+
+**That also means `D391`'s cheapest test is not available as stated**, and the substitution is obvious: **`--max-new 2`
+exercises exactly one decode row and no more**, which is the same discrimination the one-token run would have made -
+**the prompt's rows are written by the prefill and the single decode row is the first written from the loop, so if the
+KV hypothesis is right the first token is right and the second is wrong, and if it is wrong both are right.**
+
+**Where the objective stands.** Unchanged and stated once: A1-A5 built and gated with **1652 tests and 0 failures**;
+the exactness gate at **0 of 2048**; **the forward edge, the reverse edge and the state pairing each measured correct
+by their own output** (`D389`, `D390`, `D391`); **and a sequence whose first token is right and whose second is not**,
+with the KV cache named as the remaining candidate and a two-token run as the test that needs no new code.
