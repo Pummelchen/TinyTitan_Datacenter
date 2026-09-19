@@ -11570,3 +11570,37 @@ the path the pipeline will actually use**, because a pipeline runs prefill befor
 **The next step is therefore not in the prefill file at all.** It is to find where the CLI's runner and the
 generation's runner diverge, print `ObjectIdentifier` on both sides - `D317`'s method - and fix the assignment.
 **Everything after that is the comparison the gate was built for.**
+
+## D328 — The ordering is right and the value is still nil: the check moves to the assignment itself
+
+`D327` found prefill reading `range=0..<40` with `--layer-range 0:20` on the command line, and left two candidates:
+different runners, or an assignment that happens too late. **This round eliminated the second.**
+
+    Run.swift:318    runner.layerRange = lo..<hi
+    Run.swift:397    producer: runner          <- the generation, seventy-nine lines later
+
+**The range is set before the generation is constructed**, there is **no warmup** in the CLI, and nothing between the
+runner's creation at `:261` and the assignment at `:318` runs a prefill. **So the ordering candidate is dead**, and
+`executePrefillChunk` at `:266` computes `layers = layerRange ?? 0..<cfg.numLayers` **after** the assignment - and
+still saw nil.
+
+**Which leaves one place to look and it is small.** Either `args.layerRange` is nil when `:318` runs - the argument
+did not parse - or the assignment is not reaching the object prefill reads. **`D306` is evidence for the first being
+false**: `--layer-range 0:10` measurably changed the decode timing, so the argument parses and the assignment lands.
+**Both cannot be true**, which is the same shape as `D316` and `D317`: **two observations that are each plausible and
+cannot both hold, which means an instrument is lying rather than the system being inconsistent.**
+
+**The next instrument is the one `D316` prescribed and this round did not get to**: **one build**, with
+`runner.layerRange` printed immediately after the assignment at `:318`, `args.layerRange` printed just before it, and
+`layers` printed inside `executePrefillChunk` - **all three in the same binary, read together.** `D316`'s lesson was
+that reverting a diagnostic before its comparison is read costs a round; the same applies to adding them one at a
+time across rounds, which is what the last four have done.
+
+**And the honest framing at round twenty-two.** The Design A build has five pieces in and gated, one measured number
+that the design rests on, and a gate that has still never run. **The last six rounds have been instrumentation, and
+each produced one fact.** The facts are real and they have narrowed the failure from "segfault, cause unknown" to
+"one of two mutually exclusive readings of a single property" - **but the ratio is poor and the work would go faster
+with fresh context than with what remains of this session's.**
+
+**Everything is committed, gated and bundled**: fork `0db2fc1`, main at this record, both bundles refreshed and
+verified, the baseline tag intact, and ~176 GB of disk recovered across the four machines.
