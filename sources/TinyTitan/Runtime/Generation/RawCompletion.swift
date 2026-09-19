@@ -247,6 +247,12 @@ public func runRawCompletion(producer: any LogitProducer,
     var toolCallMarkers = ToolCallMarkerCounter()
     var loopMark = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
 
+    /// THE LOOKAHEAD'S CARRY (D411). The token this stage needs at step N is its peer's token from step N-1, which
+    /// the peer emitted at the END of its own step N-1 - so it can be fetched at the end of this iteration instead of
+    /// blocking at the start of the next one. D410 measured that blocking order at 207 ms of every 295 ms step on
+    /// the first stage, against 87.5 ms of its own work.
+    var pendingIncoming: Int32? = nil
+
     while true {
         try Task.checkCancellation()
 
@@ -340,16 +346,25 @@ public func runRawCompletion(producer: any LogitProducer,
         // These two properties belong to the ring, not to the act of producing logits.
         var stepToken = tokenID
         if let ring = producer as? RealForwardRunner {
+            // THE SINK STAYS EARLY AND THE SOURCE MOVES TO THE END OF THE ITERATION (D411). The sink must run before
+            // anything can overwrite `tokenID`, because it carries what this stage SAMPLED - and at this point
+            // `tokenID` is still the token the sampler chose at the end of the previous iteration, so publishing it
+            // here is both correct and as early as the peer could possibly want it.
             ring.nextTokenSink?(tokenID, 0)
-            if let source = ring.nextTokenSource {
-                let incoming = source(position)
-                // -1 is the sentinel for "nothing has come back yet" (D361), and it is distinguishable from 0
-                // because 0 is a legitimate token id.
-                if incoming >= 0 { stepToken = incoming }
-            }
+            // The token to produce with arrived during the PREVIOUS iteration's work (below), not now.
+            if let carried = pendingIncoming { stepToken = carried; pendingIncoming = nil }
         }
         try await producer.produce(token: stepToken, position: position, slot: slot,
                                    into: scratch.logits)
+        // FETCH FOR THE NEXT STEP, WHILE THE PEER IS STILL WORKING ON THIS ONE. This is the whole reordering: the
+        // receive is the same call it always was, moved to the other end of the iteration, so that the wait overlaps
+        // the peer's step rather than preceding this stage's own.
+        if let ring = producer as? RealForwardRunner, let source = ring.nextTokenSource {
+            let incoming = source(position + 1)
+            // -1 is the sentinel for "nothing has come back yet" (D361), and it is distinguishable from 0
+            // because 0 is a legitimate token id.
+            if incoming >= 0 { pendingIncoming = incoming }
+        }
         loopMark = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
         position += 1
         uncommittedBoundaryTokenIDs.removeAll(keepingCapacity: true)
