@@ -11033,3 +11033,42 @@ nothing.
 **So this round produced no code and a corrected design**, which is the better outcome: the file-handoff wiring would
 have been built, run, and produced a comparison that could only ever have been wrong. **A5 is now: the layer-20
 state comparison, then the ring.**
+
+## D312 — A5's probe is in, and it is exact by construction rather than by convention
+
+`D311` showed the file handoff between two runs cannot work and restated the gate as a comparison at a layer
+boundary. The enabling piece is in:
+
+    public var hiddenProbeLayer: Int?
+    public var hiddenProbe: MTLBuffer?      receives the residual as it ENTERS the probe layer
+
+**And the reason it is the right comparison is an identity, not a convention.** Entering layer `L` is the state
+**after `L` layers**, which is exactly what a stage whose range ends at `L` publishes from `hiddenOut`. So a probe at
+20 in a full `0:40` run captures the same buffer a `0:20` run holds - **the two are the same point in the same
+forward pass, reached two ways.** If they differ, a stage's output depends on something other than its input and its
+own layers, and the pipeline is wrong at a level no transport can fix.
+
+**That is what makes this the gate rather than a proxy for it.** It needs no second runner, no socket and no peer;
+it does not need the 2x memory that two runners would want on an 8 GB node, which for this model is not available at
+all (ten layers is 4.53 GB against ~4.5 GB usable). **And it is the property the pipeline depends on, tested
+directly.**
+
+**Inert by default, and the safety gate is re-run for the fifth time.** With the probe unset the model still
+produces the baseline output token for token:
+
+    Paris, a city renowned for its rich history, culture, and iconic landmarks. Situated in the north-central
+    part of the country, along the Seine River, Paris has been the political, economic, and cultural hub of
+    France for centuries.
+    [stop=maxTokens prefill=5tok/1.52s new=48tok decode=6.25s tok/s=7.680]
+
+**Five pieces, five gates, and the single-node output has not moved once.** A1 the layer range, A1.5 the flag and
+the measured stage arithmetic, A2 the frame, A3 the two ends, A4 the handoff hooks, A5 the probe - and after every
+one of them the model has been run and the tokens compared.
+
+**What remains is the wiring that runs the comparison and the ring that makes a pipeline.** The CLI needs to set
+`hiddenProbeLayer` and a path for both buffers, then a `0:40` run and a `0:20` run are compared element by element.
+**Then, and only then, is a socket worth writing** - and the topology it serves is the ring `D311` established, not
+the chain the plan drew.
+
+**No throughput claimed.** The only pipeline-relevant number this build has produced is still `D306`'s single-stage
+**21.482 tok/s for ten layers**, which is the arithmetic Design A rests on and not the design itself.
