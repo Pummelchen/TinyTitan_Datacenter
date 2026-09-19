@@ -15727,3 +15727,29 @@ GPU genuinely depends on and 50% is GPU wait. **Neither a deeper prefetch queue 
 changes, in order of cost: **restructure the layer loop so a layer's expert read runs against the next layer's
 attention (~2x, one node, the reference's proven technique)**, and **tensor-split the GPU phase across the four nodes
 (the only route to 21 tok/s, and a much larger change).** Nothing smaller is left to try.
+
+## D444 - The prefetch ring's hit rate was measured and never shown; it is now printed, and its units are not yet known
+
+**`D442` measured the prefetch ring and `D443` swept the knobs, and both were arguing about a mechanism neither could
+see into.** `RealForwardRunner.prefetchRingSummary` (`RealForwardRunner.swift:1349`) and `totalPrefetchIssued` existed
+with **no caller anywhere** - the ring's own account of itself was computed and discarded, and **the hit rate is
+precisely the number that decides whether an overlapping layer loop would pay** (`D441`'s lever 1). That is the same
+shape as the rest of this session's errors: **an instrument that exists but is never read is not an instrument.**
+
+**It is now printed before the stop footer**, and one run on node3 with `TINYTITAN_PREDICTIVE_PREFETCH=1` and
+`TINYTITAN_PREFETCH_AHEAD=2` gives:
+
+    [prefetch] prefetch_ring begins=1178 free=1.13 submitted=0.00 inflight=0.11 held=0.76
+               spec_ops=1045 spec_queue_ms=0.01 spec_load_ms=1.83
+
+**And no conclusion is drawn from it, which is the point of recording it.** 32 tokens over 40 layers with top-8 is
+**10,240 expert fetches**, and `spec_ops=1045` is close to 32 x 40 = 1280, so the field is plausibly a per-layer
+count rather than a per-expert one; `spec_load_ms=1.83` across 10,240 experts would be 0.18 microseconds each, which
+is far too fast to be a disk read and consistent with a cache hit or with a different unit. **The summary's fields are
+documented nowhere in the tree** (`D439`'s lesson about borrowed numbers applies to locally-printed ones too: a number
+whose unit is unknown is not evidence).
+
+**So the record states the position rather than a result:** the ring reports itself, the report raises the question
+`D441` needs answered - whether the expert read is *not predicted* or *not hideable* - and **answering it requires
+reading what `ExpertPrefetchRing.summary` actually counts before using any of it.** That is the next step, and it is a
+five-minute read of one file rather than a measurement.
