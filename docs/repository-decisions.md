@@ -15335,3 +15335,53 @@ shadowed parameter, a dead closure, an uncounted row, a bind ordered after a con
 calling itself, a re-sampling middle stage. **The arithmetic was proved exact in `D325` and has not once been wrong**,
 the stages are the law to a tenth of a millisecond, and **when this engine is wrong it is wrong about who talks to
 whom, never about what to compute.**
+
+## D431 - The correctness fault had two causes, and both are fixed: the ring now matches a single node byte for byte
+
+**The user's instruction was to fix correctness first, because nothing can be concluded from a buggy engine. It was
+right, and the bug was two faults in the same handoff.**
+
+**Fault one - a stage that is handed a state was not using it.** The decode step always embeds the token into
+`hidden`, and then:
+
+    if hiddenSeeded { hiddenSeeded = false }          // keeps the raw EMBEDDING
+    else if let source = nextHidden { memcpy(hidden.contents(), source(position).contents(), bytes) }
+
+`hiddenSeeded` was set by the prefill, so a stage owning `20..<40` **skipped the fetch it exists to perform** and ran
+its layers on its own embedding of the token instead of its predecessor's layer-20 residual. Token 1 stayed right
+because it comes from the prefill's logits; every token after it was computed from the wrong residual. The flag was
+`D388`'s fix for a one-frame shift, and it was wrong in the way that matters - it suppressed the thing the stage is
+for. Removed, with the reason recorded in the code.
+
+**Fault two - the first decode step had no token.** The lookahead `D411` introduced fetches at the **end** of an
+iteration, so on the very first decode iteration there is no previous iteration to have fetched and `pendingIncoming`
+is nil, leaving `stepToken = tokenID` - **the stage's own sampler's token**. The trace showed it directly:
+
+    A: [wire] send pos=5 values=2048       <- A publishes its position-5 state
+       [tok] told pos=6 token=11751        <- and only THEN is told ` Paris`
+
+**So A's position-5 state was computed from a token nobody had selected**, and everything downstream inherited it.
+Fixed by fetching once when the carry is empty and a source exists - the first step has nothing to overlap with, so
+blocking there is correct rather than a regression.
+
+**And the result, measured against the same binary and model on one node:**
+
+    4 tokens:   single node ' Paris, a city'          ring ' Paris, a city'
+    16 tokens:  single node ' Paris, a city renowned for its rich history, culture, and iconic landmarks.'
+                ring        ' Paris, a city renowned for its rich history, culture, and iconic landmarks.'
+
+**Byte-identical at both lengths, 15 decode steps, with 15 tokens chosen by the head and 15 told to the first stage.**
+Full suite green: `swift test --no-parallel` **exit 0, 8 binaries, no issues.**
+
+**And the lesson is the session's own, applied late but applied.** Both faults were found by `grep`-ing the twelve
+lines that produce the value and running the trace - not by another hypothesis. Four rounds of hypothesis about the
+remaining 59 ms of throughput had produced nothing because **four of them were reasoning about a sequence that was
+wrong from its second token.** Every throughput number this session recorded while correctness was broken is
+therefore suspect, including the two-stage 17.1 and the three-stage measurements.
+
+## D432 - What this re-opens
+
+`D415`'s convergence curve, `D425`'s "the stage is the law", `D426`/`D427`'s relay accounting and `D430`'s residual
+**were all measured on a ring that was producing the wrong token sequence.** Some are structural and survive - a
+stage's own cost and the law are independent of which token is flowing - but the chain measurements are not, **and
+the honest position is that the throughput question must be re-measured now that the sequence is right.**
