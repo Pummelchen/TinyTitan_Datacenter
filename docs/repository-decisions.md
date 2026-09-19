@@ -11507,3 +11507,36 @@ that **a mechanism already proved in the file beats a guess** - and the guess it
 reason a mechanism would not care about, since a blit needs `contents()` on neither side. **The general principle
 would have saved four of those six rounds.** The pipeline's exactness is still unverified, and it now needs one more
 wiring fix rather than an investigation.
+
+## D326 — The probe writes and the publishing stage does not, and this is where the session's context ends
+
+`D325` fixed the segfault and the probe produced 8,200 bytes. This round chased the other half - a `0:20` run
+publishing its residual - and did not close it.
+
+**One real bug found and fixed on the way.** The blit version called the hook **twice** for the same buffer, once
+inside the blit guard and once after it, so a publishing stage would have handed the same state over twice. The call
+inside the guard was the redundant one and it is removed. **It was not the cause of the silence**: B still writes
+nothing after the fix.
+
+**What is established about the publishing side.** `RealForwardRunner+Prefill.swift:287` derives
+`runEpilogue = layers.upperBound == cfg.numLayers`, so for `--layer-range 0:20` against 40 layers it is **false** and
+the publish block at :495 should fire. The run reaches prefill - its own footer says `prefill=5tok` - and exits 0.
+**And no file appears.** So the remaining candidates are that `hiddenOut` is nil at that point despite being set in
+`run`, or that the assignment is reaching a different runner, which is `D316`'s candidate in a new place and the one
+thing this build has already been bitten by once.
+
+**And the honest position at the end of this session.** Twenty rounds into the Design A goal, six into this gate, and
+the gate has still never run. **What exists is real and gated**: A1's layer range is bit-identical when unset, A1.5
+measured the stage arithmetic that the whole design rests on - **ten layers at 21.482 tok/s** - A2's frame has three
+tests, A3's two ends are bit-identical when unset, A4's hooks are in, and the probe now writes. **What does not
+exist is the comparison**, and every stage after it - the ring, the transport, a four-node run - is unbuilt.
+
+**The next step is one print in `run` and one in the publish block**, printing whether `hiddenOut` is nil on each
+side, exactly as `D317` did for the probe. **But it should be taken with fresh context**, because this session has
+spent its last several rounds iterating on instrumentation rather than on the design, and the returns are visibly
+diminishing: the last three rounds produced one fixed bug and one eliminated candidate between them.
+
+**What is safe and durable.** Both bundles are refreshed, verified as complete histories, and copied to node3 and
+node1; the fork is at `e4...` and main at `3b78147` with all doc gates passing; the baseline tag
+`pre-design-a-baseline` still marks the expert-sharding engine on both. **The remote pushes are failing on
+credentials, so the bundles are the copy that matters.**
