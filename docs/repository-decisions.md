@@ -13323,3 +13323,39 @@ stranger and more useful fact than either.
 the reverse edge **now measured to connect in four runs out of six** (`D375`, `D376`); and no run with both live.
 **The blocker is a reproducible correlation whose mechanism is unknown, and the honest next act is to isolate the
 correlation rather than to explain it.**
+
+## D377 — Four isolated cases all succeed, so D376's discriminator is withdrawn too, and this leg is flaky with no identified cause
+
+**`D376` proposed that the workload discriminated, from two observations on each side. Tested properly:**
+
+    prompt=x          maxnew=1   -> connected
+    prompt=x          maxnew=4   -> connected
+    prompt=long       maxnew=1   -> connected
+    prompt=long       maxnew=4   -> connected
+
+**All four succeed, including the combination that had failed twice.** So the workload is not the discriminator, and
+**`D376` joins `D371` and `D374` as a conclusion this leg has taken back** - which is now four rounds in a row, and
+the pattern is more informative than any of them.
+
+**What the four withdrawals have in common.** Each was drawn from **one or two observations on each side**, each
+varied a configuration while holding something else fixed that later turned out to matter, and **each was recorded
+with more confidence than the sample supported.** `D370` asked the right question - is it deterministic? - and the
+answer, after five attempts to find a discriminator, is: **sometimes it connects and sometimes it does not, with
+everything this record can observe held constant.**
+
+**The one thing that is now measured rather than assumed.** In **six observations of the connect** - four in the
+alternating test, two in the isolation - it succeeded **six times**. The failures are **three**, all in full pair runs
+with no `timeout` on A and the long prompt. **That is a correlation between the failure and the run being the *real*
+one rather than a probe**, and it is exactly the kind of thing that is not worth a fourth hypothesis.
+
+**So the honest next act is not another isolation. It is to attempt the sequence run again, repeatedly.** The connect
+succeeds most of the time; the pipeline has never been allowed to run past it. **If the sequence completes on any
+attempt, the objective's central claim is demonstrated and the flakiness becomes a known-and-recorded property of
+this environment rather than a blocker.** If it fails ten times in a row, then the failure is real and **the
+instrument to use is not `lsof` and not an environment variable - it is a packet capture or the kernel's own
+connection log**, because five rounds of process-level inspection have produced four withdrawn conclusions.
+
+**Where the objective stands.** Four legs written and tested; the forward edge proven with a correct token (`D358`);
+the reverse connect **measured to succeed six times out of nine**; and no run with both live. **The blocker is a
+flaky connect whose cause is not visible from the process, and the cheapest thing that has not been tried is simply
+retrying the real run.**
