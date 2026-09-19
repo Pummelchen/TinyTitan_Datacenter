@@ -13430,3 +13430,40 @@ configured and fails when it has two.
 **Where the objective stands.** Four legs written and tested; the forward edge proven with a correct token (`D358`);
 the reverse connect **never once observed in a real run on either node in either direction.** **The blocker is stated
 as precisely as the measurements allow, and the next command costs twenty seconds.**
+
+
+## D380 — Found: the launcher decides it, and every failing run was launched differently from every succeeding one
+
+**The full configuration - both stages, all four edges, the long prompt, no reduction of anything - with one change:**
+
+    [back] connecting to 192.168.18.27:47702 as source
+    [back] connected
+
+**It connects.** The only difference from the five runs that failed is that A was started under `timeout 20` rather
+than directly by `nohup`.
+
+**And that is what `D287` said the mechanism was all along.** That record established that macOS Local Network
+Privacy lets **ping, ssh and inbound** work while **outbound connections fail with `EHOSTUNREACH`** for processes
+launched one way and not another - **and that the decision is made about the process, at launch, not about the
+network.** Every observation in this stretch fits it once the launcher is the variable:
+
+  * **every probe run connected** - and every probe ran A under `timeout`;
+  * **every full run failed** - and every full run started A under `nohup` directly;
+  * **it reproduced in both directions and on both nodes**, because the launcher was the same on both;
+  * **neither the peer's configuration, nor the workload, nor the port, nor the address, nor the routing** changed
+    anything, **because none of them was the variable.**
+
+**`D379`'s insight is what found it** - that every probe was killed at twenty seconds and every full run was not, so
+the probes might have succeeded because of *how they were watched* rather than how they were configured. **That was
+right about the window and wrong about the direction: it was not the observing that differed, it was the launching.**
+
+**And the reading error underneath all five rounds is now nameable.** Every bisection compared **runs**, and the runs
+differed in the launcher - `timeout` against `nohup` - which was never treated as a variable because it looked like
+plumbing. **Five rounds varied the peer, the workload, the ports, the direction and the node, and the one thing that
+was constant across the failing set and constant across the succeeding set was the command that started the
+process.**
+
+**Where the objective stands.** The reverse edge **connects in the full configuration**. Four legs are written,
+called, tested and now demonstrated together on the wire; the forward edge has carried a correct token (`D358`); and
+**the sequence run is a run rather than a change** - with the one operational note that a stage must be launched in a
+way that carries the Local Network Privacy permission, which `D287` recorded and this round measured.
