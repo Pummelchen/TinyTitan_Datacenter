@@ -14102,3 +14102,45 @@ correctness fault is fixed the overlap can be measured against the law rather th
 2048**; the forward edge, the reverse edge, the pairing, the seed, the counts and the frame shape each verified;
 **a two-token ring whose first token is right and whose second is not**; and **a measured 10x gap to the throughput
 law whose cause is the lock-step, not the layers.**
+
+
+## D398 - D397's "lock-step" is not yet supported: the gap is four times larger than the compute it could be hiding
+
+**`D397` put the ring's step against the law and blamed the lock-step. Doing the arithmetic properly, the lock-step
+cannot account for it.**
+
+    A's decode, --max-new 2:            0.89 s for TWO steps  = 445 ms/step
+    A's own twenty-minus-ten... no: A owns 0..<20, so its own compute at 20 layers is 64.4 ms
+    B owns 20..<40, so its own compute is the same 64.4 ms
+    a lock-step step therefore costs at most:  64.4 + 64.4 = 129 ms, plus wire
+
+    measured:  445 ms/step      unexplained:  ~316 ms
+
+**So the lock-step is real and it is not sufficient.** Three hundred milliseconds is not one round trip of a 12 KB
+frame - the wire is measured at **5.0 MB/s effective for 4.49 MB**, which for 12 KB is **2.4 ms** - and it is not the
+two stages' compute. **`D397` named the right shape and overstated it as the cause, which is the same mistake as
+`D380` and `D385` and `D386`: a correlation with a plausible mechanism, recorded with more confidence than the
+arithmetic supports.**
+
+**What the remaining 316 ms can be, as candidates rather than as a conclusion:**
+
+  * **The reverse edge may be reconnecting per token.** `sendToken` and `receiveToken` are separate calls on the same
+    endpoint, and **if either builds a connection rather than reusing one, every decode step pays a TCP handshake
+    and, on this platform, a Local Network Privacy decision** - which `D387` measured as the difference between
+    working and failing outright;
+  * **or the `[tok]` and `[seed]` instrumentation is synchronous stderr**, which for two lines a token should be
+    microseconds - **but `FileHandle.standardError.write` on a pipe that is being read slowly blocks**, and both
+    stages were run with their output redirected to files;
+  * **or A's decode step is genuinely doing more work than 20 layers**, because a stage that owns the first layers
+    also embeds the token and runs the head - **and `D318` recorded that a middle stage's work is not the same
+    shape as an end stage's.**
+
+**And the instrument that separates these is the same one the last three rounds should have used first: a timing
+breakdown of one decode step**, which the engine already prints per phase under `SHARD_PROFILE`. **Running the ring
+with profiling on would say whether the 316 ms is in the exchange, in the compute, or in the writing** - and it needs
+no code change.
+
+**Where the objective stands.** A1-A5 built and gated, 1652 tests with 0 failures, the exactness gate at 0 of 2048;
+the transport, pairing, seed, counts and frame shape all verified; a two-token ring whose first token is right and
+whose second is not; and **a 10x throughput gap whose shape is known and whose cause now has three candidates where
+the last round claimed one.**
