@@ -16005,3 +16005,35 @@ worse: 91.8 ms, 8.9 tok/s. So:
 node runs it at 7.524; every single-node tuning axis is at its optimum; every distribution axis has been measured; and
 **the one path that makes the cluster beat a single node is tensor parallelism over a wire the farm does not currently
 have.**
+
+## D452 - The four machines have Thunderbolt interfaces UP and RUNNING with no IP address: the target's wall may already be wired
+
+**`D451` closed by saying the difference between 16 and 37 tok/s is the interconnect, and that this is an operator
+question. Then the hardware was actually looked at instead of assumed, and the answer is better than "1 GbE".**
+
+**Every node has four Ethernet-family interfaces beyond the active LAN:**
+
+    en0   inet 192.168.18.x   media: autoselect (1000baseT <full-duplex>)   <- the link every run has used
+    en1   inet 192.168.18.x   media: autoselect                            <- Wi-Fi
+    en2   NO ADDRESS          flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST>  options=460<TSO4,TSO6,CHANNEL_IO>
+    en3   NO ADDRESS          flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST>  options=460<TSO4,TSO6,CHANNEL_IO>
+    en4   media: none         (Ethernet Adapter, unplugged)
+    en5   media: none         (Ethernet Adapter, unplugged)
+
+**And `networksetup -listallnetworkservices` names them: "EXO Thunderbolt 1" and "EXO Thunderbolt 2"** - they are
+Thunderbolt networking services, and `en2`/`en3` are **UP, RUNNING, BROADCAST, with `CHANNEL_IO`** rather than the
+`media: none` that an unconnected port shows. **There is no `bridge0` and neither interface has an address**, so
+Thunderbolt is *present and link-up but carrying no traffic*, while every measurement in this session has gone over
+the 1 GbE `en0`.
+
+**Which changes the shape of the objective's answer rather than merely restating it.** `D451` measured 118 MB/s and
+765 us and concluded that 21 tok/s needs an RTT near 70 us - and the hardware that would provide it **is already
+installed and already showing link**, with only addressing missing. **So the honest position is not "the target is
+unreachable" but "the target is unreachable over the link the cluster is currently using, and a second link is
+present, up, and unconfigured."**
+
+**And that step is deliberately not taken.** Assigning addresses to `en2`/`en3` is a change to the farm's network
+configuration - the operator's standing rule is that the cluster layout is not changed without permission, and this
+session has already had one round lost to assuming a machine's behaviour rather than asking about it. **The
+measurement that would settle it is one command per node and a repeat of `D449`/`D451` over the new interface; the
+permission is the operator's.**
