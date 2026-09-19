@@ -14301,3 +14301,38 @@ the filtered run is now known to pass while the full one does not.
 the affected suites and unchanged by the revert); the exactness gate at **0 of 2048**; the transport, pairing, seed,
 counts, frame shape and token edge all verified; **a two-token ring whose first token is right and whose second is
 not**; and **a 10x throughput gap still unmeasured, with its instrument specified and one failed attempt behind it.**
+
+
+## D403 - The crash is the change, and a filtered test run cannot see it - D359 demonstrated with a concrete case
+
+**The two runs, same command, same tree except for one commit:**
+
+    with the quiet switch:   25 tests in 4 suites PASSED, then
+                             TinyTitanDecodeServiceTests exited with unexpected signal code 10   exit=1
+    clean tree (reverted):   99 + 131 + 25 + 87 + 194 + 89 = 625 tests, 0 failures             exit=0
+
+**So `D402`'s caution was right and its uncertainty is now resolved: the switch does cause a SIGBUS, the cause is not
+the rewrite** - the diff was read and every one of the thirteen sites converted correctly - **and the crash is in a
+suite the filtered run never reaches.**
+
+**And that last clause is the finding worth keeping.** `swift test --no-parallel --filter PipelineStage` reported
+**8 tests in 3 suites, 0 failures** on the broken tree, because the filter selects *tests* and the helper still loads
+the whole test binary - **so a crash in a sibling suite is invisible to it while remaining fatal to the run.** This
+session's trap list has said *"a green build is not a green suite"* twice; **`D403` is the case that says a green
+*filtered* suite is not a green suite either, and it took ten minutes of the full suite to see what the filter
+could not.**
+
+**And the tree is left green at the reverted commit**, with the switch's diff recoverable as `6fc1faa` for whoever
+diagnoses it - **and the first thing that diagnosis should do is bisect *which* of the thirteen sites does it**,
+because the wiring suite passed and the decode-service suite is where it died, **which points at the `[seed]` and
+`[publish]` sites in `TinyTitan` rather than at `PipelineStage.note` itself.**
+
+**The honest position on the round.** Two rounds have now been spent on this instrument - one to a shell redirect and
+one to a crash - **and neither produced a throughput measurement.** What this round produced is a **gate lesson with
+evidence**: the full suite is the only thing that certifies, and it has now been demonstrated rather than asserted.
+
+**Where the objective stands.** A1-A5 built and gated; **the clean tree's suite is 625 tests in 6 binaries with 0
+failures, verified in this round by running it rather than by citing it**; the exactness gate at **0 of 2048**; the
+transport, pairing, seed, counts, frame shape and token edge all verified; **a two-token ring whose first token is
+right and whose second is not**; and a 10x throughput gap still unmeasured, with its instrument written, crashing,
+and recoverable.
