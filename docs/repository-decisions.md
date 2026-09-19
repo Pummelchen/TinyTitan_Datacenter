@@ -15385,3 +15385,44 @@ therefore suspect, including the two-stage 17.1 and the three-stage measurements
 **were all measured on a ring that was producing the wrong token sequence.** Some are structural and survive - a
 stage's own cost and the law are independent of which token is flowing - but the chain measurements are not, **and
 the honest position is that the throughput question must be re-measured now that the sequence is right.**
+
+## D433 - The three-stage chain matches too: a relayed token must be forwarded before the relay's own produce
+
+**With `D431` and `D432` in, the two-stage ring matched a single node and the three-stage chain did this:**
+
+    B chose 1 token, M was told 1 token, A was told 0 tokens, and the chain stopped after ` Paris`.
+
+**And the shape of the stall is a circular wait, not a lost message.** M's first decode step needs **A's frame** for
+position 5 before it can produce; A's first decode step needs **B's token for position 5**, which M relays **at the end
+of its iteration** - after its produce. So M blocks on A while A blocks on M, and the head has already published the
+one token everything is waiting for.
+
+**The fix is that a relayed token must be forwarded the instant it is received, including on the first-step fetch.**
+`D429` moved the relay from the top of the iteration to just after the source; this moves it into the first-step fetch
+as well, which is the same rule applied to the one path that had no carry. **In a two-stage ring the first stage has no
+sink, so the call is a no-op there - which is exactly why the two-stage case never showed the deadlock.**
+
+**And the result:**
+
+    16 tokens, single node:  Paris, a city renowned for its rich history, culture, and iconic landmarks.
+    16 tokens, 3-stage ring: Paris, a city renowned for its rich history, culture, and iconic landmarks.
+    token flow:              B chose 15 / M told 15 / A told 15
+
+**Byte-identical, with the token travelling through both reverse hops.** Full suite green: **exit 0, 8 binaries.**
+
+**So the correctness fault is closed, and it was four faults in one handoff rather than one:**
+
+  1. `hiddenSeeded` made a stage handed a state skip the fetch it exists to perform (`D431`);
+  2. the first decode step had no carried token and produced from its own sampler (`D432`);
+  3. a middle stage re-sampled instead of relaying (`D426`, from the throughput line of work);
+  4. a relayed token was forwarded after the relay's own produce, deadlocking a chain (`D433`).
+
+**And every one of them was found by reading the lines and running the trace, not by another hypothesis.** The
+throughput work spent four rounds hypothesising about a sequence that was wrong from its second token; the
+correctness work took one trace.
+
+**Where this leaves the objective.** The engine now produces the reference sequence through a **three-stage chain
+across two machines**, which is the first time a multi-stage layer pipeline has been correct. **The four-stage, four-node
+target is the same wiring one stage further, and every throughput number taken before this point must be re-measured -
+`D415`'s convergence curve, `D425`'s per-stage cost and `D430`'s residual were all measured on a ring that was
+generating the wrong tokens.**
