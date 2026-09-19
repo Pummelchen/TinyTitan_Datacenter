@@ -13702,3 +13702,42 @@ connect with the wrong instruments. **The next attempt should begin with a packe
 available**, or should sidestep the question entirely by **giving the reverse edge its own dedicated socket and
 retrying on a timer inside the process** - a workaround that does not need the cause, only the observation that the
 connect succeeds often enough to be retried into.
+
+
+## D387 — The discriminator is the process's attachment, and the two-stage ring produced a real sequence
+
+**The run that got there:**
+
+    A (foreground, timeout 300):  [back] connecting to 192.168.18.27:47702 as source
+                                  [back] connected
+                                  A exit=0
+    B (background):               prefill=5tok/1.51s  new=4tok decode=0.60s
+                                  " city"
+
+**Both stages ran, all four legs were live, and four tokens came out the far end of a two-machine pipeline.**
+
+**And the discriminator is the one thing that had been constant on each side of the tally and never treated as a
+variable.** Every observation where the reverse connect **succeeded** ran A **in the foreground** - attached to the
+ssh session, output piped to `grep`, no `nohup`. Every observation where it **failed** ran A **backgrounded** with
+`nohup ... &`. **Twelve rounds varied the peer, the workload, the port, the address, the routing, the node, the
+direction, the launcher command and the timeout, and never once varied whether the process stayed attached.**
+
+**That is exactly the shape `D287` described and this record kept failing to apply.** Local Network Privacy is
+decided about a process in the context of the session that launched it, **and a process detached from its session is
+a different case from one still in it.** `D380` guessed "the launcher decides it" and was withdrawn when a second
+run under the same launcher failed - **and the launcher was the right variable read at the wrong granularity: not
+which launcher, but whether the process remains attached to it.**
+
+**And the output is not yet right, which is now a small and specific question rather than a large one.** A single node
+gives ` Paris, a city`; the ring gives ` city`. **Four tokens are produced and the first is missing**, which is the
+signature of the prompt's own token being dropped rather than of a handoff being wrong - and the handoff is now known
+to be sound because `D358` measured a correct first token through it and `D325` proved the composition exact.
+
+**Where the objective stands, and it is materially different from yesterday.**
+
+  * **A1-A5 built and gated**, 1652 tests in 8 binaries with 0 failures, the exactness gate at 0 of 2048;
+  * **the forward edge proven across two machines** with a correct first token (`D358`);
+  * **the reverse edge connecting, with its cause finally named** - attachment rather than configuration (`D387`);
+  * **and the first run in this design's history with all four legs live: a two-machine pipeline that produced four
+    tokens.** Not the right four, and not the objective's 21 tok/s - **but a sequence, which is what everything since
+    `D352` has been trying to reach.**
