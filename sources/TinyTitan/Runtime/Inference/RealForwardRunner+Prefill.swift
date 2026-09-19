@@ -499,7 +499,6 @@ extension RealForwardRunner {
                 blit.endEncoding()
                 blitCB.commit()
                 await blitCB.completed()
-                if let sink = onHidden { sink(startPosition, out) }
             }
             if let sink = onHidden { sink(startPosition, out) }
         }
