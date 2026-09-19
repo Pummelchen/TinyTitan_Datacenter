@@ -68,7 +68,7 @@ the way it is, and what it will not do.
 > choice along the way. Getting started is one command:
 >
 > ```bash
-> curl -fsSL https://raw.githubusercontent.com/Pummelchen/TinyTitan/main/tools/install_tinytitan.sh | bash
+> curl -fsSL https://raw.githubusercontent.com/Pummelchen/TinyTitan_Datacenter/main/tools/install_tinytitan.sh | bash
 > ```
 >
 > The installer checks your Mac, builds TinyTitan, optionally downloads a model,

@@ -153,9 +153,9 @@ article and which step.
   are running, and the exact command or screen. Paste the *whole* error — the
   last few lines are usually the answer.
 - **The wiki** — the precise reference, for when an article here is too
-  friendly: github.com/Pummelchen/TinyTitan/wiki
+  friendly: github.com/Pummelchen/TinyTitan_Datacenter/wiki
 - **The issue tracker** — for reproducible bugs:
-  github.com/Pummelchen/TinyTitan/issues
+  github.com/Pummelchen/TinyTitan_Datacenter/issues
 - **The project tracker** — what is planned, what is blocked, and what was
   measured and rejected. Honest reading:
   Project Tracker

@@ -7,7 +7,7 @@ steps by hand if you prefer or need to fix something.
 Paste this into the Terminal and press Enter:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Pummelchen/TinyTitan/main/tools/install_tinytitan.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Pummelchen/TinyTitan_Datacenter/main/tools/install_tinytitan.sh | bash
 ```
 
 That script checks your Mac, downloads and builds TinyTitan, offers to fetch a
@@ -109,7 +109,7 @@ folder, the second downloads TinyTitan, the third opens its folder:
 
 ```bash
 cd ~
-git clone `Pummelchen/TinyTitan`
+git clone `Pummelchen/TinyTitan_Datacenter`
 cd TinyTitan
 ```
 
