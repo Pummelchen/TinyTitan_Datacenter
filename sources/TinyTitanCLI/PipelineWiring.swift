@@ -51,20 +51,21 @@ public enum PipelineWiring {
         let connect = env["TINYTITAN_STAGE_BACK_CONNECT"]
         guard listen != nil || connect != nil else { return false }
 
+        // WHICH END ORIGINATES IS INDEPENDENT OF WHICH END READS, and separating them is what makes this edge usable
+        // on a node that cannot originate at all. D287 established that macOS Local Network Privacy lets a
+        // harness-launched process receive and refuses to let it originate; D364 measured node1 refusing an outbound
+        // connection to node3 while node3 reached node1 without trouble. So the stage that READS the token may also
+        // be the one that CONNECTS: it opens the socket, the sampling stage accepts, and the bytes flow the other
+        // way along it. `TINYTITAN_STAGE_BACK_ROLE` names which end of the DATA this stage is - `source` or `sink` -
+        // while LISTEN and CONNECT name which end of the SOCKET, and the two need not agree.
+        let role = env["TINYTITAN_STAGE_BACK_ROLE"] ?? (listen != nil ? "source" : "sink")
+        let isSource = role == "source"
+
+        var end: FileHandle?
         if let listen {
             guard let port = UInt16(listen) else { throw WiringError.badPort(listen) }
             let pair = try DecodeTCPSocket.listenAndAccept(host: "0.0.0.0", port: port)
-            // Consulted before each step rather than stored, because the token for step N arrives after step N-1
-            // has been computed - a value read once at install would be the token for the wrong position.
-            let source = pair.input
-            // A SENTINEL, because the closure returns a non-optional `Int32` - the same shape `nextHidden` has and
-            // for the same reason: Swift parses an optional closure returning an optional as an optional closure
-            // returning a non-optional, and then rejects the binding. `-1` cannot be a real token, so the caller can
-            // tell "no token has come back yet" from "the token is 0".
-            runner.nextTokenSource = { _ in
-                guard let token = try? PipelineStage.receiveToken(from: source) else { return -1 }
-                return Int32(token)
-            }
+            end = isSource ? pair.input : pair.output
         }
         if let connect {
             let parts = connect.split(separator: ":")
@@ -72,14 +73,29 @@ public enum PipelineWiring {
                 throw WiringError.malformedConnect(connect)
             }
             var last: Error = WiringError.malformedConnect(connect)
-            var sink: FileHandle?
+            var opened: FileHandle?
             for _ in 0..<connectRetries {
-                do { sink = try DecodeTCPSocket.connect(host: String(parts[0]), port: port).output; break }
-                catch { last = error; usleep(200_000) }
+                do {
+                    let pair = try DecodeTCPSocket.connect(host: String(parts[0]), port: port)
+                    opened = isSource ? pair.input : pair.output
+                    break
+                } catch { last = error; usleep(200_000) }
             }
-            guard let sink else { throw last }
+            guard let ready = opened else { throw last }
+            end = ready
+        }
+        guard let end else { return false }
+
+        if isSource {
+            // -1 is the sentinel for "nothing has come back yet"; 0 is a legitimate token id, so the two must be
+            // distinguishable (D361).
+            runner.nextTokenSource = { _ in
+                guard let token = try? PipelineStage.receiveToken(from: end) else { return -1 }
+                return Int32(token)
+            }
+        } else {
             runner.nextTokenSink = { token, layer in
-                try? PipelineStage.sendToken(Int(token), layer: layer, to: sink)
+                try? PipelineStage.sendToken(Int(token), layer: layer, to: end)
             }
         }
         return true
