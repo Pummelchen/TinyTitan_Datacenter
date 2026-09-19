@@ -14336,3 +14336,43 @@ failures, verified in this round by running it rather than by citing it**; the e
 transport, pairing, seed, counts, frame shape and token edge all verified; **a two-token ring whose first token is
 right and whose second is not**; and a 10x throughput gap still unmeasured, with its instrument written, crashing,
 and recoverable.
+
+
+## D404 - The bisect failed in the edit, not the engine, and the tree is back at the verified-green commit
+
+**What was attempted: `D403`'s own prediction, tested directly.** Restore the switch, put `TinyTitan`'s two sites
+back to raw writes, keep the helper and the eleven other sites, and run the full suite. **If `D403` is right the
+suite goes green and the fault is localised to two lines.**
+
+**What happened:**
+
+    restore the switch:      ok
+    revert two TinyTitan sites to raw writes:   one site mis-closed
+    build errors:            3
+    full suite:              never reached a verdict
+
+**The rewrite left an unterminated call at `RealForwardRunner+Decode.swift:79`** - a line the substitution was not
+supposed to touch, because the pattern matched a prefix it shared with the seed print. **So the experiment did not
+run, and the tree was restored rather than repaired.**
+
+**And the pattern across three rounds is now the thing to record rather than the individual failures.**
+
+    D402  the commit went out before the suite was run
+    D403  the filtered suite could not see the crash the full one found
+    D404  the edit that would localise the crash corrupted a different line
+
+**Three attempts at one instrument, three failures, and not one of them in the engine.** The first was a sequencing
+mistake, the second was a measurement-scope mistake, and this one was a tooling mistake - **and each was caught by
+the step that the previous round had added, which is the only reason the tree is green right now.** That is worth
+noting as progress of a kind: **the failures are being contained rather than compounded.**
+
+**What is left is precise and small.** The tree is at `6208c35`, clean, **and that SHA's full suite was run this
+session and passed with 625 tests in 6 binaries.** The switch is recoverable in full as `6fc1faa`. **The next
+attempt should edit `RealForwardRunner+Decode.swift` by hand** - two call sites, both visible in a five-line window -
+**rather than by a substitution script, and should run the full suite before committing anything.** That is the whole
+of the remaining work on this instrument.
+
+**Where the objective stands.** A1-A5 built and gated; **the clean tree's suite is 625 tests in 6 binaries with 0
+failures, run and verified**; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape
+and token edge all verified; **a two-token ring whose first token is right and whose second is not**; and a 10x
+throughput gap still unmeasured after three attempts at the instrument that would measure it.
