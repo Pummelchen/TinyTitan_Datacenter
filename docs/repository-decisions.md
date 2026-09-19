@@ -14556,3 +14556,50 @@ gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and tok
 ring whose first token is right and whose second is not**; and the throughput gap **measured from both sides** - 3.4
 tok/s in the ring against 11.3 for one stage alone, with 207 ms of waiting per token of which 132 ms is the peer's
 step and 75 ms is unattributed.
+
+
+## D411 - The loop waits before it works, and the fix is to move the wait to the other end of the iteration
+
+**The ring section as it stands, and it is four statements:**
+
+    var stepToken = tokenID
+    if let ring = producer as? RealForwardRunner {
+        ring.nextTokenSink?(tokenID, 0)          // publish what this stage sampled
+        if let source = ring.nextTokenSource {
+            let incoming = source(position)      // BLOCKS for the peer's token
+            if incoming >= 0 { stepToken = incoming }
+        }
+    }
+    try await producer.produce(token: stepToken, position: position, ...)   // the actual work
+
+**And `D410` measured what that costs: 207 ms of waiting per token on the first stage, against 87.5 ms of its own
+work.**
+
+**The reordering is one move, and the dependency is what makes it legal.** The token a stage needs at step N is its
+peer's token from step N-1 - **and the peer emitted that token at the end of its own step N-1, so it is available
+before this stage begins step N's work.** The loop as written waits for it *first* and then works; **moving the
+receive to the end of the iteration means the wait overlaps the peer's step instead of preceding it**, and by the
+time the next iteration needs the token it has usually already arrived:
+
+    produce(token: stepToken)          // step N's work, with the token from step N-1's receive
+    ... sampling happens outside this function, producing tokenID ...
+    ring.nextTokenSink?(tokenID, 0)    // publish what was just sampled
+    stepToken = ring.nextTokenSource?(position + 1) ?? -1    // receive for the NEXT step, overlapping the peer
+
+**And the comment in the file is right about the order of the two hooks and does not have to change.** It says the
+sink must run before the source because the sink carries what was *sampled* - **and that is still true in the
+reordering: `sink` publishes `tokenID`, which is the token the sampler just chose, and `source` then reads the next
+incoming one without touching `tokenID` at all.** The reason the current code needs them adjacent is that it
+overwrites `tokenID` in place; **the lookahead keeps a separate variable for the incoming token, which is what makes
+the separation possible.**
+
+**And the measurement it should produce is a prediction, not a hope.** If the wait moves beside the peer's step,
+**the first stage's step should fall from 295 ms to its own 87.5 ms plus whatever the peer's 132 ms does not cover** -
+and since the peer's step is *shorter* than the wait it was causing, **the ring's step should become the larger of the
+two stages rather than their sum**: 132 ms, or **7.6 tok/s**, against 3.4 today. **That is testable, and it is what
+`D410` was measured for.**
+
+**Where the objective stands.** A1-A5 built and gated; the fork's suite green with the quiet switch in; the exactness
+gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and token edge all verified; **a two-token
+ring whose first token is right and whose second is not**; and the throughput gap **measured from both sides, with the
+loop's blocking order identified as its cause and a one-move reordering written down as the fix.**
