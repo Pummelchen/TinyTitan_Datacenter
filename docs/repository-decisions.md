@@ -15249,3 +15249,42 @@ rounds have now confirmed.
 token edge all verified; **a two-stage ring at 17.1 and 19.1 tok/s**; **a 13-layer stage alone at 48.7 ms, the law
 exactly**; **a three-stage chain at 110 ms/token after the relay, from 137**; and **the residual 59 ms localised to a
 token waiting one iteration in `pendingIncoming` before being forwarded - one call moved, rather than a queue.**
+
+## D429 - The sink is moved to relay on receipt, and the full suite is NOT certified green this round
+
+**The change `D428` specified, applied:**
+
+    if ring.nextTokenSource == nil { ring.nextTokenSink?(tokenID, 0) }   // the head publishes its own sample
+    ...
+    incoming = source(position + 1)
+    if incoming >= 0 { pendingIncoming = incoming; ring.nextTokenSink?(incoming, 0) }   // a relay forwards NOW
+
+**A stage with no source is the one that chooses, so its own sample is the token the chain needs and there is nothing
+to wait for. A stage with a source has nothing of its own to publish - it forwards what it is given, the moment it is
+given it.** The first stage's sink is nil, so the relay call is a no-op there, and the head never reaches the relay
+branch because it has no source. **Build: `0 warnings 0 errors`.**
+
+**And the full suite is NOT certified green, which is the honest and important part.**
+
+    swift test --no-parallel:   exit 1, seven binaries green, ONE issue
+    aRequestIsServedOverARealSocketAndLandsOnItsSlot()
+      ShardExchangeServerTests.swift:21:4: Caught error: NSPOSIXErrorDomain Code=61 "Connection refused"
+    swift test --no-parallel --filter ShardExchangeServerTests:   exit 0, 2 tests passed
+
+**So the single failure is a socket test that passes in isolation**, which means it is almost certainly the
+machine being busy - this round ran three model processes across two nodes and then the suite - **and it is the
+`D403` class: a green filtered suite is not a green suite.** `D403` established that in one direction (a filter cannot
+see a sibling suite's crash); **this is the same warning in the other direction (a filter's pass cannot excuse a full
+run's failure), and the honest record is that the full suite failed once and passed once in isolation, with the change
+unproven against the full suite until it is re-run on a quiet machine.**
+
+**And that is the state the round ends in.** `D428`'s change is written and builds; it is **not** deployed to the nodes
+and has **not** been measured; and the suite has **one unexplained socket failure** that a filtered re-run cleared.
+**The next round should re-run the full suite before anything else** - on a machine with no model processes on it -
+**and only then deploy and measure.**
+
+**Where the objective stands.** A1-A5 built and gated; **the quiet switch, the lookahead, the `both` role and the
+relay are all implemented and previously verified against the whole suite**; the exactness gate at **0 of 2048**; the
+transport, pairing, seed, counts, frame shape and token edge all verified; **a two-stage ring at 17.1 and 19.1 tok/s**;
+**a 13-layer stage alone at 48.7 ms, the law exactly**; **a three-stage chain at 110 ms/token after the relay**; and
+**the sink move that should remove the residual 59 ms written, building, and awaiting a clean full-suite run.**
