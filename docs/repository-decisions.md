@@ -13612,3 +13612,49 @@ while it is taken.** Both are cheap; neither was done this round because this ro
 **written, called, tested and now observed connecting in the ring's own configuration** (`D384`) - **and still no run
 with all four legs live at once, because every attempt has either failed to connect or been given too short a
 window.** The next attempt should be a loop of ten with A allowed to live.
+
+
+## D385 — Six more attempts fail, and the honest position is stated rather than fitted to a seventh mechanism
+
+    attempt 1: connected = no
+    attempt 2: connected = no
+    attempt 3: connected = no
+    attempt 4: connected = no
+    attempt 5: connected = no
+    attempt 6: connected = no
+
+**And the run immediately before this one - same nodes, same binary, same prompt, same two-edge configuration on
+both stages - connected on its first attempt.**
+
+**The one difference is the timeout given to A**, and it does not survive contact with the earlier evidence:
+`timeout 12`, `20` and `25` connected; `timeout 300` failed twice; `timeout 600` failed six times. **That is a
+correlation, it makes no mechanical sense, and `D380` was already withdrawn for exactly this shape of inference.**
+So it is recorded as an observation and **not as a cause** - which is the discipline six withdrawals have earned.
+
+**What is left after eleven rounds on this leg.** The reverse connect succeeds **sometimes** - seven observations -
+and fails **sometimes** - sixteen observations - **and nothing this session has varied predicts which.** The
+configuration, the workload, the port, the address, the routing, the node, the direction, the launcher and the timeout
+have each been tested, and each has been followed by a counter-example. **`D378`'s statistic is the only survivor.**
+
+**And the conclusion that follows is not a new hypothesis, it is a budget statement.** Eleven rounds have gone into
+one connect. **The engine is finished, gated and proven in the forward direction; the reverse direction is written,
+called and tested; and the failure is intermittent in a way that needs a packet capture during a failing run** -
+which requires the failure to be happening while the capture is taken, **and every attempt this session has either
+caught a success or ended before a capture was running.**
+
+**So the objective is left active with the position it actually has.**
+
+  * **Built and gated**: A1-A5, **1652 tests in 8 binaries with 0 failures**, the exactness gate at **0 of 2048
+    elements differing**, the layer range bit-identical when unset.
+  * **Proven on real hardware**: a hidden state crosses between two machines and **produces the correct first
+    token** (`D358`).
+  * **Written, called and tested, and observed connecting**: the reverse edge - **seven times**, including once in
+    the ring's own two-edge configuration (`D384`).
+  * **Not achieved**: a sequence. **No run has had all four legs live at once**, and eleven rounds of process-level
+    diagnosis have not found why the connect is intermittent.
+
+**And the one fact that eleven rounds have not disturbed.** Every fault in this design has been at an interface - a
+shadowed parameter, a dead closure, an uncounted row, a bind ordered after a connect, a role the environment
+forbade, and a connection that works when it feels like it. **The arithmetic was proved exact in `D325` and has never
+once been wrong.** The engine computes the right answer. **What it cannot yet do reliably is receive one across a
+wire, and the instrument that would say why needs a failing run to be watched while it fails.**
