@@ -13101,3 +13101,37 @@ measurement in this record carries.
 correct token (`D358`), the reverse edge proven to connect (`D369`), **and no run with both live completed.** But the
 honest addition is that **the last three rounds' conclusions rest on fewer observations than they should**, and the
 next run is worth more than any further reading.
+
+## D371 — It reproduces deterministically, so the bisection can be redone and B is the variable
+
+**The full configuration, repeated unchanged, failed identically:**
+
+    [back] connecting to 192.168.18.27:47702 as source
+    [back] first connect failed: No route to host (65)
+    [back] gave up after 450 attempts: No route to host (65)
+
+**So `D370`'s caution was right to ask and the answer is that this is deterministic rather than transient**, which
+is the better of the two outcomes: a reproducible fault can be bisected, and the three observations already taken are
+worth something after all.
+
+**And with causality respected, the variable must be B.** `Run.swift:325` runs `installReverseEdge` before `:328`'s
+`installIfConfigured`, so **nothing A's forward install does can affect A's back connect** - and the two A
+configurations that differ (forward LISTEN versus forward CONNECT) are the *same program order with a different
+target*. **The configurations that differ in outcome differ on B**: the working runs gave B `BACK_LISTEN` only, and
+the failing ones gave B `STAGE_LISTEN=47701` as well.
+
+**Which makes one question decisive and cheap: is B still listening on 47702 at the moment A connects?** B's
+`installReverseEdge` binds 47702 and blocks in `accept`; B's `installIfConfigured` binds 47701 **afterwards**. So
+B should still be in the back-accept. **But `lsof` confirmed 47702 twice - both times before A started** - and
+**`nc -z` from node3 reached it in `D368` while the CLI's own connect does not.** Same node, same port, same
+listening peer: **`nc` succeeds and `DecodeTCPSocket.connect` fails.**
+
+**And that difference is now the whole of the question**, because it is reproducible. Two clients, one port, opposite
+results - and the candidates are the ones a code difference would suggest: `nc` resolves and connects through
+`getaddrinfo`, while `DecodeTCPSocket.connect` builds a `sockaddr_in` itself with `inet_pton` and a literal address
+(`D18` chose that deliberately). **Something about the second is failing only when B is a two-edge stage**, which is
+still strange enough that the next step is to watch B's socket table *while* A is connecting rather than before.
+
+**Where the objective stands.** Unchanged: four legs written and tested, forward edge proven with a correct token
+(`D358`), reverse edge proven to connect in isolation (`D369`), no run with both live. **What this round adds is that
+the remaining fault is deterministic, isolated to the peer's configuration, and has a cheap decisive test.**
