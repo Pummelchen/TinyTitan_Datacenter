@@ -54,4 +54,21 @@ near 26.6 ms.
 
 - The four single-node runs and the four-stage chain above, each with its timing footer.
 - `swift test --no-parallel` on the runtime.
-- No model, dataset or dependency was fetched to make anything pass.
+- The release gates: force-cast **ok**, func-length **ok** (0 baselined, 0 new, 2186 scanned),
+  unchecked-sendable **ok**, arch-path **ok**.
+- A clean scratch release build, and the archive
+  `tinytitan-1.1-macos-arm64.tar.gz` at 25,830,098 bytes,
+  sha256 `b44e151f3f76b5b92609e7a68ad3b9d1cd2e2defd72e429f3bea7904360c71b4`.
+- **No model, dataset or dependency was fetched to make anything pass.**
+
+## Not checked, and named here as the gate requires
+
+- **Every golden baseline is NOT CHECKED.** No install was present under `models/` on the
+  machine that cut this release, and none may be fetched to change that:
+  `ornith-8`, `ornith-4`, `qwen36-4`, `qwen36-8`, `qwen38-4`, `qwen38-8`, `agentworld-4`,
+  `agentworld-8`, `katcoder-4`, `katcoder-8`, `qwen35-2b-4`, `qwen35-2b-8`, `qwen35-4b-4`,
+  `qwen35-4b-8`, `qwen35-9b-4`, `qwen35-9b-8`. **This release therefore ships no golden-baseline
+  evidence.** The benchmarks quoted above were measured through the CLI against an install
+  outside `models/`, which is a measurement, not a golden gate.
+- The **converter-expert-order** gate reports `SKIP: No module named 'numpy'` — the converter's
+  dependencies are unavailable here, so that gate is not checked either.
