@@ -60,12 +60,23 @@ public enum PipelineWiring {
         // while LISTEN and CONNECT name which end of the SOCKET, and the two need not agree.
         let role = env["TINYTITAN_STAGE_BACK_ROLE"] ?? (listen != nil ? "source" : "sink")
         let isSource = role == "source"
+        // A MIDDLE STAGE IS BOTH, AND THAT IS THE WHOLE FOUR-STAGE EXTENSION (D417, D418). With two stages a stage
+        // either consumes the returned token or publishes it, so one predicate sufficed and `end` could be a single
+        // handle. A stage with a predecessor AND a successor does both at once: it reads the token its successor
+        // chose and writes its own to its predecessor. So there are two predicates and two endpoints, and the
+        // listening socket carries the source while the connecting one carries the sink - which is the same
+        // LISTEN/CONNECT pair the two-stage ring uses, read in a combination it never tried.
+        let isBoth = role == "both"
+        let wantsSource = isSource || isBoth
+        let wantsSink = !wantsSource || isBoth
 
-        var end: FileHandle?
+        var sourceEnd: FileHandle?
+        var sinkEnd: FileHandle?
         if let listen {
             guard let port = UInt16(listen) else { throw WiringError.badPort(listen) }
             let pair = try DecodeTCPSocket.listenAndAccept(host: "0.0.0.0", port: port)
-            end = isSource ? pair.input : pair.output
+            if wantsSource { sourceEnd = pair.input }
+            if wantsSink { sinkEnd = pair.output }
         }
         if let connect {
             let parts = connect.split(separator: ":")
@@ -83,7 +94,9 @@ public enum PipelineWiring {
             for attempt in 0..<connectRetries {
                 do {
                     let pair = try DecodeTCPSocket.connect(host: String(parts[0]), port: port)
-                    opened = isSource ? pair.input : pair.output
+                    if wantsSink { sinkEnd = pair.output }
+                    if wantsSource && sourceEnd == nil { sourceEnd = pair.input }
+                    opened = pair.output
                     break
                 } catch {
                     // The FIRST failure is reported, not the last: a retry loop that only reports its final error
@@ -103,11 +116,10 @@ public enum PipelineWiring {
                 throw last
             }
             FileHandle.standardError.write(Data("[back] connected\n".utf8))
-            end = ready
         }
-        guard let end else { return false }
+        guard sourceEnd != nil || sinkEnd != nil else { return false }
 
-        if isSource {
+        if wantsSource, let end = sourceEnd {
             // -1 is the sentinel for "nothing has come back yet"; 0 is a legitimate token id, so the two must be
             // distinguishable (D361).
             runner.nextTokenSource = { position in
@@ -120,7 +132,8 @@ public enum PipelineWiring {
                     "[tok] told pos=\(position) token=\(token)\n".utf8))
                 return Int32(token)
             }
-        } else {
+        }
+        if wantsSink, let end = sinkEnd {
             runner.nextTokenSink = { token, layer in
                 FileHandle.standardError.write(Data(
                     "[tok] chose pos=\(layer) token=\(token)\n".utf8))
