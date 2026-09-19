@@ -11105,3 +11105,38 @@ array and **had not been touched by any of A1-A5.**
 **The useful part of a failed gate is the map it draws.** Five pieces were wired into `produceToken`'s loop, and the
 gate turns out to live in the prefill loop - **which is a different code path and was never in the plan.** That is
 now the whole of what remains for this step: fire the probe and the publish in prefill as well, run both, compare.
+
+## D314 — The prefill probe is in and the gate still produced no output; the cause is not yet located
+
+`D313` located the gate in the prefill loop and this round put the probe there. It compiles and the safety gates
+hold, and **the gate still produced no file** - so the diagnosis advanced and did not finish.
+
+**What was added, in `RealForwardRunner+Prefill.swift`:** at the top of `for L in layers`, when `L == hiddenProbeLayer`,
+the residual `scratch.hidden` is copied into `hiddenProbe` and the `onHidden` hook fires - the same hook `hiddenOut`
+uses, so one dump path serves both runs; and after the loop, when `!runEpilogue`, `scratch.hidden` is copied into
+`hiddenOut` and the hook fires.
+
+**And the round learned something the plan did not contain: prefill is already a pipeline.** At
+`RealForwardRunner+Prefill.swift:285` it reads
+
+    let layers = layerRange ?? 0..<cfg.numLayers
+    let runPrologue = layers.lowerBound == 0
+    let runEpilogue = layers.upperBound == cfg.numLayers
+
+**Prefill already honours `layerRange` and already distinguishes a stage that embeds from one that runs the head.**
+Three of Design A's five pieces - the range, the prologue and the epilogue - **already existed on the prefill path**,
+and A1 through A5 were all built against `produceToken`'s decode loop. **That is why the plan's map was wrong about
+where the gate lives, and it is also why the probe belongs here.**
+
+**What is established and what is not.** Established: the env block is inside `run` at `Run.swift:284-300`, before
+the layer range is applied at :303, and it sets `runner.hiddenProbeLayer`, `runner.hiddenProbe` and `runner.onHidden`
+on the runner that then generates; and the probe compiles into the prefill loop with a clean build (warnings 0,
+suite 0 failures, lint 0). **Not established: why neither hook fires.** The candidates are that generation does not
+reach the prefill loop in the configuration the gate runs, that `onHidden` is set on a different runner instance
+than prefill uses, or that the record write is failing silently inside `try?`.
+
+**And the honest position on the round.** Two rounds have been spent on a gate that has not run, with a real result
+each time - `D313` found the gate is in prefill, this round found prefill already has the partition - and no
+measurement. **The next step is a diagnostic rather than a change**: one `print` at the top of the prefill loop
+guarded by the probe env var, which in one run says whether the loop is reached and whether the probe layer matches,
+separating all three candidates at once.
