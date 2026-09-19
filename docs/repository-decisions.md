@@ -12530,3 +12530,36 @@ working** - the transport, the seed, the alignment, the pacing, and the runtime 
 no expert weights on the wire, which is the design's central structural claim, and it does so with the frames
 aligned. **It does not yet produce the single-node answer**, and until it does, the two-stage run is a transport
 demonstration rather than a pipeline. **The gap is one row count in one handoff**, and the record says which.
+
+## D354 — The row count cannot be derived from the buffer: capacity is not content
+
+`D353` established that the ring's publisher sends one row where the consumer's prefill needs `t`, and the first
+attempt at the fix was to derive the row count from the buffer:
+
+    let capacityRows = max(1, buffer.length / (rowWidth * MemoryLayout<Float16>.stride))
+
+**That is wrong, and the measurement says so immediately:**
+
+    A: [wire] send pos=0 layer=20 values=8388608
+    B: [wire] recv FAILED for pos=0
+
+**8388608 values is 4096 rows of 2048** - the whole allocation - where the publish had written five. **Capacity is
+not content.** A buffer sized for a chunk says how much it *could* hold, and every handoff buffer in this design is
+now deliberately oversized so that a chunk fits, which makes capacity a systematically wrong answer rather than an
+occasionally wrong one. The change is reverted.
+
+**What the fix therefore needs, stated so the next attempt is not a third guess.** The count that matters is **how
+many rows the publisher wrote**, and it is known exactly at the publish site in two places - `t` in the prefill's
+post-loop handoff, and one in the decode hook - and **nowhere the receiver can infer it from the buffer**. So the
+count has to travel: **either through the hook's signature, or through a property the publisher sets before it
+publishes**, and `PipelineFrame`'s `count` field is what carries it on the wire once it does.
+
+**And the failure mode of getting it wrong is worth noting because it is silent in one direction and loud in the
+other.** One row when five are needed produced **whitespace** - a wrong answer that looks like an answer, which cost
+a run to notice. Four thousand and ninety-six when five are needed produced **an immediate receive failure**, because
+16 MB will not fit the peer's landing buffer. **The undershoot is the dangerous direction**, and it is the one the
+original code had.
+
+**Two rounds have now gone into this one row count**: `D353` found it, and this round reverted a plausible fix for
+it. **The finding stands and the code is back to the state that produced it**, so nothing is lost except a round -
+and the shape of the correct fix is now pinned rather than guessed at.
