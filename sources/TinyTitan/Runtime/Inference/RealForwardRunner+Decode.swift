@@ -196,12 +196,18 @@ extension RealForwardRunner {
         // now which residual each decode step starts from - the seed its prefill claimed, or a fresh frame - and
         // the position it was consumed for.
         FileHandle.standardError.write(Data(
-            "[seed] decode pos=\(position) fromSeed=\(hiddenSeeded)\n".utf8))
-        if hiddenSeeded {
-            // ALREADY SEEDED BY OUR OWN PREFILL for this position, so consuming a frame here would advance a second
-            // time and shift every later token by one (D388). The flag is cleared so the NEXT step fetches normally.
-            hiddenSeeded = false
-        } else if let source = nextHidden {
+            "[seed] decode pos=\(position) hasSource=\(nextHidden != nil || hiddenIn != nil)\n".utf8))
+        // A STAGE THAT IS HANDED A STATE SEEDS FROM IT, ALWAYS (D431). The `hiddenSeeded` flag that used to guard
+        // this was D388's fix for a one-frame shift, and it was wrong in the way that matters: it made a stage SKIP
+        // the fetch it exists to perform, so a stage owning 20..<40 ran its layers on its own token embedding
+        // instead of on its predecessor's layer-20 residual. The observed signature is exactly that - the first
+        // generated token is right because it comes from the prefill's logits, and every token after it is computed
+        // from the wrong residual.
+        //
+        // The first stage is unaffected either way: it has no source, the branches below do nothing, and its
+        // embedding stands. The frame carries the state for THIS position - a decode frame is one row and a prefill
+        // frame is one row per prompt position - so offset zero is always the row this step needs.
+        if let source = nextHidden {
             let bytes = residualWidth * MemoryLayout<Float16>.stride
             memcpy(hidden.contents(), source(position).contents(), bytes)
         } else if let incoming = hiddenIn {

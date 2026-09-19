@@ -395,8 +395,6 @@ extension RealForwardRunner {
             // predecessor has not written yet - and `nextHidden` blocks until the frame arrives, which is the
             // synchronisation the pipeline needs rather than a race it hopes to win.
             let source = preparedHidden ?? nextHidden?(startPosition) ?? hiddenIn
-            // Claim the frame: the decode's first step must reuse THIS state, not fetch the next one (D388).
-            hiddenSeeded = true
             if let preparedHidden = source {
                 // The caller hands over `[t, D]` rows -- an MTP draft's fused
                 // hidden. A hyper-connection stack starts every stream from that

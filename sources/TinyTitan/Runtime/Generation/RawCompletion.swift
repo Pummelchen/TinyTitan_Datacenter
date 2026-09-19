@@ -365,7 +365,18 @@ public func runRawCompletion(producer: any LogitProducer,
             // moment it is given it.
             if ring.nextTokenSource == nil { ring.nextTokenSink?(tokenID, 0) }
             // The token to produce with arrived during the PREVIOUS iteration's work (below), not now.
-            if let carried = pendingIncoming { stepToken = carried; pendingIncoming = nil }
+            if let carried = pendingIncoming {
+                stepToken = carried; pendingIncoming = nil
+            } else if let source = ring.nextTokenSource {
+                // THE FIRST DECODE STEP HAS NOTHING CARRIED (D432). The lookahead fetches at the END of an iteration,
+                // so on the very first one there is no previous iteration to have fetched - and a first stage would
+                // produce from its OWN sampler's token instead of the one the head chose. The trace showed exactly
+                // that: A published its position-5 state BEFORE it was ever told ` Paris`, so the state it sent
+                // downstream was computed from a token nobody selected. Token 1 stayed right because it comes from
+                // the prefill's logits; every token after it was computed from that wrong state.
+                let first = source(position)
+                if first >= 0 { stepToken = first }
+            }
         }
         try await producer.produce(token: stepToken, position: position, slot: slot,
                                    into: scratch.logits)
