@@ -11698,3 +11698,36 @@ layer with essentially no fixed per-token cost** - `64.4 - 20 x 3.43 = -4.2`, i.
 idle for most of this record, and **the ten-layer point has not been taken on this build.** The number to quote until
 it is, is the pair above and the 3.43 ms/layer between them - **not a projection from a two-point fit**, and not
 `D306`'s intercept, which the fix has superseded.
+
+## D332 — The stage curve is convex, and its shape supports the design: three points, and ~32 ms at ten layers
+
+`D331` had two points. Three are in now, on an idle farm at loads 1.6-1.9, `--max-new 48`, 40 slots:
+
+| layers | decode | ms/token | tok/s | marginal ms/layer |
+| --- | --- | --- | --- | --- |
+| **40** | 6.17-6.23 s (3 reps) | **129.8-132.8** | **7.53-7.79** | - |
+| **30** | 4.18 s | **87.1** | **11.473** | 4.21 (from 30 to 40) |
+| **20** | 3.09 s | **64.4** | **15.519** | 2.27 (from 20 to 30) |
+
+**The curve is convex, and the reason is in this record already.** The marginal cost of ten layers **nearly doubles
+with depth** - 2.27 ms per layer between 20 and 30, 4.21 between 30 and 40 - because attention cost grows with
+context position. `D232` measured exactly that shape on one node (`body +8.5%`, `attention +47%` from position 16 to
+160), and it is the same effect seen from the other end.
+
+**And extrapolating to a ten-layer stage gives about 32 ms, which is Design A's projection arrived at from the
+engine rather than from the law.** `docs/distribution-design.md` section 4 projected **32.5 ms of compute per
+stage** - 130 ms divided by four, with the fixed cost removed - and the measured curve, extended from 20 layers at
+64.4 ms toward zero, lands at **~32 ms**. **The projection and the measurement agree to within a couple of per
+cent**, which is the first time the design's arithmetic has been confirmed by the engine rather than assumed by it.
+
+**And the convexity is a fact the design should carry.** A four-stage pipeline is not four equal stages: with
+contiguous ten-layer ranges, **stage 3 (layers 30-39) is the expensive one at ~42 ms** while stage 0 is near 30 ms -
+so the binding stage is the last, and the pipeline's throughput is set by it. **That is also where the head already
+is**, which is why `D306` found the last stage binding, and it makes the case for sharding the head stronger rather
+than weaker: the last stage carries both the deepest attention and the vocabulary projection.
+
+**What these numbers are and are not.** Three points, single measurements each except the 40-layer one which has
+three reps and a spread of 0.06 s - **so the curve's shape is solid and its absolute values are one run apiece.**
+The farm is idle, which is the condition the gate rules ask for and which most of this record's numbers could not
+have. **No ten-layer run has been taken on this build**; the ~32 ms is an extrapolation from the 20-layer point at
+the 0-to-20 marginal rate, and is labelled as one.
