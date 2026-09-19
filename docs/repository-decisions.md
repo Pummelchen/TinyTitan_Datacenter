@@ -11965,3 +11965,49 @@ four-node expert exchange over it), the frame exists and has three tests, and `D
 **117.8 MB/s**. **What has never happened is a `PipelineFrame` crossing a socket - and that remains true after
 this round.** The next step is to establish whether the same-descriptor hypothesis holds, with a two-process test
 rather than two tasks in one process, which removes the deallocation question entirely.
+
+## D339 — The same-descriptor hypothesis is refuted, and this repository already had the answer written down
+
+`D338` left a hypothesis: that `DecodeTCPSocket.handles(for:)` wraps **one** descriptor in two `FileHandle`s, so a
+deallocation on one side closes what the other is reading. **Read rather than tested, and it is wrong:**
+
+    let outputFD = dup(fd)
+    guard outputFD >= 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
+    return (FileHandle(fileDescriptor: fd, closeOnDealloc: true),
+            FileHandle(fileDescriptor: outputFD, closeOnDealloc: true))
+
+**`dup` gives a separate descriptor**, so closing either `FileHandle` cannot close the other. **The hypothesis was
+mine, it was plausible, and one look at a twelve-line function refuted it** - and it is recorded as refuted rather
+than quietly dropped, because the next person to see a connection reset will reach for it too.
+
+**And the same twelve lines carried the answer.** Two functions further down, about `sin_len`:
+
+    It was added while diagnosing an EINVAL and it was **not** what fixed it - the failures were a
+    **test-suite port collision** and an `fsync` on a socket.
+
+**This repository has already been bitten by exactly this symptom, in this exact file, and wrote down what it
+was.** And the neighbouring `DecodeTCPSocketTests` has the pattern that came out of it:
+
+    @Suite("Decode TCP socket", .serialized)
+    static let port: UInt16 = 45917
+    acceptInBackground(port:)      // Task.detached { listenAndAccept }
+    connectWhenListening(port:)    // a bounded wait for the listener to exist
+    readExactly(_:from:)           // loops, because read(upToCount:) returns short on a LAN
+
+with the comment **"Two suites running at once would collide; `swift test` runs them in one process, so they do
+not."** **The test I wrote had none of that** - no `.serialized`, its own fixed ports, and a hand-rolled retry - and
+`readExactly`'s own docstring says why a single read is the wrong instrument: *"a test that reads once is testing
+the loopback's buffering rather than the transport."* **Which is what mine did.**
+
+**So the next attempt is not an investigation, it is a transcription.** Mirror `DecodeTCPSocketTests`' structure -
+`.serialized`, `acceptInBackground`, `connectWhenListening`, `readExactly`, a port in the ephemeral range that
+nothing else in the suite uses - and the `PipelineLink` code that was reverted in `D338` is reproduced from that
+record unchanged. **The transport question is therefore not blocked on anything unknown: it is blocked on reusing
+a helper that exists two files away.**
+
+**And the methodological note is the same one this session keeps earning.** `D338` reached for a mechanism
+because the symptom was suggestive, where reading the file would have answered in one call - and the file
+contained not only the refutation but the fix and the reason. **Three times now the answer was in a comment in the
+code being diagnosed**: `D335` found the residual seed this way, `D336` found that decode already handled it, and
+this round found both the refutation and the pattern. **Reading the code before forming a hypothesis about it is
+not a shortcut; it is the cheaper path, and it keeps being the cheaper path.**
