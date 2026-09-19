@@ -459,8 +459,9 @@ extension RealForwardRunner {
                 FileHandle.standardError.write(Data(("[diag] probe hit L=\(L) runner=\(selfID) buffer=\(hiddenProbe != nil)"
                     + " hook=\(onHidden != nil)\n").utf8))
                 if let probe = hiddenProbe {
-                    memcpy(probe.contents(), scratch.hidden.contents(),
-                           D * MemoryLayout<Float16>.stride)
+                    let want = D * MemoryLayout<Float16>.stride
+                    FileHandle.standardError.write(Data(("[diag] copy: dst.len=\(probe.length) src.len=\(scratch.hidden.length) want=\(want) residualWidth=\(residualWidth)\n").utf8))
+                    memcpy(probe.contents(), scratch.hidden.contents(), min(want, min(probe.length, scratch.hidden.length)))
                     if let sink = onHidden { sink(startPosition, probe) }
                 }
             }
