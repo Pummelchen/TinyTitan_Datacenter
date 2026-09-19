@@ -15205,3 +15205,47 @@ the `both` role and the relay; the exactness gate at **0 of 2048**; the transpor
 and token edge all verified; **a two-stage ring at 17.1 and 19.1 tok/s**; **a 13-layer stage alone at 48.7 ms, the law
 exactly**; **a three-stage chain running end to end, correct first token, improved from 137 to 110 ms by the relay**;
 and **the residual 59 ms identified as the second hop's latency, with a two-deep lookahead written down as the fix.**
+
+## D428 - The residual is not the lookahead's depth but a middle stage's forwarding delay: one call, moved
+
+**`D427` concluded the chain needs a deeper lookahead. Reading the loop again, that is not what the numbers say.**
+
+**The sequence inside one iteration, as it now stands:**
+
+    sink(pendingIncoming ?? tokenID)          <- a middle stage relays here
+    stepToken = pendingIncoming; pendingIncoming = nil
+    produce(stepToken)
+    incoming = source(position + 1)           <- and receives the head's NEXT token here
+    pendingIncoming = incoming
+
+**And the delay is visible in those five lines.** The middle stage receives the head's token at the **end** of its step
+N, and relays it at the **start** of its step N+1 - **so the head's choice for step N reaches the first stage during
+step N+1, which is one whole stage step later than it needs to be.** The relay removed the *sampling* cost of that hop
+(`D426`), and what remains is the *scheduling* of it: **the token sits in `pendingIncoming` for a full iteration before
+anything is done with it.**
+
+**And the fix is not a deeper lookahead - it is one call moved.** A stage that relays should forward the token **the
+moment it receives it**, not at its next sink. That is the same quantity `D411` moved for the first stage, applied to
+the middle one:
+
+    stepToken = pendingIncoming; pendingIncoming = nil
+    produce(stepToken)
+    incoming = source(position + 1)
+    pendingIncoming = incoming
+    sink(incoming)                            <- RELAY IMMEDIATELY, not next iteration
+
+**And why this is better than a queue, which is what `D427` proposed.** A queue of depth two would need the source to
+fetch two tokens per iteration - **and the peer produces one per step, so the second fetch would block**, which is the
+serialisation the whole line of work has been removing. **Moving the sink costs nothing and blocks nothing**: the token
+arrives, is forwarded, and is also kept for this stage's own next produce. **One call, moved, and it is a strictly
+smaller change than the queue `D427` described.**
+
+**And the same care applies as always.** This touches the exchange `D411` reordered and `D426` re-pointed, so it is
+written here and **not** applied in the round that wrote it - which is the discipline `D388` established and four
+rounds have now confirmed.
+
+**Where the objective stands.** A1-A5 built and gated; the fork's suite green with the quiet switch, the lookahead, the
+`both` role and the relay; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and
+token edge all verified; **a two-stage ring at 17.1 and 19.1 tok/s**; **a 13-layer stage alone at 48.7 ms, the law
+exactly**; **a three-stage chain at 110 ms/token after the relay, from 137**; and **the residual 59 ms localised to a
+token waiting one iteration in `pendingIncoming` before being forwarded - one call moved, rather than a queue.**
