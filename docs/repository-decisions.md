@@ -14799,3 +14799,53 @@ in; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, f
 verified; **a two-stage ring whose first token is right and whose second is not**; **throughput measured to
 convergence at 17.1 and 19.1 tok/s**; and **the four-stage extension identified, with the law's arithmetic saying it
 reaches 23.9 tok/s, as the remaining work rather than as an optimisation.**
+
+
+## D417 - The four-stage blocker is one exclusive either/or, and it is three edits wide
+
+**The role model, as it stands:**
+
+    :61   let role = env["TINYTITAN_STAGE_BACK_ROLE"] ?? (listen != nil ? "source" : "sink")
+    :62   let isSource = role == "source"
+    :68   end = isSource ? pair.input : pair.output
+    :86   opened = isSource ? pair.input : pair.output
+    :110  if isSource { ...nextTokenSource... } else { ...nextTokenSink... }
+
+**A stage is a source or a sink, never both** - and that is precisely the two-stage assumption written as a type.
+
+  * the first stage **listens** for the token (`source`);
+  * the last stage **connects** back to send it (`sink`);
+  * **and no third possibility was ever needed, because with two stages there is no middle.**
+
+**And a middle stage is exactly the third possibility.** A stage with a predecessor and a successor must:
+
+  * **consume** the token its successor chose - the `source` hook - **and publish** its own to its predecessor - the
+    `sink` hook - **at the same time**;
+  * **read** from its reverse-listening endpoint (its successor connects to it) **and write** to its reverse-connecting
+    endpoint (its predecessor listens) - **two endpoints where the code has `isSource ? input : output`.**
+
+**So the whole four-stage extension is three edits**, and it is worth saying that plainly because `D416` made it sound
+structural and it is not:
+
+  1. **a `both` role**, and two predicates instead of one - `wantsSource`, `wantsSink`;
+  2. **both reverse endpoints live at once** on such a stage - `pair.input` for the source and `pair.output` for the
+     sink, where the code currently picks one by role;
+  3. **the two hook assignments fall through independently** rather than through an `if/else` - **and the comment
+     above it that says "only one of the two hooks is non-nil on any given stage" is the sentence that stops being
+     true**, which is the sort of comment that should be edited in the same commit as the code it describes.
+
+**And the middle stage's environment follows without invention**: it already has `STAGE_LISTEN` (forward input, from
+its predecessor) and `STAGE_CONNECT` (forward output, to its successor), so the reverse side is `BACK_LISTEN` (its
+successor connects) and `BACK_CONNECT` (it connects to its predecessor) - **the four variables the two-stage ring
+already uses, read in a combination it never tried.**
+
+**And what is genuinely new is the token's route rather than its mechanism.** In a four-stage chain the head's token
+must travel **backwards through every middle stage** - B to C to D - and each hop is the same `sendToken`/`receiveToken`
+pair that `D390` verified token-for-token between two nodes. **The mechanism is proven; what does not exist is a stage
+that is on both sides of it.**
+
+**Where the objective stands.** A1-A5 built and gated; the fork's suite green with the quiet switch and the lookahead
+in; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and token edge all verified;
+**a two-stage ring measured to convergence at 17.1 and 19.1 tok/s against a 21 tok/s objective**; and **the four-stage
+extension reduced this round from "does not exist" to three named edits in one function, with the law saying the
+result reaches 23.9 tok/s.**
