@@ -14849,3 +14849,41 @@ in; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, f
 **a two-stage ring measured to convergence at 17.1 and 19.1 tok/s against a 21 tok/s objective**; and **the four-stage
 extension reduced this round from "does not exist" to three named edits in one function, with the law saying the
 result reaches 23.9 tok/s.**
+
+
+## D418 - The both role is implemented and the suite is green; the three-stage chain is the next run
+
+**`installReverseEdge` no longer assumes two stages.** `D417` reduced the extension to three edits and all three are
+in:
+
+    let isBoth = role == "both"
+    let wantsSource = isSource || isBoth
+    let wantsSink   = !wantsSource || isBoth
+
+    var sourceEnd: FileHandle?      // the token this stage is TOLD
+    var sinkEnd:   FileHandle?      // the token this stage CHOOSES
+    ...
+    if wantsSource, let end = sourceEnd { runner.nextTokenSource = ... }
+    if wantsSink,   let end = sinkEnd   { runner.nextTokenSink   = ... }
+
+**And no new environment was needed.** A middle stage is `TINYTITAN_STAGE_BACK_ROLE=both` with `BACK_LISTEN` for the
+socket its successor connects to and `BACK_CONNECT` for the one its predecessor listens on - **the same four
+variables the two-stage ring uses**, and the listening socket carries the source while the connecting one carries the
+sink. **A middle stage's forward side is likewise unchanged**: `STAGE_LISTEN` from its predecessor, `STAGE_CONNECT`
+to its successor.
+
+**And the build is clean and the suite is green** - `0 warnings 0 errors`, and `swift test --no-parallel` **exit 0
+across 8 test binaries**, which is the check `D359` and `D403` both insist on and which this round ran before the
+commit rather than after it.
+
+**What is not yet done is the run.** A chain needs three nodes and the binary deployed to all three: the first stage
+as `source`, the middle as `both`, the last as `sink`, with the forward edge chained `0:13 -> 13:26 -> 26:40` and the
+reverse edge returning the head's token through the middle. **The mechanism is now built and the environment is a
+combination of variables that already exist, so the next round is a deployment and a measurement rather than a
+change.**
+
+**Where the objective stands.** A1-A5 built and gated; the fork's suite green with the quiet switch, the lookahead and
+now the `both` role in it; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and
+token edge all verified; **a two-stage ring measured to convergence at 17.1 and 19.1 tok/s**; and **the four-stage
+extension's blocking change implemented and verified against the whole suite, leaving a three-node deployment as the
+remaining step - with the law saying four ten-layer stages reach 23.9 tok/s against the 21 tok/s objective.**
