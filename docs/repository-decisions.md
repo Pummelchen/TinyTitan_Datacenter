@@ -15101,3 +15101,40 @@ all verified; **a two-stage ring at 17.1 and 19.1 tok/s**; **a three-stage chain
 correct first token**; and **the three-stage rate measured at 7.28 tok/s with its stages balanced, which locates the
 regression in the per-stage cost rather than in the distribution - and the objective's four-stage, 21 tok/s target
 therefore not reachable by adding stages until that per-stage cost is understood.**
+
+## D425 - The stage is the law and the ring adds 88 ms: a two-hop token round trip defeats a one-position lookahead
+
+**The measurement that separates the stage from the ring - the same layer range, alone:**
+
+    solo 0:13, standalone, 128 tokens:   decode=6.23s   20.539 tok/s   =  48.7 ms/token
+    the law for thirteen layers:         19.3 + 13 x 2.25            =  48.6 ms
+    the same stage inside the three-stage ring:                          137 ms/token
+
+**The stage's own cost is 48.7 ms against the law's 48.6.** So the stage is not slow, not cold, and not
+misconfigured - **it is the law to within a tenth of a millisecond** - and **the ring adds 88 ms per token on top of
+it.** The candidates `D424` listed can now be ranked rather than guessed: **the per-layer cache is excluded** (the
+stage alone is exact), **and the cost is in the exchange.**
+
+**And 88 ms is very close to one peer step.** A `both` stage's own cost is 48.7 ms and re-measuring at the head is the
+same order, so the ring is **paying one stage's worth of latency per token instead of overlapping it** - which is
+exactly what `D411`'s lookahead was written to remove and exactly what it removed in the two-stage ring, where the
+first stage fell from 295 to 179 ms.
+
+**And the difference between the two cases is the number of hops the token takes.** In a two-stage ring the head's
+token reaches the first stage in **one hop**, and the lookahead hides it by fetching at the end of the iteration. In a
+three-stage chain the token goes **head to middle to first - two hops - and the middle stage cannot forward it until
+it has received it**, so the first stage's receive now depends on a chain of two dependent receives rather than one.
+**A one-position lookahead can hide one dependency and not two**, which is the arithmetic the numbers show: 48.7 ms of
+work plus 88 ms of unhidden latency.
+
+**And that is a design consequence rather than a defect.** The token's return path in a chain of `n` stages has `n-1`
+hops, so **the latency a lookahead must hide grows with the stage count while the work per stage falls** - and at some
+point the two cross. **For thirteen-layer stages on this hardware they have crossed**: the work is 48.7 ms and the
+unhidden latency is 88 ms, so **adding stages makes the chain slower even though every stage is perfectly efficient.**
+
+**Where the objective stands.** A1-A5 built and gated; the fork's suite green with the quiet switch, the lookahead and
+the `both` role; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and token edge
+all verified; **a two-stage ring at 17.1 and 19.1 tok/s**; **a three-stage chain running end to end with the correct
+first token and each stage exactly at the law**; and **the three-stage slowdown localised to the token's two-hop
+return path, with the per-stage cost excluded and the four-stage target therefore requiring a deeper lookahead rather
+than more machines.**
