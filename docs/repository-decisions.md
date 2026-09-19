@@ -11072,3 +11072,36 @@ the chain the plan drew.
 
 **No throughput claimed.** The only pipeline-relevant number this build has produced is still `D306`'s single-stage
 **21.482 tok/s for ten layers**, which is the arithmetic Design A rests on and not the design itself.
+
+## D313 — The comparison wiring is in and the gate did not run, for a reason that is now located precisely
+
+The env-driven seams are in the tree and clean - `TINYTITAN_PROBE_LAYER` captures a layer boundary in a full run,
+`TINYTITAN_DUMP_LAYER_STATE` writes whatever state the hook fires with, and **the probe fires the same `onHidden`
+hook as `hiddenOut`**, so a `0:40` run probing layer 20 and a `0:20` run publishing its residual are dumped by one
+path and read by one comparator. Build warnings 0, suite 0 failures, lint clean.
+
+**And the gate did not run: neither file was written.** The runs completed and reported `new=1tok`, and the reason
+is in their own timings:
+
+    RUN A (0:40, probe 20)   prefill=5tok/1.48s  new=1tok  decode=0.01s  tok/s=86.095
+    RUN B (0:20)             prefill=5tok/1.42s  new=1tok  decode=0.00s  tok/s=1742.182
+
+**0.01 s for forty layers is impossible, and 0.00 s for twenty is more so.** With `--max-new 1` the single token
+comes out of the **prefill's last-position logits** and a separate decode step never runs - so `produceToken` is
+never entered, `hiddenOut` is never published, `onHidden` never fires, and no file appears. **The instrumentation was
+correct and the run did not exercise it.**
+
+**And the fix is not `--max-new 2`, which is the obvious move and is wrong.** A decode step's input is the token the
+previous step sampled, and **`D311` already established that the two runs sample different tokens**: run A samples
+from forty layers, run B from twenty, so their token sequences diverge at the first sample and **no decode-position
+comparison between them is valid.**
+
+**What is valid, and it is what the probe was built for, is a comparison at a PREFILL position.** Both runs embed the
+same prompt tokens, so the state entering layer 20 at a given prefill position **is the same point in the same
+forward pass** - which is exactly the identity `D312` rests on. **So the probe has to fire in the prefill loop**,
+which is `RealForwardRunner+Prefill.swift:452`, `for L in layers` - a second loop that already iterates a layer
+array and **had not been touched by any of A1-A5.**
+
+**The useful part of a failed gate is the map it draws.** Five pieces were wired into `produceToken`'s loop, and the
+gate turns out to live in the prefill loop - **which is a different code path and was never in the plan.** That is
+now the whole of what remains for this step: fire the probe and the publish in prefill as well, run both, compare.
