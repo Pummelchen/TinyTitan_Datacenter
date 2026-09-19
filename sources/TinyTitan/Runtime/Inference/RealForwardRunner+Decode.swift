@@ -192,7 +192,11 @@ extension RealForwardRunner {
         // A3: a stage that is handed a hidden state does not embed. The copy overwrites the embed's result, which
         // is wasted work on a middle stage and harmless - correctness first, and the embed's cost is measured and
         // small against ten layers.
-        if let source = nextHidden {
+        if hiddenSeeded {
+            // ALREADY SEEDED BY OUR OWN PREFILL for this position, so consuming a frame here would advance a second
+            // time and shift every later token by one (D388). The flag is cleared so the NEXT step fetches normally.
+            hiddenSeeded = false
+        } else if let source = nextHidden {
             let bytes = residualWidth * MemoryLayout<Float16>.stride
             memcpy(hidden.contents(), source(position).contents(), bytes)
         } else if let incoming = hiddenIn {
