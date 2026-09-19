@@ -11438,3 +11438,41 @@ the failure is a SIGSEGV (`D318`); it is not the size (`D320`); it is not the `m
 unavailable (`D323`). **Each is a real elimination and together they leave one property to print** - and the
 recommendation from `D320` stands: **if the next print does not settle it, stop guessing and take the path the code
 base has already proved, by copying through a command buffer the way `dumpActivation` does.**
+
+## D324 — Found: the source is a PRIVATE buffer, so contents() is not a pointer at all
+
+The property that settles it, printed in one line:
+
+    [diag] storageMode dst=0 src=2      (0=shared  1=managed  2=private)
+
+**`hiddenProbe` is `.shared` and `scratch.hidden` is `.private`.** `contents()` on a private `MTLBuffer` is not a
+valid pointer - the method exists on the type and returns something, which is why every check around the copy
+succeeded, and dereferencing it is the SIGSEGV that has now cost six rounds.
+
+**And the diagnosis was `D318`'s, dismissed by `D319` on evidence that did not support it.** `D319` argued that
+because `scratch.routeIDs.contents()` is read at `Prefill.swift:1414`, scratch buffers must be shared. **`routeIDs`
+and `hidden` are different buffers**, and `D323` already recorded that the generalisation was the mistake. **The
+answer was right the first time and one over-broad inference removed it** - which is worth more than the six rounds
+it cost, because it is the same failure this session keeps meeting: **a conclusion drawn from a neighbouring case
+rather than the case itself.**
+
+**The fix is the one `D320` named before the cause was known, and that is not a coincidence.** It said: *stop adding
+prints and build the copy the way the code base already does it* - a blit through a command buffer, as
+`dumpActivation` does, **which works on this exact buffer**. That recommendation was made on the general principle
+that a mechanism already proved in the file beats a guess, and the guess it replaced turned out to be wrong for
+precisely the reason a mechanism would not have cared about: **a blit does not need `contents()` on either side.**
+
+**So the next change is not another diagnostic.** It is the probe write as a blit, and the same for the post-loop
+publish - both writing from a private buffer into a shared one, which is exactly what a blit is for.
+
+**What six rounds produced, and the last four are the ones that counted.**
+
+| | |
+| --- | --- |
+| `D318` | the failure is a SIGSEGV, not a silent no-op |
+| `D320` | it is not the size, and the fix should be a blit |
+| `D323` | it is not the `memcpy`, and `lldb` is unavailable from this session |
+| **`D324`** | **the source is `.private`, so `contents()` was never a pointer** |
+
+**The pipeline's exactness remains unverified.** The gate has still never run; the difference is that the reason is
+now known and it is one line of a different kind.
