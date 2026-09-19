@@ -13135,3 +13135,47 @@ still strange enough that the next step is to watch B's socket table *while* A i
 **Where the objective stands.** Unchanged: four legs written and tested, forward edge proven with a correct token
 (`D358`), reverse edge proven to connect in isolation (`D369`), no run with both live. **What this round adds is that
 the remaining fault is deterministic, isolated to the peer's configuration, and has a cheap decisive test.**
+
+## D372 — B listens continuously, nc reaches the port, and the CLI's connect fails reproducibly
+
+**The observation `D371` asked for, taken while A was retrying rather than before it started:**
+
+    B's sockets, sampled ten times over fifty seconds:   TCP *:47702 (LISTEN)
+    A's log:  [back] connecting to 192.168.18.27:47702 as source
+              [back] first connect failed: No route to host (65)
+
+**B is listening on every interface for the whole window** - ten samples, no gap - **and A fails on its first attempt
+and on all 450 after it.** `D368` established that `nc` from this same node reaches this same port. **So three
+statements are all true and cannot all be true:**
+
+  * B is listening on 47702 (`lsof`, ten samples);
+  * node3 can reach node1:47702 (`nc -z`, `D368`);
+  * the CLI's `DecodeTCPSocket.connect` to that address and port returns `EHOSTUNREACH`.
+
+**And the fourth fact makes it sharper.** In `D369` the CLI's connect to that same address and port **succeeded** -
+the isolated run connected, printed `[back] connected`, and installed the edge. **The only difference between that
+run and this one is that A also had `TINYTITAN_STAGE_CONNECT` set, whose only consumer is `installIfConfigured`, which
+`Run.swift:325-328` calls AFTER `installReverseEdge`.**
+
+**So the contradiction is not "the network is flaky" - it is that a code path which runs later changes the outcome
+of one that ran earlier.** That is impossible in a single-threaded program, **which means one of the four facts above
+is being read wrongly**, and the candidates are now narrow enough to name:
+
+  * **the program order is not what the source says** - something else calls `installIfConfigured`, or the build
+    deployed is not the commit read;
+  * **the split between `nc` and `DecodeTCPSocket.connect` is real and load-dependent** - different API paths
+    (`getaddrinfo` against a hand-built `sockaddr_in` and `inet_pton`, which `D18` chose deliberately), so a
+    source-address or interface-selection difference is conceivable on a node with **two addresses on the same
+    subnet** (`D364`: node3 has `.29` and `.8`, node1 has `.27` and `.6`);
+  * **the header a connect receives is not the header `inet_pton` was given.**
+
+**And the last of those is testable in one command and would explain everything.** If `DecodeTCPSocket.connect`
+resolves its **own** address for the source-address selection, then on a node with two same-subnet addresses the
+kernel may pick `en1`, and a reply arriving on `en0` from a peer that also has two addresses **is the classic
+asymmetric-route refusal** - `EHOSTUNREACH` rather than `ECONNREFUSED`, which is exactly what is being observed.
+**`nc` would not show it, because `nc` lets `getaddrinfo` and the kernel's own source selection do the work.**
+
+**Where the objective stands.** Unchanged in substance: four legs written and tested, the forward edge proven with a
+correct token (`D358`), the reverse edge proven to connect (`D369`), and no run with both live. **What is new is that
+the fault now has a named mechanism candidate - dual same-subnet addresses and a hand-built `sockaddr_in` - rather
+than being a report that a connection failed.**
