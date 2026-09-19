@@ -480,6 +480,14 @@ public func run(args: Args,
             if let ring = (runner as? RealForwardRunner)?.prefetchRingSummary {
                 FileHandle.standardError.write(Data("\n[prefetch] \(ring)\n".utf8))
             }
+            // totalExposedIoNanos is the engine's own measure of expert I/O that was NOT hidden behind other work
+            // (D450). Only TinyTitanServer ever read it, so every CLI run in this session reported expert I/O
+            // without saying how much of it was exposed - which is exactly the number D441's lever 1 turns on.
+            if let r = runner as? RealForwardRunner, stats.newTokens > 0 {
+                let exposedMs = Double(r.totalExposedIoNanos) / 1e6
+                FileHandle.standardError.write(Data(String(format: "\n[overlap] exposed_io=%.1f ms over %d tokens = %.1f ms/token\n",
+                    exposedMs, stats.newTokens, exposedMs / Double(stats.newTokens)).utf8))
+            }
             let footer = "\n[stop=\(String(describing: stats.reason)) prefill=\(stats.prefillTokens)tok/\(String(format: "%.2f", stats.prefillSeconds))s new=\(stats.newTokens)tok decode=\(String(format: "%.2f", stats.decodeSeconds))s tok/s=\(String(format: "%.3f", tokensPerSecond))]\n"
             stderr.write(Data(footer.utf8))
         }
