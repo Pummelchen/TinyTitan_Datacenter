@@ -14993,3 +14993,36 @@ all verified; **a two-stage ring measured to convergence at 17.1 and 19.1 tok/s*
 two nodes with its middle stage parsing `both` and its reverse pair connected over localhost**; and **the single
 remaining obstacle named rather than guessed: the outbound connect needs the attached-session form that D387 measured,
 and the chain was launched detached.**
+
+## D422 - D387 generalises: every stage that connects outbound needs the attached form, and the fault moves to whichever stage is detached
+
+**The same chain, with only the middle stage changed - `nohup` to foreground:**
+
+    node1 13:26 both:    [back] connected                  <- was EHOSTUNREACH
+                         [pipeline] reverse edge installed
+    node1 26:40 sink:    [back] connected
+                         [pipeline] reverse edge installed
+    node3  0:13 source:  [pipeline] reverse edge installed
+                         error: No route to host           <- and now THIS one fails
+
+**The middle stage's outbound connect succeeded the moment it was attached to its session** - so `D387`'s
+discriminator is confirmed a third time, by a different process, on a different edge, in a different direction from
+the two earlier observations. **And the fault did not disappear; it moved to the one stage still launched detached.**
+
+**So the rule is general rather than specific to the reverse edge.** `D387` was written about the token's return leg
+because that is where it was first seen, but the mechanism - macOS deciding a detached process may not originate - is
+about **the process**, not about which socket it opens. **Every stage that opens an outbound connection needs to stay
+attached to its launching session**, and in a four-stage chain that is every stage except the last: the first connects
+forward, every middle stage connects both ways, and only the head is purely a listener on the forward side.
+
+**And that is a deployment rule rather than a code fault, which is the useful part.** Nothing in the engine is wrong;
+the chain is correct; and the launch form is what decides whether it runs. **The four-stage chain therefore needs two
+long-lived attached sessions** - one per connecting stage - **and the tool call that launches each must not outlive
+them**, which is the same wrapper problem `D400`, `D419` and `D420` each recorded.
+
+**Where the objective stands.** A1-A5 built and gated; the fork's suite green with the quiet switch, the lookahead and
+the `both` role; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and token edge
+all verified; **a two-stage ring measured to convergence at 17.1 and 19.1 tok/s**; **the `both` role exercised by a real
+process, its reverse pair connected over localhost, and its outbound connect succeeding once attached**; and **the
+remaining obstacle reduced to a deployment rule that the record has now measured three times: attach every connecting
+stage to its session.**
