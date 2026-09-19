@@ -12144,3 +12144,35 @@ unrun" boundary that `10b4e86` carried. **And the reason the earlier attempts ti
 tests**: `swift test` spends its time building the test *target*, so a background build followed by filtered runs
 makes every later verification effectively instant. **That, not the tests, is what had been forcing commits to land
 with an unverified boundary.**
+
+## D343 — The pipeline's wire is verified against `nc`: receive() decodes a frame no part of this repository wrote
+
+`PipelineLink.receive` is now tested on a **real socket against a real second process**, with `nc` as the peer:
+
+    ✔ the count field is where the sender put it
+    ✔ receive() decodes a frame that nc wrote        (0.395 s)
+      Test run with 2 tests in 2 suites passed, exit 0
+
+**And `nc` is a better peer than a second copy of this code would have been.** Testing a codec against itself proves
+the two halves agree with each other; testing it against `nc` proves **the bytes reach the wire as `encode()` wrote
+them**, checked by something that has never read `PipelineFrame`. **What was verified is the direction that had a
+real defect in it** - `receive` sizes its payload from the `count` word in the header, and reading the wrong word
+there (`D340`) silently produced an empty payload, a dead sender task, and an `ECONNRESET` that looked like a network
+fault.
+
+**The test caught a bug in itself, and the bug is the interesting part.** The first version waited for the listener
+by **connecting to it** and closing - and `nc -l` accepts **exactly one** connection and then exits, so the readiness
+probe **consumed the peer** and the connection that mattered was refused. **That is what `ECONNREFUSED` was
+saying**, and it is why this repository's own helper is named `connectWhenListening` and **retries the connection it
+actually wants rather than probing for one it does not.** The name only makes sense after making the mistake, which
+is presumably why it was given that name.
+
+**The send direction is not tested, and the reason is the instrument rather than the transport.** `nc -l` waits for
+EOF and `waitUntilExit()` has no timeout, so a peer that does not exit hangs the suite - which happened twice, and a
+hanging test blocks everything behind it. **It needs a peer that closes on a deadline.** That is written into the
+test file rather than left as a silent absence, on the same principle as a checker reporting *NOT CHECKED* instead of
+passing.
+
+**And the verification loop is finally fast.** `swift test` spends its time building the test **target**, not running
+tests: once the target exists, a filtered run is **0.4 seconds**. That is the thing that had been forcing three
+consecutive commits to land with an unverified boundary, and it was never the tests.
