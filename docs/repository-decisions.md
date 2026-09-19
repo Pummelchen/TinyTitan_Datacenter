@@ -12305,3 +12305,39 @@ and not how they divide into rows - guessing would be right for the one-row deco
 **What is not here, and it is the next step rather than this one**: `install(on:)` - the two assignments that put
 these on a runner's `onHidden` and `nextHidden`. That needs a runner, so it needs the model and the CLI. **The
 composition is proved; the wiring that hands it a real buffer is not.**
+
+## D348 — The ring works: a stage's published state reaches a consuming stage unchanged
+
+    ✔ a published buffer becomes a frame of the right rows
+    ✔ a received frame lands in the buffer unchanged
+    ✔ a frame larger than the destination is refused, not truncated
+    ✔ rowWidth is a parameter, so a chunk is not mistaken for one token
+    ✔ a stage's published state reaches a consuming stage unchanged
+    ✔ a stage with nowhere to land refuses to install
+      Test run with 6 tests in 2 suites passed, exit 0, 0.026 s
+
+**A stage that publishes hands the same values to a stage that consumes, over a real loopback socket.** That is the
+ring, and it is verified without a runner and without a model.
+
+**`install(on:)` was drawn over a protocol so it could be tested against a fake, and the fake found a design flaw
+rather than a bug.** The first version required `hiddenIn` unconditionally, so **the producer could not install at
+all** - and **a ring has two ends that are not stages**: the head consumes nothing because it embeds, and the tail
+publishes nothing because it runs the head and samples. `input` and `output` are now both optional. **A four-node run
+would have surfaced that as a stage that would not start**, which is a much more expensive way to learn a fact about
+the topology.
+
+**This is the third time the boundary has been the finding.** `D347` noted that a piece needing the 19 GB install to
+test is usually drawn at the wrong boundary; here the same re-drawing produced a `PipelineEndpoints` protocol whose
+implementation is **empty** for the real runner - four properties it already had - and whose fake is eleven lines.
+**The engine was never missing state. It was missing the statement of what a stage needs.**
+
+**Where the conformance lives matters and is not an afterthought.** `RealForwardRunner: PipelineEndpoints` was added
+to the runtime target and **had to be removed**: `TinyTitan` does not declare a dependency on
+`TinyTitanDecodeProtocol`, and SwiftPM's dependency scan says so. **The conformance belongs in the CLI target, which
+imports both** - and the alternative, adding the dependency to satisfy a test, would have changed the module graph
+for the convenience of a test rather than for the design.
+
+**What is left for the ring.** The conformance in the CLI, the two `install` calls at a stage's entry points, and
+then **the first real two-stage run**: `0:20` publishing to `20:40` on one machine, then across two. **The A5 gate
+already proved that composition is arithmetically correct** - 0 of 2048 elements - so what the two-stage run tests is
+the plumbing, not the numbers.
