@@ -34,6 +34,57 @@ public enum PipelineWiring {
         case badPort(String)
     }
 
+    /// **The reverse edge, read and written.** `D358` established that a ring needs the chosen token to travel back
+    /// to the stage that embeds it: without it a first stage generates from its own tokens, which for a partial
+    /// forward are meaningless, and every hidden state it publishes after the first is the state of the wrong token.
+    ///
+    /// **It is a separate socket from the forward edge, not the other end of it**, because the two legs have
+    /// different lifetimes: a stage binds the forward edge on a port its predecessor connects to, and it connects
+    /// the reverse edge to a port its successor binds. One stage can therefore be a listener on one and a client on
+    /// the other, which a single connection could not express.
+    ///
+    /// `TINYTITAN_STAGE_BACK_LISTEN` is for the stage that EMBEDS - it waits for a token to come back.
+    /// `TINYTITAN_STAGE_BACK_CONNECT` is for the stage that SAMPLES - it sends the token it chose.
+    public static func installReverseEdge(on runner: RealForwardRunner) throws -> Bool {
+        let env = ProcessInfo.processInfo.environment
+        let listen = env["TINYTITAN_STAGE_BACK_LISTEN"]
+        let connect = env["TINYTITAN_STAGE_BACK_CONNECT"]
+        guard listen != nil || connect != nil else { return false }
+
+        if let listen {
+            guard let port = UInt16(listen) else { throw WiringError.badPort(listen) }
+            let pair = try DecodeTCPSocket.listenAndAccept(host: "0.0.0.0", port: port)
+            // Consulted before each step rather than stored, because the token for step N arrives after step N-1
+            // has been computed - a value read once at install would be the token for the wrong position.
+            let source = pair.input
+            // A SENTINEL, because the closure returns a non-optional `Int32` - the same shape `nextHidden` has and
+            // for the same reason: Swift parses an optional closure returning an optional as an optional closure
+            // returning a non-optional, and then rejects the binding. `-1` cannot be a real token, so the caller can
+            // tell "no token has come back yet" from "the token is 0".
+            runner.nextTokenSource = { _ in
+                guard let token = try? PipelineStage.receiveToken(from: source) else { return -1 }
+                return Int32(token)
+            }
+        }
+        if let connect {
+            let parts = connect.split(separator: ":")
+            guard parts.count == 2, let port = UInt16(parts[1]) else {
+                throw WiringError.malformedConnect(connect)
+            }
+            var last: Error = WiringError.malformedConnect(connect)
+            var sink: FileHandle?
+            for _ in 0..<connectRetries {
+                do { sink = try DecodeTCPSocket.connect(host: String(parts[0]), port: port).output; break }
+                catch { last = error; usleep(200_000) }
+            }
+            guard let sink else { throw last }
+            runner.nextTokenSink = { token, layer in
+                try? PipelineStage.sendToken(Int(token), layer: layer, to: sink)
+            }
+        }
+        return true
+    }
+
     /// Rows a handoff buffer can carry - enough for every prompt this engine has been run against, and 16 MB at
     /// D=2048, which is nothing beside the 19 GB install.
     static let chunkRows = 4096

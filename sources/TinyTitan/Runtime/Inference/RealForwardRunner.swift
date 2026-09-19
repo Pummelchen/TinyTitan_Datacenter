@@ -273,6 +273,13 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     /// and 4096 where five were needed failed immediately. The count has to travel from the publish site.
     public var publishedRows: Int = 1
 
+    /// THE RING'S BACKWARD EDGE. `nextTokenSource` supplies the token this stage should consume next, which in a
+    /// pipeline is the one the downstream stage chose; `nextTokenSink` publishes the token this stage chose, which
+    /// upstream needs before it can take another step. Both are nil outside a ring, and with both nil nothing
+    /// changes - the same contract `hiddenIn` and `hiddenOut` keep.
+    public var nextTokenSource: ((Int) -> Int32)?
+    public var nextTokenSink: ((Int32, Int) -> Void)?
+
     public var hiddenIn: MTLBuffer?
     public var hiddenOut: MTLBuffer?
 
