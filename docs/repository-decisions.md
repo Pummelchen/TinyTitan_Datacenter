@@ -14190,3 +14190,38 @@ without them.**
 2048**; the transport, pairing, seed, counts and frame shape all verified - **and now the token edge's connection
 behaviour verified too**; a two-token ring whose first token is right and whose second is not; and **a 10x throughput
 gap with two candidates remaining, one of which costs one edit to test.**
+
+
+## D400 - The quiet-versus-loud measurement did not run, and the harness is why for the second time
+
+**What was attempted: the same two-node ring twice, once with A's diagnostics and once with them discarded, to test
+`D399`'s first candidate - that the `[tok]`, `[seed]` and `[wire]` prints are synchronous stderr writes and that the
+throughput law's 41.9 ms/token was measured before any of them existed.**
+
+**What happened:**
+
+    run 1: normal      A: (nothing)   B: (nothing)
+    run 2: quiet       A: (nothing)   B: (nothing)
+
+**Neither stage reported a timing line**, so no measurement was taken and no candidate was tested. **The cause is in
+the harness rather than the engine**: the variant was passed as a trailing redirect inside a quoted `ssh` command
+that was itself followed by `> /tmp/mA.log 2>&1`, **so the outer redirect won and both runs were the same run - and
+the inner one determined the outer one's status, which is why the whole shell exited 1.** That is the third distinct
+form of the same trap this session has recorded: **`D349`'s `nc -z` consuming the accept, `D393`'s `pkill` killing the
+stage whose log was being read, and now a redirect that silently discarded its own variant.** In each case the
+instrument or the wrapper destroyed the measurement, **and in each case the log said something was wrong and the
+narrative did not.**
+
+**And the round is recorded as a failure rather than dressed up.** `D399` named an experiment costing one edit; this
+round spent its budget on a shell function that did not carry the variable through, **and the honest output of that is
+"no data", not an inference from an absence.**
+
+**Where the objective stands.** A1-A5 built and gated, **1652 tests with 0 failures**, the exactness gate at **0 of
+2048**; the transport, pairing, seed, counts, frame shape and token edge all verified; **a two-token ring whose first
+token is right and whose second is not**; and a 10x throughput gap whose two remaining candidates are unmoved by this
+round - **the instrumentation, and how much work an end stage actually does.**
+
+**And what the next round should do differently, concretely.** Write the variant as an environment variable the
+program reads rather than as a shell redirect, **so there is no redirection to lose**; run the two cases as two
+separate commands rather than as a function called twice, **so a mistake in one cannot be inherited by the other**;
+and read the timing line from a file **before** any cleanup.
