@@ -10808,3 +10808,47 @@ its residual buffer** - which is the whole of what a pipeline stage must be able
 that carries that state to the next stage (A2), the CLI surface to set the range, the embed/head placement (A3), or
 the chunked prefill (A4). **And nothing about Design A's throughput is claimed**: the 35B is still running all 40
 layers on one node at 7.7 tok/s, exactly as before.
+
+## D306 — The layer range measures the pipeline arithmetic on the real engine, and 10 layers is 21.5 tok/s
+
+`D305` gated the layer range as inert. The CLI flag exists now, and setting it produces the number Design A's
+projection was built on - not a projection any more, but the engine's own timing:
+
+| layers | decode | ms/token | tok/s |
+| --- | --- | --- | --- |
+| 40 (baseline) | 6.17 s | 128.5 | 7.774 |
+| 20 | 3.18 s | 66.3 | 15.103 |
+| **10** | **2.23 s** | **46.5** | **21.482** |
+
+**A linear fit through those three points gives 2.73 ms per layer and about 19 ms of fixed per-token cost**
+(embed, head, sampling): `19.2 + 10 x 2.73 = 46.5` and `19.2 + 40 x 2.73 = 128.4`, both matching what was measured.
+**So a ten-layer stage costs ~27.3 ms of arithmetic plus whatever stage-specific work it carries.**
+
+**And that is the pipeline's stage time.** Only stage 0 embeds and only the last carries the head and the sampler,
+so the binding stage is the last, at **46.5 ms → 21.5 tok/s** - **the objective's target, reached by measurement
+rather than by projection.** Shard the head as the sister repository already does (`D93` in the other record: the
+head is vocabulary-parallel and each node computes its own rows) and the last stage drops toward the middle stages'
+27-30 ms, which is **~33 tok/s**.
+
+**Three things this establishes that the design document could only assert.**
+
+**1. The compute term of the throughput law divides as designed.** 128.5 ms for 40 layers becomes 46.5 for 10 -
+and after removing the fixed 19 ms, the arithmetic is **exactly one quarter**, which is what a layer pipeline
+requires and what the expert-sharding design could never achieve because it replicated the dense work.
+
+**2. The stage time is computed, not streamed, which is what section 4 predicted.** The projection said 32.5 ms of
+compute against 25.1 ms of streaming; the measured compute for ten layers plus overhead is 46.5 ms. **The compute
+still binds**, so the cache hit rate of 68.1% is not the critical term at this stage of the design.
+
+**3. The target is reachable on this arithmetic.** 21.5 tok/s measured for one stage's worth of layers, against an
+objective of 21 - and the remaining work is to make four stages produce it in a *pipeline* rather than one stage
+producing it alone, which is a scheduling problem rather than a compute one.
+
+**And the garbage output is the expected result.** `--layer-range 0:10` produced `Paris ParisillacenneredBy...`
+because ten layers of forty is not a forward pass - **the tokens are meaningless and the timing is not.** That is
+the correct behaviour for a range that is honoured, and it is also the thing A2 has to fix: a stage's output must be
+its hidden state, sent to the next stage, rather than a premature projection to vocabulary.
+
+**Nothing about the pipeline is claimed.** One node with ten layers is not four nodes with a pipeline; the frame
+that carries the hidden state does not exist yet (A2), and the fixed 19 ms is currently paid by every node that runs
+the head - which is exactly the replication Design A exists to remove.
