@@ -55,14 +55,15 @@ hope.
   Do not mix them, and do not "helpfully" introduce versions into a project that uses
   build numbers.
 - **This repository's scheme is `X.Y` — major and minor, and no third component.**
-  A patch component (`X.Y.Z`) is not used here: **`1.1` is a version, `1.1.1` is a
-  defect.** It is stated as a rule because it was already the practice and nothing
-  wrote it down — `docs/release-process.md` names its notes `docs/release-notes-vX.Y.md`,
-  titles them `## TinyTitan X.Y — <headline>`, and packages
-  `tinytitan-X.Y-macos-arm64.tar.gz`, all two-component. Git tags are `vX.Y`, and the
-  two three-component tags in this repository's history (`v5.0.1`, `v5.0.2`) predate the
-  rule and are **not** a model to copy. A version that needs a third component is a
-  change that should either be folded into the next `X.Y` or wait for the next major.
+  A patch component is not used here: **`1.1` is a version and `1.1.1` is a defect.**
+  This repository is **TinyTitan Datacenter**, and its own release line stands at
+  `v1.0.0` released — **the next release is `1.1`.** The engine it ships also carries
+  older tags (`v2.0`–`v5.7`) from that runtime's own history; **those are not this
+  repository's release line**, and the two three-component tags among them (`v5.0.1`,
+  `v5.0.2`) are named only so they are not mistaken for a model. Everything this
+  repository actually executes is already two-component: the only version literal in the
+  tree is `CFBundleVersion` / `CFBundleShortVersionString` in `tools/install_tinytitan.sh`,
+  and the notes (`docs/release-notes-vX.Y.md`), the tag and the archive name are `X.Y`.
 - **The build refuses a malformed or inconsistent identity.** Fail at configure
   or compile time, not at release time.
 - **Identity is observable.** A user must be able to say what they are running
@@ -210,8 +211,9 @@ The fork relationship is inert. Nothing here is upstreamed: **no pull requests,
 cherry-picks or patches go to the parent**, and every change stays inside this
 repository.
 
-- **Identity** `vX.Y` — two components, no patch. The only version literal in the
-  tree is `CFBundleVersion` / `CFBundleShortVersionString` in
+- **Identity** `X.Y` — two components, no patch. **This repository is TinyTitan
+  Datacenter; `v1.0.0` is released and the next release is `1.1`.** The only version
+  literal in the tree is `CFBundleVersion` / `CFBundleShortVersionString` in
   `tools/install_tinytitan.sh`; the wiki `Changelog.md` carries the announcement and
   the README carries none.
 - **Artifacts** `tinytitan-X.Y-macos-arm64.tar.gz` + `.sha256`, containing **six
