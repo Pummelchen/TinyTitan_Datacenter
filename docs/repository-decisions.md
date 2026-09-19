@@ -11604,3 +11604,38 @@ with fresh context than with what remains of this session's.**
 
 **Everything is committed, gated and bundled**: fork `0db2fc1`, main at this record, both bundles refreshed and
 verified, the baseline tag intact, and ~176 GB of disk recovered across the four machines.
+
+## D329 — THE GATE PASSES: a stage's output is its input and its own layers, and nothing else
+
+    A  (0:40, probe at layer 20)   2 records, positions [0, 0]
+    B  (0:20, publishes its end)   1 record,  position  [0]
+
+    A#0 vs B:  0 of 2048 differ,  max |diff| 0.0
+    A#1 vs B:  0 of 2048 differ,  max |diff| 0.0
+
+**Bit-identical, element for element, across the whole 2048-wide hidden state.** The residual as it **enters layer 20**
+in a full forty-layer forward pass is exactly the residual a stage whose range is `0..<20` publishes when it
+finishes. **That is the property `D311` restated the gate as, and Design A depends on it entirely**: a stage's output
+is a function of its input and its own layers, and of nothing else.
+
+**And it is the strongest form the check could take.** Not a tolerance, not a near-match: **zero differing elements
+and a maximum absolute difference of exactly zero**, which is the same standard this repository's M1 and M2 gates
+assert - `83 tensors, 0 differing elements`. **A pipeline built on this can be composed of stages and still produce
+the single-node answer**, which is what makes the rest of Design A worth building.
+
+**The cause of twenty rounds of failure was one shadowed name.** `executePrefillChunk` takes
+`layerRange: Range<Int>? = nil` as a **parameter** - so a caller can request a single layer - and
+`let layers = layerRange ?? 0..<cfg.numLayers` read **the parameter**. The runner's property of the same name was
+never consulted on the prefill path. **The decode loop reads the property, which is why `--layer-range` measurably
+changed decode timing in `D306` and looked like it worked** - so the one measurement that seemed to confirm the
+plumbing was taken on the only path where the plumbing was correct.
+
+**What that means for `D306`.** Its number - **ten layers at 21.482 tok/s** - was decode-only and is unaffected as a
+decode measurement. **But it is not evidence about the prefill path**, and `D327` was right to flag it. Prefill now
+honours the range, and **the stage arithmetic should be re-taken with prefill in the measurement** before the
+projection is quoted again.
+
+**What is now established.** A1's layer range is bit-identical when unset; A1.5 measured the decode stage
+arithmetic; A2's frame has three tests; A3's two ends are inert when unset; A4's hooks are in; A5's probe writes and
+**the exactness gate passes bit-identically**. **What remains is the ring and the transport** - and the next thing
+that can fail is the network, not the arithmetic.
