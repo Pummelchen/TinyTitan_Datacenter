@@ -12596,3 +12596,38 @@ producing the same symptom.
 wire, every frame arrives aligned and no receive fails, and **the answer is wrong**: whitespace where a single node
 gives ` Paris, a city`. **The end-to-end claim is not met, and the remaining fault is in what a prefill chunk
 publishes rather than in the transport.**
+
+## D356 — The publish sees the whole prompt; the count is lost between setting it and reading it
+
+`D355` guessed that `t` was 1 at the publish. **The diagnostic refutes that:**
+
+    [publish] chunk t=5 start=0 epilogue=false prologue=true      count=1
+
+**`t` is 5, the start is 0, and it fires exactly once.** The post-loop publish sees the whole prompt and is not the
+last chunk of a chunked prefill. That hypothesis is dead.
+
+**And the count is still lost, now in one place instead of two.**
+
+    A: send pos=0, 5, 6, 7  values=2048
+    B: recv pos=0, 5, 6, 7  values=2048      recv_fail=0
+
+**Four frames, four receives, aligned in position - and one row in every one of them**, on a line whose preceding
+statement sets `publishedRows = 5`. B's answer is still whitespace against a single node's ` Paris, a city`.
+
+**So the value is set and not read, and there is exactly one place it can be lost**: `install` builds `onHidden` as a
+closure over the stage **as a protocol existential**, and the closure reads `stage.publishedRows` at call time. For a
+class-constrained protocol that reference should be live, **which is why this is written as the suspect rather than
+as the cause** - the last four rounds are an argument for not promoting a plausible mechanism to a finding.
+
+**The fix is to stop routing the count through the captured existential**, and there are two forms: pass it into the
+hook's call, or have `install` take the count from the runner rather than through the protocol. **Either removes the
+question rather than answering it**, which after four rounds is the right shape for this one.
+
+**And one method note worth keeping.** This round's first diagnostic was run **without a peer**, and printed nothing -
+because `hiddenOut` is nil on a stage with no successor, so the publish block was skipped entirely. **The instrument
+was right and the experiment was wrong**: a publish cannot be observed on a stage that has nothing to publish to.
+Re-running it inside the ring printed on the first try.
+
+**Where the objective stands.** The transport is complete and aligned in both directions, `recv_fail=0`, and the
+answer is wrong. **The fault is now a single value that is set but not read**, which is a much smaller thing than it
+was four rounds ago.
