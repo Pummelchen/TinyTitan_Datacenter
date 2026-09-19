@@ -15673,3 +15673,31 @@ architecture the objective's ~31 tok/s projection assumed and the layer-pipeline
 which 47% is expert I/O and 50% is GPU waits, serialised. **The route to 21 tok/s is (1) overlap the expert read with
 the GPU work, worth ~2x on one node, and (2) tensor-split the GPU work across the four nodes, which is the step that
 actually needs the cluster.** Neither is a layer pipeline, and the record now says which to build.
+
+## D442 - The existing prefetch ring is not the overlap; the expert read is a real dependency, and lever 1 needs the structural change
+
+**`D441` said the two big phases are additive and named overlap as lever 1. The obvious candidate already exists in the
+tree** - an `ExpertPrefetchRing` fed from `TINYTITAN_PREFETCH_AHEAD=2`, i.e. from the two-layer-ahead route
+prediction, with `TINYTITAN_PREDICTIVE_PREFETCH`, `TINYTITAN_PREFETCH_TOP_M` and `TINYTITAN_PREFETCH_IO_TIER` around it.
+**So it was turned on and measured rather than assumed:**
+
+                            expert io await   decode    tok/s
+    baseline                    2127.5 ms     4530 ms   7.064
+    PREDICTIVE_PREFETCH=1 +
+    PREFETCH_AHEAD=2            2073.9 ms     4502 ms   7.108
+
+**+0.6% on the step and 2.5% off the await - the noise floor, not a lever.** The ring is working and it does not
+overlap the read with the GPU work; and with the profiler beside it, the reason is now visible. **`expert io await`
+is 47% of the step and the GPU cannot proceed without those experts**: layer L's MoE multiply needs layer L's chosen
+expert weights, so the await is a true dependency of the phase that follows it, not a scheduling miss that a deeper
+prefetch queue would paper over.
+
+**Which is exactly why the reference's overlap works and this one does not.** The sister project does not prefetch
+harder - it **overlaps layer L's MoE with layer L+1's attention**, and L+1's attention genuinely does not need L's
+expert weights. **That is a restructuring of the layer loop (the per-layer wired slot bank plus the attention of L+1
+issued while L's experts are still arriving), not a knob**, and it is what `D441`'s lever 1 actually requires.
+
+**So the record now separates two things that looked like one.** A deeper prefetch queue buys nothing measurable
+(`D442`), and the overlap that is worth ~2x needs the layer loop restructured so that a layer's expert read is issued
+against the *next* layer's attention rather than against its own MoE (`D122`'s wired bank is the prerequisite
+already built). Naming the wrong lever would have cost a round; naming the right one costs the restructuring.
