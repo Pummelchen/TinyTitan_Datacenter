@@ -201,6 +201,12 @@ extension RealForwardRunner {
         }
 
         for L in layerRange ?? 0..<cfg.numLayers {
+            // A5: capture the residual as it enters the probe layer. Entering layer L is the state after L layers,
+            // which is what a stage ending at L publishes - the two must be identical or the pipeline is wrong.
+            if let probeLayer = hiddenProbeLayer, L == probeLayer, let probe = hiddenProbe {
+                memcpy(probe.contents(), hidden.contents(),
+                       residualWidth * MemoryLayout<Float16>.stride)
+            }
             // Dumping drains the previous layer's routed command first. The
             // residual is only settled once that has landed, and a dump taken
             // at encode time would read whatever the buffer held before the

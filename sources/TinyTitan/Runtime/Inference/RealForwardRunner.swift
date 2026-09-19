@@ -273,6 +273,14 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     ///
     /// `nextHidden` returns a non-optional buffer and `nil` means "no source", so the type is not an optional
     /// closure returning an optional buffer: Swift parses that as an optional closure and then rejects the binding.
+    /// A PROBE AT ONE LAYER BOUNDARY, for testing a pipeline without building one. It receives the residual as it
+    /// **enters** the probe layer - so a probe at 20 in a full run captures exactly what a `0:20` stage publishes
+    /// after its loop, because that is the state after twenty layers either way. Comparing the two is the pipeline's
+    /// exactness gate: a stage's output must be a function of its input and its own layers, and of nothing else
+    /// (`D311`).
+    public var hiddenProbeLayer: Int?
+    public var hiddenProbe: MTLBuffer?
+
     public var onHidden: ((Int, MTLBuffer) -> Void)?
     public var nextHidden: ((Int) -> MTLBuffer)?
     let outWeights: MTLBuffer    // [topK] FP16
