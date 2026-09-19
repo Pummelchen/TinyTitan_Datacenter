@@ -12341,3 +12341,48 @@ for the convenience of a test rather than for the design.
 then **the first real two-stage run**: `0:20` publishing to `20:40` on one machine, then across two. **The A5 gate
 already proved that composition is arithmetically correct** - 0 of 2048 elements - so what the two-stage run tests is
 the plumbing, not the numbers.
+
+## D349 — The ring carries frames across two machines, and its failure is the one D336 predicted
+
+The first cross-machine two-stage run. Stage A on one node owns layers `0..<20`, stage B on another owns `20..<40`,
+and A connects to B over the LAN:
+
+    A: [pipeline] stage installed for layers 0..<20      exit=0, 4 tokens
+    B: [pipeline] stage installed for layers 20..<40
+    B: !error: sampler row had no finite logit: every value in the row was NaN
+
+**The transport worked.** A installed, connected, computed twenty layers and published; B installed, accepted and
+consumed. **Frames crossed between two machines with no expert weights on the wire**, which is the design's central
+claim about what a stage needs to send.
+
+**Two fixes landed on the way, and the second is the one worth keeping.**
+
+**Bind all interfaces.** `PipelineWiring` bound `127.0.0.1` - correct for a one-machine test and unreachable from a
+peer, which is why the first cross-machine attempt was refused while B sat listening on an address only it could
+see. It is now `0.0.0.0`. `DecodeTCPSocket` takes a literal address rather than a name by design (`D18`), and `0.0.0.0`
+is the literal that means any.
+
+**Poison on a failed receive.** `nextHidden` returns a non-optional buffer, so it cannot signal failure by returning
+nothing, and **the first version returned the landing buffer unchanged**. That meant a stage which never received
+anything **computed four tokens from whatever the buffer held and reported success** - which is precisely the failure
+`D335` cost three rounds to identify, an unseeded residual producing garbage while looking like it worked. A failed
+receive now fills the landing buffer with **NaN**, so a broken handoff produces NaN logits. **And it did**: B stopped
+with `every value in the row was NaN` rather than printing four believable tokens.
+
+**That is the same lesson as `D324` and `D335`, applied before the fact instead of after**: **an instrument that
+cannot fail is worse than one that fails**, and a silent fallback in a handoff path is an instrument that cannot
+fail. The cost of the previous silent version was one run that looked like a success.
+
+**And the NaN is the predicted gap rather than a new bug.** B's prefill runs with `runPrologue` false, and `D336`
+found that prefill seeds its residual **only from the `preparedHidden` parameter** - `hiddenIn` is consulted by the
+decode path and appears nowhere in `Prefill.swift`. So **B's prefill ran unseeded, which is the NaN.** `D336` left
+the fix as a decision between a `t x D` handoff and per-token prefill, and `D337` chose `t x D`; **what this run adds
+is that the gap is real and load-bearing rather than theoretical, and that the ring cannot work until prefill
+receives.** The next step is therefore specific and small: **make `executePrefillChunk` accept an incoming handoff
+the way the decode path already does**, sized from the chunk.
+
+**And one process lesson worth recording because it recurred in the shell.** The readiness wait used `nc -z`, which
+**opens a connection** - so it consumed B's single `accept`, B closed, and A was refused. **That is the same
+consuming-probe mistake `D348` recorded in the Swift test, made again an hour later in a shell script**, which is
+why the second attempt used `lsof` instead: `lsof` reads the socket table and does not connect. **A readiness check
+that consumes the thing it is checking is not a readiness check.**
