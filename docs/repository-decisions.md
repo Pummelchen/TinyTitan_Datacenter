@@ -15490,3 +15490,40 @@ branch it observes answers a question about the wrapper, not the thing** - `D359
 **Where the objective stands.** Correctness closed; four-stage chain running on all four Mac minis and producing the
 reference text at 6.016 tok/s. The target is 21, and the measured position is that **adding stages costs throughput
 rather than adding it** - one node 7.049, three 6.487, four 6.016 - so the remaining work is the serial handoff.
+
+## D437 - The layer pipeline is serial, not pipelined, and that is why four nodes are slower than one
+
+**With the four-stage chain finally running, the numbers can be read against the architecture:**
+
+    single node, 40 layers            141.9 ms/token    7.049 tok/s
+    a 13-layer stage ALONE             48.7 ms/token   20.5 tok/s   (the law's 48.6)
+    four-stage ring, head's period    166.2 ms/token    6.016 tok/s
+
+    if the four stages PIPELINED, the period is max(stage) =  48.7 ms  -> 20.5 tok/s
+    if the four stages run SERIALLY, the period is sum(stage) = 194.8 ms ->  5.1 tok/s
+
+**The measured 166.2 ms sits at the serial prediction and nowhere near the pipelined one.** The four stages are
+executing one after another, and the 24 ms between serial-perfect (194.8) and measured is the wire and synchronisation
+that a real ring pays. **So the pipeline is not overlapping anything.**
+
+**And the reason is structural rather than a bug.** Stage 1's step for position p+1 needs the token sampled at the head
+during the head's step for position p; the head's step for position p needs stage 1's frame for position p. So the
+chain can only ever alternate - `A(p) -> N(p) -> A(p+1) -> N(p+1)` - **and no arrangement of the lookahead removes
+that, because the token for the next position is produced at the far end of the pipeline from where it is consumed.**
+`D411`'s lookahead and `D429`'s relay each removed a *different* serialisation (the wait in front of a stage's own
+work), and both are real - but the recurrence itself remains.
+
+**And that is the answer to the objective's throughput question.** A layer pipeline divides *memory* - each node holds
+a quarter of the layers and a quarter of the experts - **but it does not divide *time*, because the total work per
+token is unchanged and it is executed serially.** The measured curve says exactly that: one node 7.049, three nodes
+6.487, four nodes 6.016 - **each added stage costs the wire and buys nothing.**
+
+**So 21 tok/s is not reachable by this design, and the fix is a different decomposition rather than a faster ring.**
+What would pay is splitting the work *within* one token so the stages are genuinely concurrent - expert-parallel rather
+than layer-parallel, which is the direction this repository's own earlier measurements pointed (`D84`, `DC-107`: the
+step is not expert-read-bound, and sharding the expert read perfectly was worth 1.39x before any exchange). **The
+layer pipeline remains the right answer for fitting the model across four 8 GB machines; it is the wrong answer for
+making it faster.**
+
+**Where the objective stands.** The four-node rule is met - four M2 Mac minis, one stage each, correct output, 6.016
+tok/s - and the throughput target of 21 is now understood to require an architecture change rather than tuning.
