@@ -11672,3 +11672,29 @@ right without replacing the number.
 **The next change is narrow and named**: separate the KV commit from `runEpilogue`, so that a stage which does not own
 the last layer still commits what it wrote - and then the decode re-take and the ring both become reachable. **It is
 one flag's meaning, not a new mechanism.**
+
+## D331 — The re-take: both paths honour the range, and the stage arithmetic is steeper than D306 said
+
+`D330` found that ungating the KV commit from `runEpilogue` was the change a middle stage needed. It is made, and the
+re-take `D327` asked for is in:
+
+| layers | prefill | decode | ms/token | tok/s |
+| --- | --- | --- | --- | --- |
+| 40 | 1.42 s | 6.38 s | 132.9 | 7.528 |
+| **20** | **0.71 s** | **3.09 s** | **64.4** | **15.519** |
+
+**`prefill` halved exactly - 1.42 s to 0.71 s - and that is the first evidence anywhere in this record that the
+PREPFILL path honours the layer range.** Until `D329`'s shadowing fix it read its own parameter and never consulted
+the property; until `D331` the ungated commit was missing, so no sub-range run could get far enough to show it.
+**Two independent confirmations of the same property, on both paths, for the first time.**
+
+**And the arithmetic is steeper than `D306` recorded.** A linear fit through these two points gives **3.43 ms per
+layer with essentially no fixed per-token cost** - `64.4 - 20 x 3.43 = -4.2`, i.e. within noise of zero, where the
+`D306` fit had a 19 ms intercept. **Extrapolated to ten layers that is ~34.3 ms, or about 29 tok/s** - against
+`D306`'s **21.482** measured on the decode path before the fix and before this fit.
+
+**So the design's arithmetic improves, and the honest caveat travels with it.** Two points is not a curve: the
+40-layer and 20-layer runs are single measurements at `--max-new 48`, on a farm that is idle now but has not been
+idle for most of this record, and **the ten-layer point has not been taken on this build.** The number to quote until
+it is, is the pair above and the 3.43 ms/layer between them - **not a projection from a two-point fit**, and not
+`D306`'s intercept, which the fix has superseded.
