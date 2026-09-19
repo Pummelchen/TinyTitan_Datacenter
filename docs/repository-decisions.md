@@ -11779,3 +11779,44 @@ ten-layer point and one each for 10, 20 and 30 - **so the shape and the ten-laye
 points are single runs.** **None of it is a pipeline**: it is one node running a sub-range, which is what a stage
 would do, measured in isolation. **The ring, the transport and the composition of four stages remain unbuilt**, and
 the 23.4 figure is a projection from these four numbers rather than an observation of four machines.
+
+## D334 — The direct stage measurement contradicts the subtraction model, and D333's projection is not confirmed
+
+`D333` derived stage costs by subtracting cumulative runs: `10:20 = 64.4 - 41.9 = 22.5 ms`. **Measuring the four
+ranges directly falsifies that**, on an idle farm at loads 1.48-1.65:
+
+| range | decode | ms/token | tok/s | by subtraction |
+| --- | --- | --- | --- | --- |
+| **0:10** | 2.02 s | 42.1 | **23.734** | 41.9 |
+| **10:20** | 2.77 s | 57.7 | **17.316** | 22.5 |
+| **20:30** | 2.76 s | 57.5 | **17.401** | 22.7 |
+| **30:40** | 2.44 s | 50.8 | **19.708** | 42.7 |
+
+**The middle two ranges are the SLOWEST, which is the opposite of the subtraction model** - it said the deepest
+block was the expensive one at 42.7 and the middle two were 22.5 apiece. `10:20` is **2.6x** what subtraction
+predicted. **And `0:10`, which carries the embed, is the fastest of the four.**
+
+**So `D333`'s stage decomposition is withdrawn, and with it the 23.4 tok/s pipeline projection.** What survives
+from `D333` is only what was directly measured: the cumulative curve (0:10 41.9, 0:20 64.4, 0:30 87.1, 0:40
+129.8 ms/token) and the ten-layer figure of 23.87 tok/s, which is a measurement of a range and not of a stage.
+**The claim that the pipeline projects to 23.4 tok/s rested on a subtraction that the direct measurement
+contradicts, and it should not be quoted until the reason for the discrepancy is understood.**
+
+**What the discrepancy most likely is, stated as a hypothesis rather than a finding.** A standalone sub-range run
+is **not a pipeline stage**: it must embed to have an input and must run the head to produce a token, so every one
+of these four runs pays costs a real stage would not pay, and the session record already notes that **the head
+still runs on every stage** as deferred work. That would inflate the middle ranges relative to `0:10` only if the
+costs do not cancel - and they plainly do not, since `0:10` is fastest while carrying the most fixed work.
+**Which means something other than layer count is dominating these numbers and it has not been identified.**
+
+**The honest position.** This is a negative result and it is recorded as one. **Three measurements were taken and
+one of them - the ten-layer point - is a clean, repeatable measurement of a range. The decomposition of the
+cumulative curve into stage costs is not supported by direct measurement, and the pipeline projection built on it
+is withdrawn rather than restated.** The next step is to find why a standalone middle range costs 2.6x what
+subtraction predicts before any balance claim is made.
+
+**And it is worth naming what went wrong methodologically**, because it is the same failure this record has
+recorded twice already in other forms: **a model derived by subtraction was treated as a measurement.** The
+subtraction is valid only if the fixed cost is identical across the runs, and that assumption was never tested -
+it was convenient, and it produced a number that fitted the design's projection. **The direct measurement cost
+four runs and should have been taken before the projection was written, not after.**
