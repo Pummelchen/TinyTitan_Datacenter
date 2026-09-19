@@ -16070,3 +16070,32 @@ decomposition this session measured to be worth building (`D451`: 12-16 tok/s on
 unknown is not evidence. `D445`: a number whose unit is misread is worse. `D446`: a value whose meaning is inferred
 from its name is worse still. **`D453`: a *flag* whose meaning is inferred from its name - `RUNNING` is not "linked",
 and `media: autoselect` is not "connected".** Read the field the system defines for the question you are asking.
+
+## D454 - The ~0.8 ms round trip is the link, not the protocol: tensor parallelism is capped at ~12 tok/s on this wire by any transport
+
+**`D451` measured a 765 us TCP round trip and `D453` established that the farm's only link is 1 GbE `en0`. Before
+accepting that as the floor, the obvious objection was worth testing: a TCP round trip carries Nagle, delayed ACK and
+socket overhead, and an all-reduce could use something leaner. So a UDP echo was measured beside it:**
+
+    UDP      4 KB RTT: p50 = 818 us   min = 697 us
+    TCP+nodelay 4 KB RTT: p50 = 765 us
+
+**They are the same number.** And they agree with the `ping` taken much earlier in the session - 0.6 ms between two
+nodes - which is a bare ICMP echo with no socket layer at all. **So ~0.7-0.8 ms is the link's round trip and not
+anything a transport choice can remove**, and:
+
+    RTT ~800 us   40 all-reduces x 2 RTT = 64.0 ms/token -> step 85.0 ms -> 11.8 tok/s
+    RTT ~70 us    40 all-reduces x 2 RTT =  5.6 ms/token -> step 26.6 ms -> 37.6 tok/s
+
+**Which closes the last soft route as well as the hard one.** `D451` said the target needs a faster link; `D454` says
+**it needs a faster link and not merely a leaner protocol**, so an all-reduce hand-rolled over UDP or a raw socket -
+the obvious optimisation if 765 us had been TCP overhead - buys nothing. The tensor-parallel work remains worth
+building for the 1.6-2.1x it gives on this wire (12 tok/s against 7.524 on one node), but **it cannot reach the target
+without `en2`/`en3` or `en4`/`en5` being connected** (`D453`).
+
+**And that is the objective's terminal state, so it is worth stating once and plainly.** Everything reachable from
+software has been reached and measured: the four-stage chain runs the model correctly on all four machines at 6.016
+tok/s; a single node runs it at 7.524 with every tuning axis at its optimum; a layer pipeline is serial (`D437`);
+expert sharding divides a phase that was never on the critical path (`D450`); pooling residency is 8.6x too slow
+(`D449`); tensor parallelism is 1.6-2.1x and cannot reach 21 on a 0.8 ms wire (`D451`, `D454`). **The one remaining
+input is a cable, and no amount of engine work substitutes for it.**
