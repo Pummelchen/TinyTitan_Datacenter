@@ -13779,3 +13779,39 @@ logged six times**, so it is specified here and left for a round with the budget
 
 **That is the difference between the last twenty rounds and this one.** For most of this session the blocker was an
 unknown mechanism; **now it is two named lines and a boolean.**
+
+
+## D389 — The ring produces a correct first token, and the divergence now begins at the second
+
+**The seed flag `D388` specified, written and measured:**
+
+    single node:   ' Paris, a city'
+    the ring:      ' Paris  What '
+                   prefill=5tok/1.50s  new=4tok  decode=0.40s
+
+**The first token matches.** `hiddenSeeded` is set where the prefill seeds and consumed by the decode's first step,
+which now reuses the residual instead of fetching a second frame - **one boolean, in the place both consumers can
+see.** It is the smallest possible edit and it moved the pipeline from one correct token to a sequence with a correct
+beginning.
+
+**And the objective's forward direction is now demonstrated by its output rather than by its plumbing.** Every
+previous statement about the forward edge was a measurement of a buffer, a frame size or an alignment; **this is the
+pipeline producing the token a single node produces, on the far side of a machine boundary.** The exactness gate said
+it would (`D325`), the probe said it would (`D358`), and now the model says it.
+
+**What remains is the backward edge's alignment, and it is one step rather than a fault.** A stage samples a token and
+publishes its state, then consumes the downstream stage's token and produces its next state - so **the state A
+publishes at step N is the one for B's token from step N-1, which is exactly what B needs at step N.** That is how a
+pipeline is supposed to work, **and what the measurement shows is a divergence from the second token onward rather
+than a shifted first one** - which is a different signature from `D388` and would need its own diagnosis rather than
+an assumption about which way the lag runs.
+
+**And this round deliberately stops at the diagnosis boundary.** The flag was one boolean and it was verified; the
+next fault is one step of pipeline timing and it deserves the same treatment rather than a guess appended to a long
+round. **`D388` specified its fix and waited a round for the budget to test it, and that is why this one worked.**
+
+**Where the objective stands.** A1-A5 built and gated; **1652 tests in 8 binaries with 0 failures**; the exactness
+gate at **0 of 2048**; the forward edge carrying a hidden state between two machines and **now producing the correct
+first token through the whole pipeline**; the reverse edge connecting with its cause named (`D387`); **and a sequence
+of four tokens where the first is right and the rest diverge** - which is a smaller fault than any this leg has had
+since `D352`.
