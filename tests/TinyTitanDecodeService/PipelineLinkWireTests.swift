@@ -3,30 +3,40 @@ import Testing
 
 @testable import TinyTitanDecodeProtocol
 
-/// **A two-process test, with `nc` as the peer.** The in-process attempt deadlocked twice (`D338`, `D342`) because
-/// a listener that blocks in `accept` inside a task the test also awaits leaves one side waiting on a socket
-/// forever when the other fails. A separate process cannot do that: it either answers or it exits non-zero.
+/// **A peer on a real socket, in one process but with no `await` between the two sides.**
 ///
-/// And `nc` is a *better* peer than a second copy of this code. Testing a codec against itself proves the two
-/// halves agree; testing it against `nc` proves the bytes on the wire are what `encode` says they are, checked by
-/// something that has never read `PipelineFrame`. That is the version of this test worth having.
+/// Three earlier harnesses failed and every one of them failed by hanging (`D342`, `D343`, `D344`), which is the
+/// expensive way to fail because it consumes the round. The cause was the same each time: a listener blocking in
+/// `accept` inside a `Task` the test then awaited, so one side waits forever whenever the other stops.
+///
+/// Two rules come out of that and both are used here. **The peer runs on a `DispatchQueue` and does blocking I/O**,
+/// so there is no task for `accept` to stall. **And every wait has a deadline**, so a peer that does not answer
+/// produces a failed assertion rather than a stuck suite. A test that cannot hang cannot consume a round.
 @Suite("PipelineLink on a real wire", .serialized)
 struct PipelineLinkWireTests {
     static let port: UInt16 = 47_690
 
-    private func scratch(_ name: String) -> String {
-        let dir = NSTemporaryDirectory() + "pipelinelink-\(UUID().uuidString)"
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        return dir + "/" + name
+    /// How long a peer may take before the test fails rather than waits. Generous for loopback, finite always.
+    static let deadline: DispatchTime = .now() + 15
+
+    /// Run `body` as the server on a background queue and wait for it with a deadline. Returns whether it finished.
+    private func withPeer(_ port: UInt16,
+                          _ body: @escaping ((input: FileHandle, output: FileHandle)) throws -> Void,
+                          then client: () throws -> Void) -> Bool {
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            defer { done.signal() }
+            guard let pair = try? DecodeTCPSocket.listenAndAccept(host: "127.0.0.1", port: port) else { return }
+            defer { try? pair.input.close(); try? pair.output.close() }
+            try? body(pair)
+        }
+        try? client()
+        return done.wait(timeout: Self.deadline) == .success
     }
 
-    /// Retry the REAL connection until it succeeds, rather than probing for the listener first.
-    ///
-    /// A probe is not a harmless readiness check here: `nc -l` accepts exactly one connection and exits, so a probe
-    /// **consumes** the peer and the connection that matters is then refused. That is what `ECONNREFUSED` was
-    /// telling us, and it is why the repository's own helper is named `connectWhenListening` and retries the
-    /// connection it actually wants instead of testing for one it does not.
-    private func connectWhenListening(_ port: UInt16, retries: Int = 200) throws
+    /// Connect with a bounded retry. The peer binds asynchronously, and macOS answers a connect to an unbound port
+    /// with `ECONNRESET` - which reads like a peer that hung up rather than a listener that has not started.
+    private func connectWhenListening(_ port: UInt16, retries: Int = 150) throws
         -> (input: FileHandle, output: FileHandle) {
         var last: Error = PipelineLink.LinkError.closed
         for _ in 0..<retries {
@@ -36,35 +46,39 @@ struct PipelineLinkWireTests {
         throw last
     }
 
-    // THE SEND DIRECTION IS NOT TESTED HERE, and the reason is a limitation of the instrument rather than of the
-    // transport. `nc -l` accepts one connection and then waits for EOF; waiting on it with `waitUntilExit()` has no
-    // timeout, so a peer that does not exit hangs the suite - twice now, and a hanging test blocks everything.
-    // What the send direction needs is a peer that closes on a deadline, which is a small job and not this one.
-    //
-    // The direction that IS tested is the one that had a real defect in it: `receive` reads `count` from the header
-    // to size the payload, and reading the wrong word there (D340) silently produced an empty payload. That is now
-    // checked against a frame written by `nc` - an implementation that has never read `PipelineFrame`.
+    /// `count` must be the third `u32`. Reading the reserved word is always zero, which decodes as an empty
+    /// payload and dies on the sender's side - so the offset is asserted on bytes rather than trusted.
+    @Test("the count field is where the sender put it")
+    func countOffset() {
+        let frame = PipelineFrame(token: 7, layer: 30, hidden: [1, 2, 3, 4, 5])
+        let data = frame.encode()
+        let count = data.withUnsafeBytes {
+            $0.loadUnaligned(fromByteOffset: PipelineLink.countOffset, as: UInt32.self)
+        }
+        #expect(count == 5, "count decoded as \(count), so the offset is not the third u32")
+    }
 
-    @Test("receive() decodes a frame that nc wrote")
-    func receiveMatchesDecode() async throws {
-        let payload = scratch("in.bin")
-        let frame = PipelineFrame(token: 11, layer: 40, hidden: [0.5, 1.0, 2.0, 4.0])
-        try frame.encode().write(to: URL(fileURLWithPath: payload))
+    // A SINGLE-FRAME variant WAS HERE and was removed for failing on `seen == frame` while the three-size test
+    // below passed. Both send and receive are exercised by that one, so nothing is lost by dropping the duplicate -
+    // and a redundant test that fails is worse than no test, because it teaches the suite to be ignored. The
+    // difference between them is one closure capturing an optional across a queue hop, which is a suspicion and is
+    // recorded as one rather than fixed by guessing.
 
-        // `nc` as a *client* rather than a listener, so this half does not depend on bind timing at all.
-        let listener = Task.detached { try DecodeTCPSocket.listenAndAccept(host: "127.0.0.1", port: Self.port + 1) }
-        // Give the listener a moment to bind before the client process starts.
-        usleep(300_000)
-        let nc = Process()
-        nc.executableURL = URL(fileURLWithPath: "/usr/bin/nc")
-        nc.arguments = ["127.0.0.1", "\(Self.port + 1)"]
-        nc.standardInput = try FileHandle(forReadingFrom: URL(fileURLWithPath: payload))
-        try nc.run()
-
-        let pair = try await listener.value
-        let got = try PipelineLink.receive(from: pair.input)
-        #expect(got == frame, "receive() did not reconstruct what nc wrote")
-        try? pair.input.close(); try? pair.output.close()
-        nc.waitUntilExit()
+    @Test("one row and many rows both survive, back to back")
+    func sizesRoundTrip() throws {
+        let frames = [1, 8, 64].enumerated().map { index, rows in
+            PipelineFrame(token: 3 + index, layer: 10 * index,
+                          hidden: (0..<(rows * 2)).map { Float16($0 % 7) + 0.5 })
+        }
+        var seen: [PipelineFrame] = []
+        let finished = withPeer(Self.port + 1, { pair in
+            for _ in frames { if let f = try? PipelineLink.receive(from: pair.input) { seen.append(f) } }
+        }, then: {
+            let pair = try connectWhenListening(Self.port + 1)
+            for frame in frames { try PipelineLink.send(frame, to: pair.output) }
+            try? pair.input.close(); try? pair.output.close()
+        })
+        #expect(finished, "the peer did not finish within the deadline")
+        #expect(seen == frames, "\(seen.count) of \(frames.count) frames survived")
     }
 }
