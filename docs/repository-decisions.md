@@ -11540,3 +11540,33 @@ diminishing: the last three rounds produced one fixed bug and one eliminated can
 node1; the fork is at `e4...` and main at `3b78147` with all doc gates passing; the baseline tag
 `pre-design-a-baseline` still marks the expert-sharding engine on both. **The remote pushes are failing on
 credentials, so the bundles are the copy that matters.**
+
+## D327 — The flag never reaches the runner: the 0:20 run used all 40 layers, and that is run B's whole silence
+
+One print, and it accounts for both failures at once:
+
+    [diag] publish path: epilogue=true out=true hook=true range=0..<40 of 40
+
+**`range=0..<40`.** The run was given `--layer-range 0:20` and the prefill path saw `0..<40`, which is
+`layerRange ?? 0..<cfg.numLayers` with `layerRange` **nil**. **So the flag is not reaching the runner**, and that
+single fact explains run B completely:
+
+  * `epilogue = layers.upperBound == cfg.numLayers` is **true**, because `layers` is all forty;
+  * therefore `!runEpilogue` is **false**, and the publish block at `:495` is skipped;
+  * therefore **no file**, which is exactly what run B has been doing.
+
+**And it is `D316`'s candidate again, in the place it was already suspected.** Both the hook and the range are set on
+a runner in `run`, and the prefill path is running on one that does not have them. **The build has now been bitten
+twice by the same shape**, and the second time it explains a silence that six rounds of memory debugging could not.
+
+**Which reopens `D306`, and it has to.** That measurement - **ten layers at 21.482 tok/s**, the number the entire
+design rests on - was taken with `--layer-range 0:10` on the **decode** path, and it produced a different timing, so
+the range was honoured *there*. **The prefill path is a different consumer of the same property**, and this round
+shows the property is nil when prefill reads it. **So either the two paths take the value from different runners, or
+the assignment happens after the prefill that reads it** - and **the single-node stage arithmetic that Design A's
+projection rests on has to be re-taken once that is understood.** It is not withdrawn; it is **unconfirmed against
+the path the pipeline will actually use**, because a pipeline runs prefill before it decodes.
+
+**The next step is therefore not in the prefill file at all.** It is to find where the CLI's runner and the
+generation's runner diverge, print `ObjectIdentifier` on both sides - `D317`'s method - and fix the assignment.
+**Everything after that is the comparison the gate was built for.**
