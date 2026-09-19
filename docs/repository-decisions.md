@@ -13658,3 +13658,47 @@ shadowed parameter, a dead closure, an uncounted row, a bind ordered after a con
 forbade, and a connection that works when it feels like it. **The arithmetic was proved exact in `D325` and has never
 once been wrong.** The engine computes the right answer. **What it cannot yet do reliably is receive one across a
 wire, and the instrument that would say why needs a failing run to be watched while it fails.**
+
+
+## D386 — The last pattern is dead: timeout 60 fails, and the connect is simply intermittent
+
+    timeout 12  -> connected        timeout 60   -> EHOSTUNREACH
+    timeout 20  -> connected        timeout 300  -> EHOSTUNREACH (twice)
+    timeout 25  -> connected        timeout 600  -> EHOSTUNREACH (six times)
+
+**`timeout 60` failed, and with it the last surviving pattern.** There is no threshold between 25 and 300; **the
+observations are 12, 20 and 25 on one side and 60, 300 and 600 on the other, and the only reason the first three
+grouped is that they were the only short ones tried.** This record declined to call that a cause in `D385` and would
+have been wrong to; **`D386` closes it.**
+
+**And the kernel-side instruments available here are exhausted.** `netstat -s` reports TCP counters on this platform
+and **every one of them reads zero before and after a connect** - `0 packet sent`, `0 connection request`,
+`0 connection established` - so it is not a counter that this kernel maintains. `netstat -s -p tcp` is unsupported.
+**`tcpdump` needs `sudo`, and this session cannot answer a password prompt.** So the distinction the last five rounds
+have needed - **a SYN never sent against a SYN refused** - is not obtainable with the tools this session has.
+
+**What twelve rounds on one connect have established, stated once and without a mechanism.**
+
+  * the reverse connect is **intermittent**: **five successes and nineteen failures** observed, with successes
+    occurring in the isolated probes, in two full runs, and in this round's twelve-second window;
+  * **every variable tested has a counter-example**: the peer's configuration, the workload, the port, the address,
+    the routing (symmetric, `D364`), the node (both directions, `D379`), the launcher (`D380`, withdrawn) and the
+    timeout (this record);
+  * **the forward edge has never once shown any of this** - it has been configured the same way in every run and has
+    connected every time;
+  * **the only structural difference is that the reverse connect is attempted *after* the process has already bound
+    or connected something**, and no measurement in this session has been able to make that difference matter.
+
+**Where the objective stands.** Unchanged, and now with the diagnosis budget spent:
+
+  * **A1-A5 built and gated**: **1652 tests in 8 binaries, 0 failures**, the exactness gate at **0 of 2048 elements
+    differing**, the layer range bit-identical when unset;
+  * **the forward edge proven across two machines**, producing **the correct first token** (`D358`);
+  * **the reverse edge written, called, tested, and observed connecting in the ring's own configuration** (`D384`);
+  * **no run with all four legs live at once**, and **no identified cause**.
+
+**And the recommendation, which is the honest form of a handoff.** Twelve rounds have been spent on one intermittent
+connect with the wrong instruments. **The next attempt should begin with a packet capture already running and `sudo`
+available**, or should sidestep the question entirely by **giving the reverse edge its own dedicated socket and
+retrying on a timer inside the process** - a workaround that does not need the cause, only the observation that the
+connect succeeds often enough to be retried into.
