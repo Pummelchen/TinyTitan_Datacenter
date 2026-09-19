@@ -14,6 +14,12 @@
 
 Run large >120B MOE LLMS on a distributed network of Mac Mini/Studio's using **expert parallelism** with SSD streaming to reduce RAM requirements.
 
+## Project Status
+
+- Single nodes in a 4 cluster Mac Mini cluster exceed decode tok/s over the sister project TinyTitan by 10-15% so the new engine build from scratch is performing better than expected.
+- The network stack is working and performing well on raw TCP.
+- Cluster tok/s is still below a single node - the core work in this project.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Copyright (c) 2026 André Borchert.
