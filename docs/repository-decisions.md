@@ -12893,3 +12893,28 @@ the embedding side.
 **And the interface pattern continues, now six for six.** A shadowed parameter, a closure with no call site, a count
 that never travelled, a bind ordered after a connect, an address questioned and cleared, and now a node permission.
 **The arithmetic was proved exact in `D325` and has still not been wrong once.**
+
+## D365 — The socket's originator is decoupled from the token's reader, which is what makes the reverse edge runnable
+
+`D364` found the reverse edge blocked by something that is not a defect in it: **node1 cannot originate an outbound
+connection to node3**, which is `D287`'s Local Network Privacy, and the reverse edge as first built required exactly
+that - **the stage that READS the token was the stage that had to CONNECT.**
+
+**The fix is to stop assuming those are the same end.** `TINYTITAN_STAGE_BACK_ROLE` names which end of the DATA a
+stage is - `source` or `sink` - while `LISTEN` and `CONNECT` name which end of the SOCKET, **and the two need not
+agree.** The reading stage may open the connection and the sampling stage accept it, with the token flowing back
+along it. **Default follows the previous behaviour when the variable is absent, so nothing that worked stops
+working.**
+
+**And the patch is verified by a grep for the new text rather than by its own success message**, which is the check
+`D357` established after four rounds were lost to a replacement that silently did not happen. **The first attempt this
+round aborted on an assertion and wrote nothing** - which was correct behaviour and would have been indistinguishable
+from success if the script had been trusted. The verification is one line and it is now part of the routine.
+
+**What this says about the design, and it is worth stating because it is the sixth interface fault in a row.** A ring
+has two legs and four independent properties: **which direction the data flows, which end accepts, which end
+initiates, and which node is permitted to do so at all.** The first three are the design's to choose; the fourth is
+the environment's, and it constrains the third. **Assuming that the end which reads is the end which connects was a
+choice, not a requirement - and it was the only one of the four that the environment forbids.**
+
+**Not yet run: the sequence, with the roles inverted.** Everything it needs is committed and the tests are green.
