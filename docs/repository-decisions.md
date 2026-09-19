@@ -14442,3 +14442,43 @@ rather than a conclusion, which four rounds have taught.
 failures, counted from a file**; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame
 shape and token edge all verified; **a two-token ring whose first token is right and whose second is not**; and a
 10x throughput gap still unmeasured, with its instrument one bisect away.
+
+
+## D407 - The crash was the helper calling itself, and three rounds of bisection were reading one self-inflicted bug
+
+**The line, above the guard and below it, exactly as `6fc1faa` had it:**
+
+    public static func note(_ message: String) {
+        guard !quiet else { return }
+        PipelineStage.note(message)          <- the helper's body, calling the helper
+    }
+
+**The substitution that rewrote the thirteen call sites ran over `PipelineStage.swift` *after* inserting the helper
+into it, so it matched the helper's own `FileHandle.standardError.write(Data(message.utf8))` and replaced it with
+`PipelineStage.note(message)`.** The result is unconditional self-recursion - **infinite, with no base case, on the
+first diagnostic any process emitted** - which overflows the stack and raises **SIGBUS** in whichever binary
+exercises it. That binary is `TinyTitanDecodeServiceTests`, and it is exercised **after** that suite's 25 tests in 4
+suites pass, which is why the crash read as a shared resource rather than as a defect in the print.
+
+    with the self-call:        full suite exit = 1, 7 binaries green, TinyTitanDecodeServiceTests SIGBUS
+    with the raw write:        full suite exit = 0, 8 binaries green, no signal
+
+**And that reframes three rounds of work, which is the part worth recording.** `D403` predicted the fault was in
+`TinyTitan`'s two sites. `D405` falsified that. `D406` exonerated the helper by adding a *correct* one by hand - **and
+passed, because the helper it added was not the helper under test.** The correct reading of `D406` was never "the
+helper is innocent"; it was **"a helper written without the substitution is innocent"**, which is a statement about
+my editing and not about the engine. **Three rounds of bisection were reading a bug I had introduced three rounds
+earlier and had already forgotten the shape of.**
+
+**And the shape is the one this record has hit five times now, so it is worth naming as a class rather than a
+lesson.** A substitution that rewrites call sites **is a transformation of the same text it is inserting**, and every
+one of the session's tooling failures has been that class: **`D400`'s redirect clobbering its own variant, `D404`'s
+pattern matching a prefix it shared with another line, and now a substitution rewriting what it had just written.**
+The engine has not been at fault once.
+
+**Where the objective stands, and one item moves.** A1-A5 built and gated; **the fork's suite is 1565 tests in 7
+binaries plus the decode-service binary, 0 failures, with the quiet switch in and all thirteen sites converted** -
+**the instrument `D399` named four rounds ago now exists and works.** The exactness gate is at **0 of 2048**; the
+transport, pairing, seed, counts, frame shape and token edge are all verified; **a two-token ring produces a correct
+first token and a wrong second**; and the 10x throughput gap is, at last, **measurable with a switch rather than
+argued about.**
