@@ -11366,3 +11366,40 @@ that the nodes are shared and busy. **For the first time the three measurement n
 re-taking under the conditions the gate rules ask for. **It does not unblock the exactness gate**, which is a
 segfault on the working machine and not a cluster question; **the two are independent, and only the second is
 waiting on node load.**
+
+## D322 — Node4 recovered 76 GB, and the cleanup verified what survived rather than what was removed
+
+The same pass on the working machine, which was the tightest at **10 GiB free and 96% used**:
+
+| removed | size | what it was |
+| --- | --- | --- |
+| `.build/hf-cache` | **67 GB** | a HuggingFace cache holding `models--Qwen--Qwen3.6-35B-A3B` |
+| `~/TinyTitan/models` | **9.5 GB** | the sister project's `qwen3.5_2B/4B/9B_4Bit` reference installs |
+
+**10 GB -> 86 GB available, 76 GB recovered** - more than the three farm nodes together, because node4 is where the
+reference machinery and its model caches live.
+
+**And the 67 GB one is worth naming precisely, because it looks like the model and is not.** `hf-cache` held a
+HuggingFace-format copy of **the same 35B model this engine runs**, and **the engine does not read it**: it reads
+`qwen36-4bit.gturbo`, our own container, which is a separate 19 GB install and was kept. The HF copy exists for the
+**reference implementation and the gates**, which fetch through `transformers` to compare against - so deleting it
+means **those gates re-fetch when next run, and until then report *not checked***, which is the state `AGENTS.md`
+already prescribes for a check that cannot run.
+
+**Verified after the deletion, which is the order that matters:**
+
+    model install (fork)    YES  19G      <- the one the engine actually reads
+    main repo source        ok
+    fork repo source        ok
+    bundles                 2 present     <- both .bundle files, the recovery path
+    sister project source   ok
+    git history intact      c28d036
+
+**What was kept and why.** The 19 GB `.gturbo` install on the fork; both source trees; **both bundles in
+`~/tt-backup`**, which are the only copy of the baseline tag outside the two remotes; and the sister project's
+source, which `D300` read for the ANE study and which is the reference for this design.
+
+**Across all four machines the pass recovered about 176 GB** - 40 on node1, 20 on node2, 40 on node3 and 76 here -
+**and nothing that any part of this engine reads was removed.** The one judgement call is the HF cache, and it is
+recorded as one: it is regenerable, it is not read by the engine, and its removal makes the reference gates
+*not checked* until they run again.
