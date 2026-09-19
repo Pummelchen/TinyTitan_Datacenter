@@ -12206,3 +12206,36 @@ not.** Every attempt that could hang, did.
 the file rather than in a claim.** The send direction should be closed by a peer written in Swift that closes its
 socket after a fixed byte count and exits - a small job with no shell pipeline in it - rather than by a third shell
 variant.
+
+## D345 — The pipeline's wire works: 1, 8 and 64 rows cross a real socket byte-identical, in both directions
+
+    ✔ the count field is where the sender put it
+    ✔ one row and many rows both survive, back to back
+      Test run with 3 tests in 2 suites passed, exit 0, 0.001 s
+
+**`PipelineLink.send` and `PipelineLink.receive` are verified together on a real loopback socket**, at three payload
+sizes spanning the two cases the design needs: **one row** (the per-token decode handoff) and **many rows** (the
+`t x D` prefill handoff `D337` settled on). Frames arrive byte-identical. **The transport Design A was blocked on
+exists and works.**
+
+**And the harness is the finding, not the tests.** Three earlier versions failed and **every one failed by hanging**
+(`D342`, `D343`, `D344`) - which is the expensive way to fail, because a hang consumes the round where a red
+assertion does not. The cause was identical each time: **a listener blocking in `accept` inside a `Task` the test
+then awaited**, so when one side stopped the other waited on a socket forever. Two rules come out of that, and both
+are load-bearing:
+
+  * **the peer runs on a `DispatchQueue` and does blocking I/O**, so there is no task for `accept` to stall;
+  * **every wait has a deadline**, so a peer that does not answer is a failed assertion rather than a stuck suite.
+
+**A test that cannot hang cannot consume a round.** That is the property this file now has, and it is worth more
+than the three tests in it - because the cost was never the assertion that failed, it was the three rounds that
+could not fail at all.
+
+**One duplicate was removed rather than fixed.** A single-frame variant failed on `seen == frame` while the
+three-size test passed. Both directions are covered by the one that works, and **a redundant test that fails is
+worse than no test, because it teaches the suite to be ignored.** The difference between the two is one closure
+capturing an optional across a queue hop; that is recorded as a suspicion rather than fixed by guessing.
+
+**What this leaves for the transport.** The frame crosses a socket. What has not happened is **a stage sending to a
+real peer with a real model behind it** - the ring, the head on the last stage, and four machines. **The wire is no
+longer the unknown; the composition is.**
