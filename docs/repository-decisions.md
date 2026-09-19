@@ -13215,3 +13215,37 @@ not in A's connect at all** - and that is a test whose positive control already 
 **Where the objective stands.** Unchanged: four legs written and tested, the forward edge proven with a correct
 token (`D358`), the reverse edge proven to connect (`D369`), no run with both live. **The remaining fault is
 reproducible and narrowed to one variable, but the instrument that was supposed to explain it was invalid.**
+
+## D374 — Controlled at last: A unchanged, B varying, and the outcome follows B
+
+**The test `D373` asked for, with the positive control it demanded:**
+
+    A: BACK_CONNECT + forward CONNECT   (UNCHANGED)
+    B: BACK_LISTEN only                 -> [back] connected          SUCCESS
+    B: BACK_LISTEN + STAGE_LISTEN       -> EHOSTUNREACH, 450 tries   FAILURE
+
+**A is byte-identical between the two runs and only B's configuration changes, and the outcome follows B.** That is
+the first controlled comparison in five rounds, and it settles two things at once:
+
+  * **A's forward CONNECT was never the cause.** `D369` and `D370` both suspected it, the program order said it
+    could not be, and now the ceiling is measured rather than argued: **the same A succeeds against a different B**;
+  * **the fault is in B's two-listener configuration**, which is a configuration this design has never exercised -
+    **every previous run had B listening on one port.**
+
+**And the mechanism is not the one the causality argument would suggest, which is why the measurement was needed.**
+B's `installReverseEdge` binds 47702 and **blocks in `accept`**; B's `installIfConfigured` binds 47701 only
+afterwards. So with `STAGE_LISTEN` set, **B's second listener should not exist at the moment A connects** - and yet
+its presence in the environment changes the outcome. **Something about B's configuration affects A's connect before
+the code that consumes it runs.**
+
+**The candidates now, and they are narrow.** `ProcessInfo.processInfo.environment` is read by `installIfConfigured`
+at `Run.swift:328`; **if the deployed binary's order differed from the source read - the first candidate `D372`
+named - that alone would explain everything**, because B would bind 47701 first. **The second is that binding a
+second listener changes the socket table in a way the first connection notices** - and the one observation that fits
+is `D372`'s: **B listening on `*:47702` continuously while A is refused.** A node that accepts on two ports of the
+same address is not a shape this design has tested.
+
+**Where the objective stands, and it is further than it has been.** Four legs written and tested; the forward edge
+proven with a correct token (`D358`); **the reverse edge now proven to connect with A's full configuration**
+(`D374` - the earlier successes had A simpler); and the remaining fault **reproducible, controlled to a single
+variable on the peer, and with two named candidates rather than a symptom.** The sequence run is one variable away.
