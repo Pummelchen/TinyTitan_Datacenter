@@ -525,12 +525,15 @@ extension RealForwardRunner {
                                 outputMode: outputMode)
         }
 
-        if runEpilogue {
-            aneChunk?.finishChunk(startPosition: startPosition,
-                                  tokenCount: tokens.count)
-            kv?.advance(slot: slot, by: tokens.count)
-            prefillChunkState.markCommitted()
-        }
+        // NOT gated on runEpilogue. `runEpilogue` means "this stage owns through the last layer"; committing what
+        // this stage wrote is a different question with a different answer, and tying them together meant a stage
+        // owning 0..<20 wrote KV rows, never committed them, and left the runner refusing every later decode with
+        // "wrote KV rows for in-flight chunk [0, 5) but did not commit" (D330). A pipeline stage commits its own
+        // work whatever its range; a stage that owns the whole model is simply the case where the two coincide.
+        aneChunk?.finishChunk(startPosition: startPosition,
+                              tokenCount: tokens.count)
+        kv?.advance(slot: slot, by: tokens.count)
+        prefillChunkState.markCommitted()
     }
 
     /// Per-layer tensor views resolved once before the chunk loop.
