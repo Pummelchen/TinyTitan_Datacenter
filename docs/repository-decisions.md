@@ -12495,3 +12495,38 @@ arithmetically exact - 0 of 2048 elements - and that was fp16 to fp16, so the fr
 **But an end-to-end token comparison against a single-node run has not been taken**, and until it is, the honest
 statement is that the ring runs and its handoffs align, not that it answers correctly. **That comparison is the next
 step and it is one command.**
+
+## D353 — The ring's handoffs are complete and its answer is wrong, and the reason is the decision D337 made and nobody built
+
+The full round trip, measured:
+
+    A: [wire] send pos=0, 5, 6, 7  layer=20  values=2048      total=4
+    B: [wire] recv pos=0, 5, 6, 7  layer=20  values=2048      recv_ok=4, recv_fail=0
+    B: [stop=maxTokens prefill=5tok/1.40s new=4tok decode=0.37s tok/s=10.889]
+
+**Every frame arrives, in order, aligned by position, with the right shape.** A's own run is
+`prefill=5tok/0.72s new=4tok decode=0.36s tok/s=11.266`, so both stages run and the pipeline paces itself.
+
+**And the answer is wrong.** B's generated text is whitespace. A single node, same prompt, greedy, four tokens,
+produces **` Paris, a city`** - the correct continuation - so the reference is unambiguous and the ring does not
+match it.
+
+**The cause is a row count, and it is the decision this record already made.** A publishes its residual once after
+its prefill, which is **one row** - the state after the last prompt token. B's prefill chunk is **five tokens**, and
+`D350`'s bound is `min(t * D * stride, source.length)`, so **exactly one of the five rows is seeded and the other
+four are whatever the landing buffer held.** B then computes a chunk that is one-fifth real.
+
+**`D337` decided this and named the number**: the prefill handoff is `t x D`, not `D`, and it settled that against
+per-token prefill by arithmetic - 5.4 MB and 46 ms for the longest prompt in this record, against 3,963 single-token
+forwards for the alternative. **What was never done is the allocation and the send.** `makeHiddenStateBuffer(rows:)`
+exists from `D335`; nothing calls it with more than one row, and `PipelineStage.install` is invoked with
+`rows: 1` from `PipelineWiring`.
+
+**So the remaining work is exactly the decision, not a new question**: the publisher's post-loop handoff must carry
+the chunk's rows, and the consumer's prefill must receive that many. **Everything around it is now measured and
+working** - the transport, the seed, the alignment, the pacing, and the runtime of both stages.
+
+**And the honest framing of where this leaves the objective.** The ring moves hidden states between two machines with
+no expert weights on the wire, which is the design's central structural claim, and it does so with the frames
+aligned. **It does not yet produce the single-node answer**, and until it does, the two-stage run is a transport
+demonstration rather than a pipeline. **The gap is one row count in one handoff**, and the record says which.
