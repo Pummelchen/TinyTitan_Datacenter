@@ -461,7 +461,19 @@ extension RealForwardRunner {
                 if let probe = hiddenProbe {
                     let want = D * MemoryLayout<Float16>.stride
                     FileHandle.standardError.write(Data(("[diag] copy: dst.len=\(probe.length) src.len=\(scratch.hidden.length) want=\(want) residualWidth=\(residualWidth)\n").utf8))
-                    memcpy(probe.contents(), scratch.hidden.contents(), min(want, min(probe.length, scratch.hidden.length)))
+                    // A BLIT, not a memcpy: scratch.hidden is storageModePrivate, so contents() on it is not a
+                    // valid pointer and dereferencing it is the SIGSEGV D324 found. This is dumpActivationPrivate's
+                    // mechanism - own command buffer, blit encoder, commit, wait - which the code base has already
+                    // proved on this exact buffer. `await completed()` rather than waitUntilCompleted(), because
+                    // this loop is async and Swift marks the blocking form unavailable there (the D264 lesson).
+                    let n = min(want, min(probe.length, scratch.hidden.length))
+                    if let blitCB = ctx.queue.makeCommandBuffer(), let blit = blitCB.makeBlitCommandEncoder() {
+                        blit.copy(from: scratch.hidden, sourceOffset: 0, to: probe, destinationOffset: 0, size: n)
+                        blit.endEncoding()
+                        blitCB.commit()
+                        await blitCB.completed()
+                        if let sink = onHidden { sink(startPosition, probe) }
+                    }
                     if let sink = onHidden { sink(startPosition, probe) }
                 }
             }
@@ -481,7 +493,14 @@ extension RealForwardRunner {
         // A5: a stage that does not reach the epilogue publishes its residual - that is what it hands to the next
         // stage. `runEpilogue` already exists and means exactly "this stage owns through the last layer".
         if !runEpilogue, let out = hiddenOut {
-            memcpy(out.contents(), scratch.hidden.contents(), D * MemoryLayout<Float16>.stride)
+            let n = min(hiddenStateBytes, min(out.length, scratch.hidden.length))
+            if let blitCB = ctx.queue.makeCommandBuffer(), let blit = blitCB.makeBlitCommandEncoder() {
+                blit.copy(from: scratch.hidden, sourceOffset: 0, to: out, destinationOffset: 0, size: n)
+                blit.endEncoding()
+                blitCB.commit()
+                await blitCB.completed()
+                if let sink = onHidden { sink(startPosition, out) }
+            }
             if let sink = onHidden { sink(startPosition, out) }
         }
 

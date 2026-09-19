@@ -286,6 +286,12 @@ public func run(args: Args,
             runner.hiddenProbeLayer = probeLayer
             runner.hiddenProbe = runner.makeHiddenStateBuffer()
         }
+        // A run without a probe layer publishes instead of probing: it is the stage END, and the two are the
+        // same point reached two ways (D312). Without this a 0:20 run has nothing to hand over.
+        if ProcessInfo.processInfo.environment["TINYTITAN_PROBE_LAYER"] == nil,
+           ProcessInfo.processInfo.environment["TINYTITAN_DUMP_LAYER_STATE"] != nil {
+            runner.hiddenOut = runner.makeHiddenStateBuffer()
+        }
         if let dumpPath = ProcessInfo.processInfo.environment["TINYTITAN_DUMP_LAYER_STATE"] {
             FileHandle.standardError.write(Data("[diag] run installs hook on runner \(ObjectIdentifier(runner))\n".utf8))
             runner.onHidden = { position, buffer in
