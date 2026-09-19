@@ -110,12 +110,20 @@ public enum PipelineWiring {
         if isSource {
             // -1 is the sentinel for "nothing has come back yet"; 0 is a legitimate token id, so the two must be
             // distinguishable (D361).
-            runner.nextTokenSource = { _ in
+            runner.nextTokenSource = { position in
                 guard let token = try? PipelineStage.receiveToken(from: end) else { return -1 }
+                // WHAT THIS STAGE WAS TOLD, and for which position. D389 narrowed the remaining fault to a one-step
+                // alignment and this is the instrument for it: the sequence of tokens consumed here, against the
+                // sequence published by the peer, is the whole question - and printing positions alone (D350's
+                // instrument) cannot answer it because the positions are already known to line up.
+                FileHandle.standardError.write(Data(
+                    "[tok] told pos=\(position) token=\(token)\n".utf8))
                 return Int32(token)
             }
         } else {
             runner.nextTokenSink = { token, layer in
+                FileHandle.standardError.write(Data(
+                    "[tok] chose pos=\(layer) token=\(token)\n".utf8))
                 try? PipelineStage.sendToken(Int(token), layer: layer, to: end)
             }
         }
