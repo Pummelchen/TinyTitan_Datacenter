@@ -16152,3 +16152,24 @@ acceptable. Four single-node runs, one node at a time, same binary (`md5 ec6710c
 **So the single-machine bar is met on all four nodes, and the cluster is uniformly capable rather than dependant on one
 good machine.** The per-node spread is 11% (7.146-7.937), which is small enough that a distribution scheme cannot claim
 a node was the weak link.
+
+## D457 - node4 re-benchmarked: 7.448 and 7.396 tok/s, and the earlier 7.146 was a conservative sample rather than a machine limit
+
+**`D456` measured node4 at 7.146 tok/s - the slowest of the four and only +1.0% over the reference's best - on the
+machine that carries this session's agent harness and browser. Re-run twice, same command and binary:**
+
+    run 1   7.448 tok/s   expert io await 7650.7 ms   exposed_io 0.0 ms
+    run 2   7.396 tok/s   expert io await 7922.1 ms   exposed_io 0.0 ms
+
+**Both above 7.0 and both above the reference's 7.075** - +5.3% and +4.5% - so `D456`'s smallest margin was a sample
+rather than a ceiling. Taken together node4's three measurements are 7.146, 7.448 and 7.396, a **5.7% spread around
+7.33**, which is the run-to-run variation this session has seen throughout (`D443`: the same command measured 7.064 and
+7.340 at different points) and not a machine that is slower than its neighbours.
+
+**And the re-run exposes something the single measurement did not: swap grows monotonically across consecutive runs.**
+`vm.swapusage` read 986 M used before the pair and **1396 M after**, with free swap falling 1062 M -> 652 M. Two
+back-to-back engine runs on this node do not return the memory they borrow, which is consistent with everything the
+project has recorded about this 8 GB machine - `D448` measured the expert cache collapsing past 64 slots, and the
+repository's own history records two panics from exactly this shape. **So node4 is safe for one run at a time and
+should not be run repeatedly without letting swap settle**, and any future benchmarking should leave a gap rather than
+looping.
