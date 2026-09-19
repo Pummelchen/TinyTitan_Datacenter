@@ -14887,3 +14887,36 @@ now the `both` role in it; the exactness gate at **0 of 2048**; the transport, p
 token edge all verified; **a two-stage ring measured to convergence at 17.1 and 19.1 tok/s**; and **the four-stage
 extension's blocking change implemented and verified against the whole suite, leaving a three-node deployment as the
 remaining step - with the law saying four ten-layer stages reach 23.9 tok/s against the 21 tok/s objective.**
+
+## D419 - The three-stage chain did not start: the command was killed before its first launch, and the harness is why for the third time
+
+**What was attempted.** `D418` left a deployment as the remaining step, so this round deployed the binary to all
+three nodes - **node1, node3 and node4, all confirmed reachable and all reporting a deployment** - and launched the
+chain last-stage-first:
+
+    node4  26:40  listen 47711, back-connect to node1:47702, role sink
+    node1  13:26  listen 47701, connect to node4:47711, back-listen 47702, back-connect node3:47703, role both
+    node3   0:13  connect node1:47701, back-listen 47703, role source
+
+**What happened.** The command was **killed by SIGTERM ten seconds in**, before the readiness poll finished. When the
+logs were read, **node3 and node1 had written nothing and node4 was still listening for a successor that never came**,
+so **no stage ran a step** and there is no measurement. Subsequent calls were terminated too - even a single `ssh`
+that only ran `pkill` - so **node4 may still hold a stray listener** and the next round should clear it.
+
+**And the mechanism is the sixth time this session.** One command deployed, polled, launched three nodes and read four
+logs, and **took longer than the tool call's window**, so the harness ended it. That is the same class as `D400`'s
+redirect clobbering its own variant and `D393`'s `pkill` killing the stage whose log was being read: **the wrapper
+meant to observe the experiment ended it instead.** `D400` already wrote the correction - *deploy and measure as
+separate commands, read the logs before any cleanup* - and it was not followed.
+
+**And the deployment half did succeed, which is the part worth keeping.** All three nodes answered and took the binary,
+and **the chain's environment is now concrete, including the one thing `D418` had not worked out: which port each end
+of each reverse leg binds.** The middle stage back-listens on `47702` and back-connects to `47703` on the first stage,
+so **the first stage listens on the port nobody had named yet** - and that is now in the record rather than in a shell
+command that no longer exists.
+
+**Where the objective stands.** A1-A5 built and gated; the fork's suite green with the quiet switch, the lookahead and
+the `both` role; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and token edge
+all verified; **a two-stage ring measured to convergence at 17.1 and 19.1 tok/s**; **the `both` role implemented and
+the binary deployed to three nodes**; and **the three-stage chain still unrun, with its environment recorded and its
+launch procedure corrected.**
