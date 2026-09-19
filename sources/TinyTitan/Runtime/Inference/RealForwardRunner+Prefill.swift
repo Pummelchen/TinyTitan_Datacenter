@@ -450,6 +450,15 @@ extension RealForwardRunner {
         var prefillActiveExperts: UInt64 = 0
 
         for L in layers {
+            // A5: the probe fires here as well as in decode, because a prefill position is the only place two runs
+            // at different layer ranges can be compared - both embed the SAME prompt tokens, so the state entering
+            // layer L at a given position is the same point in the same forward pass either way. In decode the two
+            // runs have already sampled different tokens and diverge (`D313`).
+            if let probeLayer = hiddenProbeLayer, L == probeLayer, let probe = hiddenProbe {
+                memcpy(probe.contents(), scratch.hidden.contents(),
+                       D * MemoryLayout<Float16>.stride)
+                if let sink = onHidden { sink(startPosition, probe) }
+            }
             try await runPrefillLayer(
                 L, cb: &cb, scratch: scratch, layerViews: layerViews,
                 tokens: tokens, startPosition: startPosition, t: t, D: D,
@@ -461,6 +470,13 @@ extension RealForwardRunner {
                 prefillTailNanos: &prefillTailNanos,
                 prefillActiveExperts: &prefillActiveExperts,
                 slot: slot)
+        }
+
+        // A5: a stage that does not reach the epilogue publishes its residual - that is what it hands to the next
+        // stage. `runEpilogue` already exists and means exactly "this stage owns through the last layer".
+        if !runEpilogue, let out = hiddenOut {
+            memcpy(out.contents(), scratch.hidden.contents(), D * MemoryLayout<Float16>.stride)
+            if let sink = onHidden { sink(startPosition, out) }
         }
 
         if prefillProfile {
