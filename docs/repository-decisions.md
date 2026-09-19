@@ -11476,3 +11476,34 @@ publish - both writing from a private buffer into a shared one, which is exactly
 
 **The pipeline's exactness remains unverified.** The gate has still never run; the difference is that the reason is
 now known and it is one line of a different kind.
+
+## D325 — The blit fixes it: the probe writes for the first time, after six rounds
+
+`D324` found the cause - `scratch.hidden` is `storageModePrivate`, so `contents()` on it is not a valid pointer - and
+the fix is the one `D320` had already named without knowing the cause: **not a `memcpy` but a blit**, following
+`dumpActivationPrivate` in this same runner, which the code base has proved on this exact buffer.
+
+    run A exit=0      a.bin = 8200 bytes
+
+**The segfault is gone.** 8,200 bytes is two records of a 4-byte position plus 4,096 bytes of hidden state, so the
+probe fired and wrote real data. **Six rounds after the gate was specified, the instrument works.**
+
+**One lesson met again on the way**: the first blit attempt used `waitUntilCompleted()`, and Swift marks that
+unavailable from an asynchronous context - the prefill loop is async. `await completed()` is the form, which is
+exactly `D264`'s finding from the expert path, in a different file, four months of record apart. **The same
+correction twice is a sign the rule is real and I am not internalising it.**
+
+**And run B still writes nothing.** A run with no probe layer now has `hiddenOut` installed, so a `0:20` stage has
+something to publish with, and it still does not fire - which is the next thing to look at and is a wiring question
+rather than a memory one. **The comparison cannot be made until both sides produce a record.**
+
+**What the six rounds bought, in order.** `D318`: it is a SIGSEGV, not a silent no-op. `D319`: the first explanation
+did not survive its own test. `D320`: it is not the size, and **the fix should be a blit**. `D323`: it is not the
+`memcpy`, and `lldb` is unavailable from a non-interactive session. `D324`: **the source is private, so `contents()`
+was never a pointer**. `D325`: **the probe writes.**
+
+**And the thing worth carrying.** `D320` recommended the blit two rounds before the cause was known, on the principle
+that **a mechanism already proved in the file beats a guess** - and the guess it replaced was wrong for exactly the
+reason a mechanism would not care about, since a blit needs `contents()` on neither side. **The general principle
+would have saved four of those six rounds.** The pipeline's exactness is still unverified, and it now needs one more
+wiring fix rather than an investigation.
