@@ -15564,3 +15564,34 @@ step has to come down - `load` and `head` are the same constants on every node a
 re-multiplied per step - and the expert read has to get faster than 33% of the step. **Neither is a distribution
 problem.** A four-node layer pipeline can hold a 35 B model on four 8 GB machines, which is what it was built for; it
 cannot make that model three times faster.
+
+## D439 - D438's 1.33x bound is withdrawn: it came from another engine's profile. The serial conclusion survives on this fork's own law
+
+**`D438` bounded the available speedup at 1.33x using a phase split of 33% / 30.5% / 19.2% / 9.6% / 7.7%. That split is
+from the *main repository's* engine (`D88` there), and this fork is a different codebase.** Using one engine's profile
+to bound another's is a category error of exactly the kind this session has spent its time correcting, and it is
+withdrawn.
+
+**And the correction turns up something better: this fork has its own profiler.** `TURBO_FIELDFARE_PHASES=1` is read in
+`RealForwardRunner+Prefill.swift:467` and `Run.swift:446` - **so the fork's real phase split is measurable rather than
+borrowed**, which is what `D438` should have done and what the next round can do.
+
+**And the conclusion itself does not need the borrowed numbers.** From this fork's own law - fitted to its own
+measurements, ten layers at 41.9 ms and twenty at 64.4 ms, giving 2.25 ms per layer and 19.3 ms fixed:
+
+    1 stage  of 40 layers:  19.3 + 90.0 = 109.3 ms  serial  ->  9.15 tok/s
+    2 stages of 20 layers:  2 x 64.3   = 128.6 ms  serial  ->  7.78 tok/s
+    4 stages of 10 layers:  4 x 41.8   = 167.2 ms  serial  ->  5.98 tok/s
+    8 stages of  5 layers:  8 x 30.6   = 244.4 ms  serial  ->  4.09 tok/s
+    measured, one node (40 layers):      141.9 ms           ->  7.05 tok/s
+    measured, four stages:                                   6.02 tok/s
+
+**The law predicts the four-stage measurement to within one percent**, and the whole curve is monotone - **so the
+serial model is confirmed by this fork's own numbers and needs no borrowed profile.** Adding stages is
+*provably* worse: the fixed cost is paid once per stage, so `19.3n + 90` grows with `n` while the work it divides does
+not.
+
+**So the objective's answer stands, on the right evidence: a layer pipeline on this engine cannot reach 21 tok/s** -
+not because of overhead, but because the serial sum is `19.3n + 90` ms and the target is 47.6 ms, which is below even
+the single-stage figure. **What remains genuinely open is whether intra-token parallelism helps**, and that question
+now has a proper instrument instead of a borrowed table.
