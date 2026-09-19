@@ -15138,3 +15138,35 @@ all verified; **a two-stage ring at 17.1 and 19.1 tok/s**; **a three-stage chain
 first token and each stage exactly at the law**; and **the three-stage slowdown localised to the token's two-hop
 return path, with the per-stage cost excluded and the four-stage target therefore requiring a deeper lookahead rather
 than more machines.**
+
+## D426 - A middle stage re-samples instead of relaying, which is why the extra hop costs a whole step
+
+**The line, and it is one:**
+
+    ring.nextTokenSink?(tokenID, 0)      // tokenID is THIS stage's own sample
+
+**In a two-stage ring that is exactly right** - the head samples and the first stage embeds what it is told, and
+`D390` verified token for token that `B chose 11751` arrives as `A told 11751`. **But a middle stage is not a head.**
+It has logits of its own only because it runs layers, and its sample is **meaningless to the chain** - the token that
+matters is the head's. **So when a middle stage publishes its own `tokenID`, the first stage receives a token that
+went through a sampler it did not need to go through**, and the extra hop costs **a whole stage step rather than a wire
+crossing.**
+
+**And that is the arithmetic `D425` measured.** The stage's own cost is 48.7 ms and a frame is 12 KB, which over this
+LAN is about 2.4 ms. **A relayed token would make the extra hop cost 2.4 ms; a re-sampled one costs 48.7.** The 88 ms
+of unhidden latency is therefore **not** two hops of wire - it is **one extra sampling step**, and the record can now
+say that with the two numbers in hand rather than by elimination.
+
+**The fix is a relay, and it is the same shape as `D411`'s reordering.** A stage that has both hooks should publish
+what it was **told** rather than what it **chose** - `pendingIncoming` rather than `tokenID` - because in a chain only
+the head's choice is meaningful and every other stage's job on the reverse edge is **to pass the head's choice
+along**. That is one line moved from one variable to another, and it is deliberately **not** written this round: it
+touches the same exchange `D411` reordered, and the record has paid three times for edits made without the budget to
+test them.
+
+**Where the objective stands.** A1-A5 built and gated; the fork's suite green with the quiet switch, the lookahead and
+the `both` role; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and token edge
+all verified; **a two-stage ring at 17.1 and 19.1 tok/s**; **a three-stage chain running end to end with the correct
+first token, each stage exactly at the law, and its regression localised**; and **the middle stage's re-sampling
+identified as the reason the extra hop costs a step rather than a wire crossing - with the fix written down as one
+variable substituted for another.**
