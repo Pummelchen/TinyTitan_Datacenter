@@ -8,12 +8,14 @@
 
 # TinyTitan
 
-[![Stars](https://img.shields.io/github/stars/Pummelchen/TinyTitan?style=flat-square&logo=github&label=Stars&color=e3b341)](https://github.com/Pummelchen/TinyTitan/stargazers)
-[![Views (14d)](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Pummelchen/TinyTitan/main/.github/traffic.json)](https://github.com/Pummelchen/TinyTitan)
-[![Last Commit](https://img.shields.io/github/last-commit/Pummelchen/TinyTitan?style=flat-square&logo=git&label=Last%20Commit&color=2ea44f)](https://github.com/Pummelchen/TinyTitan/commits/main)
+[![Stars](https://img.shields.io/github/stars/Pummelchen/TinyTitan_Datacenter?style=flat-square&logo=github&label=Stars&color=e3b341)](https://github.com/Pummelchen/TinyTitan_Datacenter/stargazers)
+[![Views (14d)](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Pummelchen/TinyTitan_Datacenter/main/.github/traffic.json)](https://github.com/Pummelchen/TinyTitan_Datacenter)
+[![Last Commit](https://img.shields.io/github/last-commit/Pummelchen/TinyTitan_Datacenter?style=flat-square&logo=git&label=Last%20Commit&color=2ea44f)](https://github.com/Pummelchen/TinyTitan_Datacenter/commits/main)
 [![Contact](https://img.shields.io/badge/Contact-0xa0b1%40gmail.com-blue?style=flat-square&logo=gmail&logoColor=white)](mailto:0xa0b1@gmail.com)
 
-TinyTitan is the fastest SSD streamer for AI models on a Mac.
+**TinyTitan Datacenter** runs large Mixture-of-Experts language models across a cluster of
+Apple-silicon Macs, streaming routed experts from SSD on the
+[TinyTitan](https://github.com/Pummelchen/TinyTitan) runtime.
 
 What is new in each release lives in the
 [Changelog](https://github.com/Pummelchen/TinyTitan/wiki/Changelog).
@@ -75,7 +77,7 @@ Every model installs at **4-bit and 8-bit**:
   downloads a model, and installs a double-clickable Mac app in
   `~/Applications`. Safe to re-run; it updates instead of cloning twice.
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/Pummelchen/TinyTitan/main/tools/install_tinytitan.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/Pummelchen/TinyTitan_Datacenter/main/tools/install_tinytitan.sh | bash
   ```
   From a clone, `tools/install_tinytitan.sh` does the same. See
   [docs/site](docs/site/) for the plain-language article series, or

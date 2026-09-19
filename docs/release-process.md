@@ -59,7 +59,7 @@ re-verifying would be a false claim.
 
 `docs/release-notes-vX.Y.md`, modelled on the previous one:
 
-- a `## TinyTitan X.Y — <headline>` title, then one paragraph saying what the
+- a `## TinyTitan Datacenter X.Y — <headline>` title, then one paragraph saying what the
   release is for;
 - one `###` section per user-visible change, each naming the check that backs
   it (a gate, a measurement, a real-model run);
