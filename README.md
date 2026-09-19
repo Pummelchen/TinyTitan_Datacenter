@@ -1,12 +1,8 @@
 <p align="center">
-  ✨ NVMAI is now TinyTitan ! ✨
+  <img width="1254" height="1254" alt="TinyTitan Datacenter" src="TinyTitanDatacenter.png" />
 </p>
 
-<p align="center">
-  <img width="1254" height="1254" alt="TinyTitan" src="https://github.com/user-attachments/assets/b18d7469-d546-4e74-83fa-1fc6d768d7f4" />
-</p>
-
-# TinyTitan
+# TinyTitan Datacenter
 
 [![Stars](https://img.shields.io/github/stars/Pummelchen/TinyTitan_Datacenter?style=flat-square&logo=github&label=Stars&color=e3b341)](https://github.com/Pummelchen/TinyTitan_Datacenter/stargazers)
 [![Views (14d)](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Pummelchen/TinyTitan_Datacenter/main/.github/traffic.json)](https://github.com/Pummelchen/TinyTitan_Datacenter)
