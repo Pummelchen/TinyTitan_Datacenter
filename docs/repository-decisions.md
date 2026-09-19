@@ -10949,3 +10949,43 @@ exist and are gated; **no node has ever sent a frame to another**, the head stil
 pipeline throughput has been measured.** The one throughput number this build has produced is the single-stage
 figure from `D306` - **ten layers at 21.482 tok/s**, which is the objective's target and is the arithmetic Design A
 rests on, not the design itself.
+
+## D310 — A4 is in: the per-token handoff, and the pipeline's exactness gate is now one wiring away
+
+`D309` reverted this attempt. It is in now, and the failure is understood rather than retried blindly.
+
+    public var onHidden:   ((Int, MTLBuffer) -> Void)?    called after a stage publishes
+    public var nextHidden: ((Int) -> MTLBuffer)?          called before a stage consumes
+
+**`hiddenOut` and `hiddenIn` are each a single buffer, so they carry one token's state; these two turn them into a
+sequence.** That is what lets a **file of `PipelineFrame`s stand in for a socket** - and it is why this piece exists
+before any transport: the pipeline's exactness gate becomes reachable on **one node**.
+
+**The compile failure was a type ambiguity, and it is worth recording.** The declaration was
+
+    public var nextHidden: ((Int) -> MTLBuffer?)?
+
+which Swift parses as **an optional closure returning a non-optional buffer** - so the `if let` binding was told it
+had `any MTLBuffer` where it expected an optional. **Making the return non-optional removes the ambiguity and `nil`
+already means "no source"**, which is the same contract with one less layer of optionality. The compiler's message
+named the binding rather than the declaration, which is why the first round read it as a capture problem.
+
+**And the safety gate is re-run for the fourth time**, because that is the property the whole build rests on. Hooks
+unset, the model still produces the baseline output token for token at **7.627 tok/s**:
+
+    Paris, a city renowned for its rich history, culture, and iconic landmarks. Situated in the north-central
+    part of the country, along the Seine River, Paris has been the political, economic, and cultural hub of
+    France for centuries.
+
+**So the sequence of Design A's build is now: A1 layer range, A1.5 the flag and the measured stage arithmetic, A2
+the frame, A3 the two ends, A4 the hooks - five pieces, five gates, and the single-node output has not moved once.**
+
+**What is left is the gate that decides whether any of it is real, and it is two runs on one node.** The handoff
+hooks exist; what does not exist is the CLI wiring that writes `PipelineFrame`s from `onHidden` on a `0:20` run and
+reads them back through `nextHidden` on a `20:40` run. **With that, the question - does the split reproduce
+`--layer-range 0:40` token for token? - is answered without a socket, a peer or a second machine.** If it does not
+reproduce, the pipeline is wrong at a level no transport can fix and the transport would have been wasted work.
+
+**Nothing about throughput is claimed.** The only pipeline-relevant number this build has is `D306`'s single-stage
+**21.482 tok/s for ten layers**, which is the arithmetic the design rests on. **No two stages have ever exchanged a
+frame, and no pipeline has been measured.**
