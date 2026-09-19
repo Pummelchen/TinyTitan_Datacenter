@@ -13179,3 +13179,39 @@ asymmetric-route refusal** - `EHOSTUNREACH` rather than `ECONNREFUSED`, which is
 correct token (`D358`), the reverse edge proven to connect (`D369`), and no run with both live. **What is new is that
 the fault now has a named mechanism candidate - dual same-subnet addresses and a hand-built `sockaddr_in` - rather
 than being a report that a connection failed.**
+
+## D373 — The source-address test was invalid: both of node3's own addresses fail under `nc -s`, so it measures `nc -s`
+
+**`D372`'s mechanism candidate was dual same-subnet addresses plus a hand-built `sockaddr_in`, and the test for it
+was to force each source address:**
+
+    nc 192.168.18.27 47702 (default source)   -> succeeded
+    nc -s 192.168.18.29 192.168.18.27 47702   -> FAIL
+    nc -s 192.168.18.8  192.168.18.27 47702   -> FAIL
+
+**Both fail, and one of them is node3's own address on the interface the route table selects.** A test that cannot
+succeed from the address the kernel would have chosen anyway **is not measuring the network** - it is measuring
+`nc -s`, which on this platform evidently cannot bind a source address for this connection at all. **The candidate is
+therefore untested rather than confirmed, and the test is recorded as invalid rather than as evidence.**
+
+**What is still true and unchanged by it.** `nc` with the default source reaches node1:47702 while the CLI's
+`DecodeTCPSocket.connect` to the same address and port returns `EHOSTUNREACH`, reproducibly, with B listening
+continuously (`D372`). **Two clients, one port, opposite results.**
+
+**And the lesson is the one this record keeps earning, in a new form.** The previous four instances were about
+*reading* one thing as evidence about another - a count from two binaries, a patch's anchor, a build for a suite, a
+socket probe for a listener. **This one is about *constructing* a test whose control cannot succeed**, which is worse
+in a specific way: an instrument that cannot produce the positive result **makes every measurement it takes look
+like evidence for the hypothesis.** `nc -s` failing twice looked like confirmation of an asymmetric-route theory
+when it was in fact a broken control.
+
+**So the next attempt has to have a control that is known to work.** The cheapest one is to run the **CLI's own
+connect** to a peer and address configuration that has already succeeded - which `D369` did - and then change exactly
+one thing about the peer: **give B a second listener** (`STAGE_LISTEN=47701`), which is the difference between the
+working and failing runs and the one variable that survived `D371`'s causality check. **If the CLI's back-connect
+fails when B has two listeners and succeeds when it has one, with A unchanged, the fault is in B's second listen and
+not in A's connect at all** - and that is a test whose positive control already exists.
+
+**Where the objective stands.** Unchanged: four legs written and tested, the forward edge proven with a correct
+token (`D358`), the reverse edge proven to connect (`D369`), no run with both live. **The remaining fault is
+reproducible and narrowed to one variable, but the instrument that was supposed to explain it was invalid.**
