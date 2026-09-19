@@ -12631,3 +12631,35 @@ Re-running it inside the ring printed on the first try.
 **Where the objective stands.** The transport is complete and aligned in both directions, `recv_fail=0`, and the
 answer is wrong. **The fault is now a single value that is set but not read**, which is a much smaller thing than it
 was four rounds ago.
+
+## D357 — The row count is fixed, and it was never fixed: a patch that reported success against a reverted anchor
+
+**The handoff sizes are now right, measured:**
+
+    [send] rows=5 buffer.len=16777216 rowWidth=2048
+    A: send pos=0 values=10240      send pos=5, 6, 7 values=2048
+    B: recv pos=0 values=10240      recv pos=5 values=2048        recv_fail=0
+
+**Five rows for the prefill chunk and one per decode step**, which is what `D337` decided and what the frames now
+carry.
+
+**And the line that does it was never changed until this round.** `PipelineStage`'s `onHidden` read `rows` -
+`install`'s parameter, always 1 - while the publisher set `publishedRows` to 5. **The round-57 patch that was supposed
+to connect them printed its success message and asserted cleanly**, because `D354`'s revert had already removed the
+block it anchored on **and the replacement pattern still matched the original text**, so the assert passed over a
+file that was not modified.
+
+**That is this repository's own recorded trap, and it is worth restating in its sharpest form: a patch that reports
+success is evidence about the *anchor*, not about the file.** The one-line check that catches it is a `grep` for the
+new text immediately after writing it - **which is exactly the check added to this round's own verification, and
+which would have saved four rounds.** Every diagnostic in those four rounds was correct; the change they were aimed
+at was not applied.
+
+**And the cost is instructive because nothing was wrong with the reasoning.** `D352` found the dead closure, `D353`
+found the row count, `D354` reverted a bad fix, `D355` plumbed the count, `D356` found it unread. **Five correct
+findings and the bug survived all of them**, because the last step - the edit itself - silently did nothing. **A
+claim about what a command did is not a claim about the file, and the difference is one grep.**
+
+**B's answer is still whitespace against a single node's ` Paris, a city`, and B stopped after two receives where A
+sent four.** So a further fault remains - **but it is a different one**: the handoff size is no longer in question,
+and the next thing to look at is why a stage that receives stops early.
