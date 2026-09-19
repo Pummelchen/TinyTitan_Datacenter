@@ -13815,3 +13815,41 @@ gate at **0 of 2048**; the forward edge carrying a hidden state between two mach
 first token through the whole pipeline**; the reverse edge connecting with its cause named (`D387`); **and a sequence
 of four tokens where the first is right and the rest diverge** - which is a smaller fault than any this leg has had
 since `D352`.
+
+
+## D390 — The backward edge is correct: every token B chose is the token A was told, in order
+
+**The instrument `D389` asked for - the token printed on each side of the reverse edge, against its position:**
+
+    A (owns 0:20):   [tok] told pos=5 token=11751
+                     [tok] told pos=6 token=271
+                     [tok] told pos=7 token=13
+                     [wire] send pos=0, 5, 6, 7  values=10240, 2048, 2048, 2048
+
+    B (owns 20:40):  [wire] recv pos=0 got token=0 values=10240
+                     [tok] chose pos=0 token=11751
+                     [tok] chose pos=0 token=271
+                     [tok] chose pos=0 token=13
+
+**Every token matches, in order, one for one.** `11751` chosen becomes `11751` told; `271` becomes `271`; `13`
+becomes `13`. **The reverse edge works, and this is the first measurement that says so about the *values* rather than
+about the connection.**
+
+**And it found a defect that is cosmetic and worth fixing anyway.** B's sink receives `layer` and prints it as the
+position, and `RawCompletion` passes a literal `0` - so every publish reports `pos=0` **regardless of where it
+happened**. The token flow is unaffected because the receiver uses the frame's `token`, not its `layer` - **but a
+diagnostic that reports a constant where it should report a position is the `D357` mistake in miniature**: it looks
+like data and is not.
+
+**And the remaining divergence is therefore not the backward edge.** The token flow is aligned; A's residual at step
+N is the state for the token it consumed at step N, which is B's token at N-1, which is what B needs at N; and B's
+first output is correct. **B's second token differs from a single node's, and the candidates are now narrow**: the
+`positions` B's receives carry are `0, 6, 7` - **not `0, 5, 6, 7`** - so **A's `pos=5` frame was consumed by B's
+decode seed and never printed**, which is the seed flag working as designed, **but it means B's first *decode* step
+used A's step-5 state while its second used A's step-6 state, and whether those are the right pair for the tokens in
+between is exactly what a fourth print would settle.**
+
+**Where the objective stands.** A1-A5 built and gated, 1652 tests with 0 failures, the exactness gate at 0 of 2048;
+**the forward edge producing a correct first token through the pipeline** (`D389`); **the reverse edge verified by
+value, token for token** (`D390`); and one sequence of four tokens whose first is right. **Three of this design's
+four legs are now confirmed by their own output; the fourth is one print away.**
