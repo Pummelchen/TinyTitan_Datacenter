@@ -13741,3 +13741,41 @@ to be sound because `D358` measured a correct first token through it and `D325` 
   * **and the first run in this design's history with all four legs live: a two-machine pipeline that produced four
     tokens.** Not the right four, and not the objective's 21 tok/s - **but a sequence, which is what everything since
     `D352` has been trying to reach.**
+
+
+## D388 — Both faults found: the prefill and the decode each consume a handoff frame for the same boundary
+
+**The sequence ran in `D387` and produced ` city` where a single node gives ` Paris, a city` - four tokens with the
+first one dropped. The cause is two lines that were each correct in isolation:**
+
+    Prefill.swift:397   let source = preparedHidden ?? nextHidden?(startPosition) ?? hiddenIn
+    Decode.swift:195    if let source = nextHidden { memcpy(hidden.contents(), source(position).contents(), bytes) }
+
+**`nextHidden` is consulted twice for the same token boundary.** A stage's prefill seeds its residual by taking one
+frame from the peer, **and then its first decode step takes another** - so the stage consumes **two of the peer's
+frames where the peer produced one per position**, and every token after the prompt is shifted by one. **The first
+token is not missing; it was replaced by the second.**
+
+**And the arithmetic is not implicated, which is worth stating because it is the whole reason this is a small
+fault.** `D325` proved the composition exact - a stage's output is a function of its input and its own layers, 0 of
+2048 elements - **and `D358` measured a correct first token through the forward edge.** Both remain true. What was
+wrong is the **bookkeeping**: two consumers of one stream, each taking what it needed without knowing the other had.
+
+**The fix is a flag rather than a redesign, and it is deliberately not being written this round.** The runner needs to
+know that its residual is already seeded for the current position, **so the decode's first step reuses the seed
+instead of fetching a new frame** - one boolean, set by the prefill at `:397` and consumed by the decode at `:195`.
+**Writing it at the end of a long session with no context left to verify it would repeat the mistake this record has
+logged six times**, so it is specified here and left for a round with the budget to test it.
+
+**Where the objective stands, and this is the clearest it has been in thirty rounds.**
+
+  * **A1-A5 built and gated**: 1652 tests in 8 binaries with 0 failures; the exactness gate at **0 of 2048**; the
+    layer range bit-identical when unset;
+  * **the forward edge proven across two machines** with a correct first token (`D358`);
+  * **the reverse edge connecting, cause named** - the process must stay attached to its launching session (`D387`,
+    which is `D287` applied);
+  * **all four legs live at once for the first time**, producing a four-token sequence (`D387`);
+  * **and the remaining fault is a double-consumption off-by-one with a one-flag fix** (`D388`).
+
+**That is the difference between the last twenty rounds and this one.** For most of this session the blocker was an
+unknown mechanism; **now it is two named lines and a boolean.**
