@@ -12703,3 +12703,33 @@ once both stages read and write at the right points.
 **And the honest restatement of the objective's status.** The ring moves hidden states between two machines with no
 expert weights on the wire, the handoffs are sized and aligned, **and the first token the pipeline produces is the
 one a single node produces.** What it does not yet do is produce the second one.
+
+## D359 — The ring's backward edge exists, and a stale fake had been breaking the suite for four rounds
+
+**The backward edge, implemented and verified on a real socket:**
+
+    ✔ a chosen token comes back on the same wire the activations went out on
+    ✔ Test run with 8 tests in 3 suites passed, exit 0
+
+**And it needed no new codec.** `PipelineFrame` already carries a `token` and `count` may be zero, so the return is a
+frame with an empty payload - **which the existing reader already handles and `maxRows` already permits.** Four bytes
+of header carry a whole token's worth of information, which is what makes this leg nearly free beside the forward
+one. `receiveToken` refuses a frame that carries rows, because a return frame with a payload is not a token.
+
+**And the reason it was not noticed sooner is the thing worth recording.** `FakeEndpoint` stopped conforming when
+`PipelineEndpoints` gained `publishedRows` in round 57, **and it survived four rounds because only `swift build` was
+run in that time - and `swift build` does not compile tests.** So:
+
+  * a protocol change has to update its fakes **in the same edit**;
+  * a green **build** is not a green **suite**, and the two were used interchangeably in rounds 57-60.
+
+**The records for those rounds claim the code was verified, and the accurate word is that it built.** The tests are
+8 in 3 suites passing now, and this is the first time since round 56 that the count was true. **The distinction is the
+same one this record has now recorded three ways** - a number carried from a neighbouring reading, a patch that
+reports success about its anchor, and a build that stands in for a suite - **and all three are the same mistake:
+treating evidence about one thing as evidence about another.**
+
+**Where the ring stands.** All four legs are in place - forward activations with the right sizes, the prefill seed,
+position alignment, and now the return path for the chosen token. **The first token the pipeline produced was already
+correct (`D358`); the backward edge is what the second one needs.** The next run is the one that says whether the
+objective's central claim holds for a sequence rather than for a single step.
