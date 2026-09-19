@@ -14603,3 +14603,36 @@ two stages rather than their sum**: 132 ms, or **7.6 tok/s**, against 3.4 today.
 gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and token edge all verified; **a two-token
 ring whose first token is right and whose second is not**; and the throughput gap **measured from both sides, with the
 loop's blocking order identified as its cause and a one-move reordering written down as the fix.**
+
+
+## D412 - The lookahead works: the ring goes from 3.4 to 5.59 tok/s, and the residue is the peer's whole step
+
+**The reordering `D411` specified, applied, with the full suite run before the commit this time:**
+
+    FULL suite:   exit 0, 8 test binaries, no signal
+
+    before (4 tokens):   A decode=1.18s  = 295 ms/token    B decode=0.41s = 102 ms/token   ring 3.4 tok/s
+    after  (8 tokens):   A decode=1.43s  = 179 ms/token    B decode=0.71s =  89 ms/token   ring 5.59 tok/s
+
+**A 39% fall on the first stage and 1.64x on the ring**, from one move: the receive went from the start of the
+iteration to the end of it. **The sink stayed early on purpose** - it carries the token this stage *sampled*, and at
+that point `tokenID` is still the previous iteration's sample, so publishing there is both correct and as early as
+the peer could want it. **The carry keeps the incoming token in its own variable instead of overwriting `tokenID`,
+and that separation is what made the reordering possible at all.**
+
+**And the prediction was 132 ms / 7.6 tok/s; the measurement is 179 ms / 5.59.** So the direction was right and the
+size was optimistic - **and the residue says exactly why, which is the useful part.** The first stage's own twenty
+layers cost **87.5 ms** standalone, so **91.5 ms of waiting remains** - and **B's own step is 89 ms**. **The remaining
+wait is the peer's entire step**, which means the overlap is partial: A still arrives at its next produce before B has
+finished the token A is waiting for, **because A's own work (87.5 ms) is slightly shorter than B's (89 ms).**
+
+**And that is a different fault from the one just fixed, and a smaller one.** The first fix removed the *serialisation*
+- the wait no longer sits in front of A's work. What remains is that **the two stages are almost exactly balanced, so
+a one-position lookahead hides one of them and not both**: with the stages this close, the steady state is
+`max(87.5, 89) + jitter`, and 179 ms is roughly twice that - **so the overlap is landing about half the time.**
+
+**Where the objective stands, and the number moved for the first time.** A1-A5 built and gated; the fork's suite green
+with the quiet switch in and the lookahead in; the exactness gate at **0 of 2048**; the transport, pairing, seed,
+counts, frame shape and token edge all verified; **a two-token ring whose first token is right and whose second is
+not**; and **the throughput gap now 5.59 tok/s against the 21 tok/s target, down from 3.4, with the residue measured
+as the peer's whole step rather than as an unexplained 207 ms.**
