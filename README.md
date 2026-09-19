@@ -16,8 +16,8 @@ Run large >120B MOE LLM on a distributed network of Mac Mini/Studio's using **ex
 
 ## Project Status
 
-- Single nodes in a 4 cluster Mac Mini cluster exceed decode tok/s over the sister project TinyTitan by 10-15% so the new engine build from scratch is performing better than expected.
-- The network stack is working and performing well on raw TCP.
+- Single nodes in a 4x Mac Mini cluster exceed decode tok/s over the sister project TinyTitan by 10-15% so the new engine build from scratch is performing better than expected.
+- The network stack is working and performing well over raw TCP on 1GBit LAN.
 - Cluster tok/s is still below a single node - the core work in this project.
 
 ## License
