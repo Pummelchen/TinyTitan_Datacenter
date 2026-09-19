@@ -15753,3 +15753,39 @@ whose unit is unknown is not evidence).
 `D441` needs answered - whether the expert read is *not predicted* or *not hideable* - and **answering it requires
 reading what `ExpertPrefetchRing.summary` actually counts before using any of it.** That is the next step, and it is a
 five-minute read of one file rather than a measurement.
+
+## D445 - The expert read is latency-bound and the ring is not submitting it: `D441`'s question is answered, and it is the cheap answer
+
+**`D444` printed the ring's self-report and refused to read it until its units were known. They are known now, and
+they are in the format string itself** (`ExpertPrefetchRing.swift:135`):
+
+    free/submitted/inflight/held   are PER-BEGIN averages (each divided by `begins`)
+    spec_ops                       is `reclaimedOps` - reclaimed operations
+    spec_queue_ms / spec_load_ms   are PER-OP averages (divided by `reclaimedOps`)
+
+**Which corrects the reading I nearly recorded.** `spec_load_ms=1.83` is **1.83 ms for one expert read**, not a total
+spread over ten thousand. And that makes the two instruments agree:
+
+    1045 reclaimed ops x 1.83 ms = 1912 ms
+    profiler's `expert io await`   2127.5 ms          -> agree to 10%
+
+**So the expert read is LATENCY-bound: 1.83 ms per read with a queue wait of 0.01 ms.** It is not bandwidth, it is
+not the SSD's throughput, and it is not the page cache - it is one blocking round trip per expert, 32.7 of them per
+token, 0.92 begins per layer per token.
+
+**And the ring is not submitting them.** `submitted` is a **per-begin average printed to two decimals and it is
+`0.00`** - which bounds the whole run's prefetch submissions at roughly six, against 1045 reclaimed operations. Held is
+0.76 per begin and in-flight 0.11. **The prefetch ring begins, holds a little, and submits essentially nothing, so
+every expert read is issued inline and blocks.**
+
+**Which answers `D441`'s open question, and answers it the encouraging way.** That question was: *is the expert read
+not predicted, or predicted and still not hideable?* **It is not being submitted.** So the ~1912 ms of await is not a
+law of the hardware and not a dependency the layer loop imposes - **it is a read that is being issued too late,
+one round trip at a time.** If the ring submitted what it already knows it needs, that time is overlappable with the
+GPU work, which is `D441`'s lever 1 - and **it may not require the layer-loop restructure at all.**
+
+**And that is why the units mattered.** Read as a total, `spec_load_ms=1.83` looked like 0.18 microseconds per expert
+and therefore like a cache hit - the opposite conclusion. **A number whose unit is unknown is not evidence (`D444`),
+and a number whose unit is misread is worse than no number (`D445`).** The next step is a code read of the ring's
+submit path, not another measurement: what gates `submit`, and why it fires fewer than six times in a run that begins
+1178 times.
