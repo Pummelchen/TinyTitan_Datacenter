@@ -282,7 +282,12 @@ extension RealForwardRunner {
                                      // reproduce the chunk-major pass exactly.
                                      layerRange: Range<Int>? = nil,
                                      residual: MTLBuffer? = nil) async throws {
-        let layers = layerRange ?? 0..<cfg.numLayers
+        // THREE SOURCES, IN ORDER OF PRECEDENCE, and the first is why this went wrong. `layerRange` here is a
+        // PARAMETER with a default of nil - a caller can ask for one layer - and it SHADOWED the runner's property
+        // of the same name, so `self.layerRange` was never read on this path at all. The decode loop reads the
+        // property; prefill read the parameter; and a node told to own 0..<20 ran all forty layers, reached the
+        // epilogue, and therefore never published a hidden state (D329).
+        let layers = layerRange ?? self.layerRange ?? 0..<cfg.numLayers
         let runPrologue = layers.lowerBound == 0
         let runEpilogue = layers.upperBound == cfg.numLayers
         let scratch = residual.map { scratch.withResidual($0) } ?? scratch
