@@ -56,10 +56,13 @@ near 26.6 ms.
 - `swift test --no-parallel` on the runtime.
 - The release gates: force-cast **ok**, func-length **ok** (0 baselined, 0 new, 2186 scanned),
   unchecked-sendable **ok**, arch-path **ok**.
-- A clean scratch release build, and the archive
-  `tinytitan-1.1-macos-arm64.tar.gz`, sha256: `SHA256_PENDING`.
-  (The digest is filled in at publish time: a clean rebuild is not byte-reproducible, so a
-  digest quoted here goes stale the moment the archive is rebuilt.)
+- A clean scratch release build. The archive is:
+
+  `tinytitan-1.1-macos-arm64.tar.gz` sha256: `SHA256_PENDING`
+  `tinytitan-1.1-macos-arm64.tar.gz` size: `ARCHIVE_BYTES_PENDING` bytes
+
+  (Both fields are filled in at publish time. A clean rebuild is not byte-reproducible, so a
+  digest or size quoted here would go stale the moment the archive was rebuilt.)
 - **No model, dataset or dependency was fetched to make anything pass.**
 
 ## Not checked, and named here as the gate requires
