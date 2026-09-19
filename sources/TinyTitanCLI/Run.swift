@@ -316,6 +316,11 @@ public func run(args: Args,
                 throw ArgsError.invalidValue(flag: "--layer-range", value: spec)
             }
             runner.layerRange = lo..<hi
+            if try PipelineWiring.installIfConfigured(on: runner, exitLayer: hi) {
+                FileHandle.standardError.write(Data("[pipeline] stage installed for layers \(lo)..<\(hi)\n".utf8))
+            }
+            // `exitLayer` is the layer this stage's output corresponds to, which is the UPPER bound: a stage running
+            // 0..<20 publishes the state after twenty layers, and that is what its successor seeds from.
         }
 
         if let servePort = args.shardServePort {
