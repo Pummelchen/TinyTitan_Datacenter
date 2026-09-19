@@ -12563,3 +12563,36 @@ original code had.
 **Two rounds have now gone into this one row count**: `D353` found it, and this round reverted a plausible fix for
 it. **The finding stands and the code is back to the state that produced it**, so nothing is lost except a round -
 and the shape of the correct fix is now pinned rather than guessed at.
+
+## D355 — The row count travels now, and the frame is still one row: `t` is 1 where the publish reads it
+
+The count is plumbed from the publish site to the wire, and the measurement is unambiguous about what it did:
+
+    A: send pos=0, 5, 6, 7   values=2048      <- still one row per frame
+    B: recv pos=0, 5   recv_fail=0
+    B's answer: whitespace, against a single node's ' Paris, a city'
+
+**So `t` is 1 where the post-loop publish sets `publishedRows`.** The prompt is five tokens, so the publish is seeing
+**the last chunk of a chunked prefill rather than the whole prompt** - which is a different question from the one this
+change was about, and it is the next one.
+
+**What is in place and correct, and would have been needed either way.** `publishedRows` is a stored `Int` on
+`RealForwardRunner` - an extension cannot hold state and the protocol lives in the CLI (`D348`), but a plain `Int`
+needs no import, so the module graph is untouched. `onHidden` sends `max(1, stage.publishedRows)` rather than
+inferring a count from `buffer.length`, which `D354` established is wrong because **capacity is systematically not
+content** when the buffers are deliberately oversized. The prefill's publish sets it to `t`, the decode hook sets it
+to 1 so a chunk count cannot leak into the first decode step, and both handoff buffers are now allocated for 4096
+rows - **which is only safe because the count travels separately**, and the first attempt at oversizing without it
+sent 16 MB and failed immediately.
+
+**The pattern across these four rounds is worth naming, because it is not the usual one.** Each attempt was
+*correct* and each moved the failure rather than fixing it: `D352` found the publish was in a closure with no call
+site; `D353` found the row count; `D354` reverted a fix that inferred the count from a buffer; this round plumbed
+the count and found `t` is not what the publish sees. **Every step was right and none of them was sufficient, which
+is what a chain of real faults looks like** - as opposed to the earlier rounds, where a single wrong inference kept
+producing the same symptom.
+
+**Where the objective stands.** The ring moves hidden states between two machines with no expert weights on the
+wire, every frame arrives aligned and no receive fails, and **the answer is wrong**: whitespace where a single node
+gives ` Paris, a city`. **The end-to-end claim is not met, and the remaining fault is in what a prefill chunk
+publishes rather than in the transport.**
