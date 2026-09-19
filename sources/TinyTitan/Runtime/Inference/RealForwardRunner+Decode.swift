@@ -76,8 +76,7 @@ extension RealForwardRunner {
             let ms = Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
                             - handoverStart) / 1e6
             if ms > 1 {
-                FileHandle.standardError.write(Data(
-                    "[wire] releaseModels \(String(format: "%.1f", ms)) ms\n".utf8))
+                Self.diag("[wire] releaseModels \(String(format: "%.1f", ms)) ms\n")
             }
         }
         // Snapshot expert I/O at the handover so decode's share can be
@@ -195,8 +194,7 @@ extension RealForwardRunner {
         // WHICH STATE THIS STEP CONSUMED (D390). The token flow is verified aligned, so the one-step question is
         // now which residual each decode step starts from - the seed its prefill claimed, or a fresh frame - and
         // the position it was consumed for.
-        FileHandle.standardError.write(Data(
-            "[seed] decode pos=\(position) fromSeed=\(hiddenSeeded)\n".utf8))
+        Self.diag("[seed] decode pos=\(position) fromSeed=\(hiddenSeeded)\n")
         if hiddenSeeded {
             // ALREADY SEEDED BY OUR OWN PREFILL for this position, so consuming a frame here would advance a second
             // time and shift every later token by one (D388). The flag is cleared so the NEXT step fetches normally.
@@ -1947,5 +1945,16 @@ extension RealForwardRunner {
                 + "gpu_attn_us=\(Int(attnUs)) gpu_tail_us=\(Int(tailUs)) "
                 + "gpu_routed_us=\(Int(prevRoutedUs))")
         }
+    }
+}
+
+
+extension RealForwardRunner {
+    /// THE DECODE PATH'S OWN QUIET GATE (D401). `TinyTitan` does not depend on `TinyTitanDecodeProtocol`, so it
+    /// cannot call `PipelineStage.note` - and widening the module graph for a diagnostic would be the wrong trade.
+    /// Same environment variable, read here instead.
+    static func diag(_ message: String) {
+        guard ProcessInfo.processInfo.environment["TINYTITAN_QUIET"] == nil else { return }
+        FileHandle.standardError.write(Data(message.utf8))
     }
 }
