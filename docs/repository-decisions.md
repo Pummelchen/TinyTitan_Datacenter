@@ -15459,3 +15459,34 @@ what the 21 tok/s target has to be reasoned against.
 single node's token sequence byte for byte, and the full suite is green. **Throughput is now measured honestly for the
 first time: 7.0 tok/s in a two-stage ring against 21 wanted across four stages, with the gap identified as the serial
 handoff rather than as anything about the stages themselves, which are exactly the law.**
+
+## D436 - The four-stage chain runs on all four nodes, and the last fault was a defaulted role
+
+**The run, with the user's prompt, 128 tokens, temperature 0:**
+
+    node3  0:10  source   5.535 tok/s
+    node1 10:20  both     5.709 tok/s
+    node2 20:30  both     5.872 tok/s
+    node4 30:40  sink     6.016 tok/s   (head, pure listener, never opened an outbound socket)
+
+**All four stages balanced to within 9%, and the head's text matches the single-node reference.** So the answer is
+**6.016 tok/s on four Mac minis** - and honestly **a single node does 7.049**, so four nodes are currently *slower*
+than one.
+
+**The fault that blocked this for two rounds was one defaulted variable:**
+
+    let role = env["TINYTITAN_STAGE_BACK_ROLE"] ?? (listen != nil ? "source" : "sink")
+
+**A stage with a `BACK_LISTEN` was assumed to be a reader.** That is right when the successor dials it - how every
+two- and three-stage ring was wired - and wrong for the listener head, where that socket is the one the head **writes**
+its token into. node4 installed no token sink at all, and both ends waited on each other forever.
+**`TINYTITAN_STAGE_BACK_ROLE=sink` was the entire fix.**
+
+**And the diagnostic that found it was a print on the wrong side of an `if`.** `[ring] published` was written after
+the publish branch, so it printed whether or not a sink existed - **it reported success for a publish that never
+happened.** The tell was the *absence* of `[tok] chose`, printed **inside** the sink closure. **A probe outside the
+branch it observes answers a question about the wrapper, not the thing** - `D359`/`D403` again.
+
+**Where the objective stands.** Correctness closed; four-stage chain running on all four Mac minis and producing the
+reference text at 6.016 tok/s. The target is 21, and the measured position is that **adding stages costs throughput
+rather than adding it** - one node 7.049, three 6.487, four 6.016 - so the remaining work is the serial handoff.
