@@ -71,8 +71,8 @@ re-verifying would be a false claim.
   ```
   ### Checksum
 
-  `tinytitan-X.Y-macos-arm64.tar.gz` sha256: `SHA256_PENDING`
-  `tinytitan-X.Y-macos-arm64.tar.gz` size: `ARCHIVE_BYTES_PENDING` bytes
+  `TinyTitan_Datacenter-X.Y-macos-arm64.tar.gz` sha256: `SHA256_PENDING`
+  `TinyTitan_Datacenter-X.Y-macos-arm64.tar.gz` size: `ARCHIVE_BYTES_PENDING` bytes
   ```
 
 Neither placeholder is one to forget: `release.sh --publish` substitutes both

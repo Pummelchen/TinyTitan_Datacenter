@@ -58,8 +58,8 @@ near 26.6 ms.
   unchecked-sendable **ok**, arch-path **ok**.
 - A clean scratch release build. The archive is:
 
-  `tinytitan-1.1-macos-arm64.tar.gz` sha256: `SHA256_PENDING`
-  `tinytitan-1.1-macos-arm64.tar.gz` size: `ARCHIVE_BYTES_PENDING` bytes
+  `TinyTitan_Datacenter-1.1-macos-arm64.tar.gz` sha256: `SHA256_PENDING`
+  `TinyTitan_Datacenter-1.1-macos-arm64.tar.gz` size: `ARCHIVE_BYTES_PENDING` bytes
 
   (Both fields are filled in at publish time. A clean rebuild is not byte-reproducible, so a
   digest or size quoted here would go stale the moment the archive was rebuilt.)

@@ -211,7 +211,7 @@ on the wrong one.
   literal in the tree is `CFBundleVersion` / `CFBundleShortVersionString` in
   `tools/install_tinytitan.sh`; the wiki `Changelog.md` carries the announcement and
   the README carries none.
-- **Artifacts** `tinytitan-X.Y-macos-arm64.tar.gz` + `.sha256`, containing **six
+- **Artifacts** `TinyTitan_Datacenter-X.Y-macos-arm64.tar.gz` + `.sha256`, containing **six
   executables** — `TinyTitanServer`, `TinyTitanCLI`, `TinyTitanMac`,
   `TinyTitanDecodeService`, `TinyTitanRepack`, `TinyTitanBench` — plus the
   `.bundle` resources, licence and notices.

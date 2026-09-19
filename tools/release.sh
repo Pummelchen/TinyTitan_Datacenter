@@ -43,8 +43,8 @@ done
 
 VERSION="${TAG#v}"
 STAGE_ROOT="$ROOT/.build/releases/tinytitan-release-$VERSION"
-STAGE="$STAGE_ROOT/tinytitan-$VERSION-macos-arm64"
-ARCHIVE="$STAGE_ROOT/tinytitan-$VERSION-macos-arm64.tar.gz"
+STAGE="$STAGE_ROOT/TinyTitan_Datacenter-$VERSION-macos-arm64"
+ARCHIVE="$STAGE_ROOT/TinyTitan_Datacenter-$VERSION-macos-arm64.tar.gz"
 SCRATCH="$STAGE_ROOT/build"
 
 cd "$ROOT"
@@ -279,7 +279,7 @@ These binaries are NOT code-signed or notarized. macOS Gatekeeper will refuse
 them on first run. Either build from source, or clear the quarantine attribute
 yourself after verifying the checksum published with this archive:
 
-  xattr -dr com.apple.quarantine /path/to/tinytitan-$VERSION-macos-arm64
+  xattr -dr com.apple.quarantine /path/to/TinyTitan_Datacenter-$VERSION-macos-arm64
 
 No model weights are included. TinyTitanRepack defaults to Ornith 1.5 8-bit (about
 36.9 GB); 4-bit remains available explicitly. The runtime defaults to standard
@@ -374,7 +374,7 @@ fi
 step "publish"
 gh release create "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" \
   --repo "$REPO" \
-  --title "TinyTitan $VERSION" \
+  --title "TinyTitan Datacenter $VERSION" \
   --notes-file "$COMPACT_NOTES" \
   --latest || die "gh release create failed"
 gh release view "$TAG" --repo "$REPO" --json url,assets \
