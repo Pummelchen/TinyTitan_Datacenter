@@ -378,8 +378,24 @@ extension RealForwardRunner {
         // Only the first layer group seeds the residual. Layer-major
         // calls this once per (layer, chunk); re-embedding on every layer
         // would reset the residual the layers are accumulating into.
-        if runPrologue {
-            if let preparedHidden {
+        // SEED WHENEVER THERE IS A SOURCE, not only when the prologue runs (D349). A middle stage in a pipeline has
+        // runPrologue false by construction - it owns layers 20..<40 and does not embed - and gating the seed on the
+        // prologue meant it never seeded at all, so its first chunk accumulated into whatever scratch.hidden held.
+        // The cross-machine run measured exactly that: stage B's sampler reported NaN across the whole row, which
+        // was the poisoned landing buffer arriving intact rather than a new fault.
+        //
+        // The source is `preparedHidden` when the caller supplied one (an MTP draft's fused hidden) and `hiddenIn`
+        // otherwise, which is what a pipeline stage receives. One row or many: the copy is bounded by the SOURCE's
+        // length rather than by `t`, because a stage whose predecessor sent one row per token must not be read as
+        // though it had sent a full chunk - an over-read here is the class of fault D320 took three rounds to find.
+        if runPrologue || preparedHidden != nil || hiddenIn != nil {
+            // PULL IT HERE, not at install time. A stage must receive when its chunk BEGINS: the predecessor
+            // publishes its residual after ITS prefill, which happens after this process has already started and
+            // after it has accepted the connection. Filling `hiddenIn` at install time would read a buffer the
+            // predecessor has not written yet - and `nextHidden` blocks until the frame arrives, which is the
+            // synchronisation the pipeline needs rather than a race it hopes to win.
+            let source = preparedHidden ?? nextHidden?(startPosition) ?? hiddenIn
+            if let preparedHidden = source {
                 // The caller hands over `[t, D]` rows -- an MTP draft's fused
                 // hidden. A hyper-connection stack starts every stream from that
                 // same vector, so it lands in the narrow staging buffer and is
@@ -392,7 +408,7 @@ extension RealForwardRunner {
                           sourceOffset: 0,
                           to: target,
                           destinationOffset: 0,
-                          size: t * D * MemoryLayout<Float16>.stride)
+                          size: min(t * D * MemoryLayout<Float16>.stride, preparedHidden.length))
                 blit.endEncoding()
                 if hyperConnection != nil {
                     try elementwise!.encodeHCExpand(
