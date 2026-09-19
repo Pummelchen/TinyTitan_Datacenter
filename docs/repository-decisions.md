@@ -10743,3 +10743,37 @@ a firmer boundary around it.
 that the answer depends on how the block is built, and the sister project has already built it. **The efficient
 move is to read its attention graph** - what it fuses, what it keeps as separate layers, and whether softmax is
 inside the accelerated region - rather than to guess a third time.
+
+## D304 — Baseline preserved and Design A scoped: the layer range is one loop, and prefill already has the precedent
+
+The operator directed the work to Design A, with the existing code base preserved first. **Preserved, and the tag is
+the recovery path rather than a copy:** the fork at `pre-design-a-baseline` (`a15d25b` - the expert-sharding engine
+with a correct three-node exchange measured at 0.85x a single node) and main at `pre-design-a-baseline` (`8526edd`
+- the four 35B tests and the design document), with bundles in `~/.tt-backup` and on the node3. **Nothing in Design
+A modifies the expert-sharding path**, so the baseline is a tag rather than a fork.
+
+**And Design A's smallest change is smaller than the design document implied.** The decode loop is one line:
+
+    RealForwardRunner+Decode.swift:192      for L in 0..<cfg.numLayers
+
+**A node owning ten layers is that loop iterating a sub-range.** And the precedent already exists in the tree:
+`RealForwardRunner+Prefill.swift:452` iterates `for L in layers` - **prefill is already layer-parameterised**, so
+the shape of the change has been used in this code base before.
+
+**The plan is written to `docs/design-a-plan.md`** with the seams located (the decode loop, the activation buffer,
+the head's last-stage placement, and the transport reused from `DecodeTCPSocket`/`ShardPeerChannel`), five stages
+A1-A5, and the gate for each. The first is deliberately the smallest and the most verifiable:
+
+**A1 - a `layerRange` the decode loop honours, defaulting to all layers.** A node given `0..<10` must produce a
+hidden state; a node given `0..<40` must produce exactly the tokens it produces today. **Bit-identity on the
+unchanged configuration is the gate**, which is the same exactness discipline the whole record uses and the reason
+the layer range can be trusted once the pipeline is built on it.
+
+**The falsifiers are named before the build**, because that is what the last ten rounds taught: a stage time above
+**48 ms** means streaming is not hiding behind compute and the projection's `max()` is wrong; a hidden-state frame
+that does not reproduce the single-node trace when the range is made contiguous means the design is not exact; and a
+per-stage cache hit rate far below the measured **68.1%** breaks the streaming term.
+
+**Nothing is claimed about Design A's throughput.** The ~31 tok/s is a projection from measured inputs, section 12
+of the design document says so, and the 35B's ten layers is 4.53 GB against ~4.5 GB of usable memory - **so a 35B
+result will flatter the design and must be reported with the cache capped.**
