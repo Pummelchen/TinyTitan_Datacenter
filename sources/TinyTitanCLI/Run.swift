@@ -316,6 +316,15 @@ public func run(args: Args,
                 throw ArgsError.invalidValue(flag: "--layer-range", value: spec)
             }
             runner.layerRange = lo..<hi
+            // BIND BEFORE CONNECT, and the order is load-bearing rather than tidy. `installReverseEdge` is what
+            // binds this stage's back-listen port, and `installIfConfigured` is what connects the forward edge to a
+            // successor that may not have bound yet. If the connect came first, a stage whose successor accepts
+            // immediately - which it does, the moment its model is loaded - would then try its own back-connect to a
+            // port this stage has not bound, and BOTH sides would wait for the other. The first sequence run
+            // deadlocked exactly there: A never reached its back-listen, and B never finished.
+            if try PipelineWiring.installReverseEdge(on: runner) {
+                FileHandle.standardError.write(Data("[pipeline] reverse edge installed\n".utf8))
+            }
             if try PipelineWiring.installIfConfigured(on: runner, exitLayer: hi) {
                 FileHandle.standardError.write(Data("[pipeline] stage installed for layers \(lo)..<\(hi)\n".utf8))
             }

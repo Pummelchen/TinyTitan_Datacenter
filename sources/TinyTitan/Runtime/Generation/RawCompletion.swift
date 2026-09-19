@@ -326,7 +326,29 @@ public func runRawCompletion(producer: any LogitProducer,
             let now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
             fusedRunner.totalLoopOtherNanos &+= now - loopMark
         }
-        try await producer.produce(token: tokenID, position: position, slot: slot,
+        // THE RING'S BACKWARD EDGE, USED (D361). A stage that SAMPLES publishes the token it chose; a stage that
+        // EMBEDS replaces the token it would have used with the one that came back. Only one of the two hooks is
+        // non-nil on any given stage - the last stage connects back and the first one listens - so calling both is
+        // safe and neither needs a role check.
+        //
+        // The order matters and is the reason this is one line rather than two: the sink carries what was SAMPLED,
+        // so it must run before the source overwrites `tokenID`. Doing it the other way would publish the token
+        // this stage was told to use as though it had chosen it.
+        // A CAST RATHER THAN A PROTOCOL MEMBER, deliberately. `producer` is `any LogitProducer`, and putting the two
+        // hooks on that protocol would oblige every conformer and every fake to implement them - which is precisely
+        // the cost D359 recorded, where a protocol change left a stale fake breaking the suite for four rounds.
+        // These two properties belong to the ring, not to the act of producing logits.
+        var stepToken = tokenID
+        if let ring = producer as? RealForwardRunner {
+            ring.nextTokenSink?(tokenID, 0)
+            if let source = ring.nextTokenSource {
+                let incoming = source(position)
+                // -1 is the sentinel for "nothing has come back yet" (D361), and it is distinguishable from 0
+                // because 0 is a legitimate token id.
+                if incoming >= 0 { stepToken = incoming }
+            }
+        }
+        try await producer.produce(token: stepToken, position: position, slot: slot,
                                    into: scratch.logits)
         loopMark = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
         position += 1
