@@ -43,9 +43,15 @@ struct PipelineLinkTests {
         #expect(count == 5, "count decoded as \(count), so the offset is not the third u32")
     }
 
-    // The socket round-trip is NOT here yet and its absence is deliberate (D340). A version that ran a
-    // listener and a client as two detached tasks in one process hung rather than failed, and a hanging test
-    // blocks the suite - which is worse than a red one. The codec test above is the one that catches the defect
-    // that actually cost a round (reading the reserved word instead of `count`), and it needs no socket. The
-    // round-trip belongs in a two-process test, where neither side can be starved or deallocated by the other.
+    // THE SOCKET ROUND-TRIP IS NOT HERE, AND THE REASON IS NOW MEASURED RATHER THAN EXPECTED (D342).
+    //
+    // It was restored once the `count` offset was fixed, on the theory that the hang had been the sender's task
+    // dying inside `decode` and leaving the reader blocked. It still hung, for over fifteen minutes, with the
+    // offset correct - so the offset caused the earlier ECONNRESET and did NOT cause the hang. Two detached tasks
+    // in one process is the wrong instrument for this: the listener blocks in `accept` inside a task the test also
+    // awaits, and a failure on either side leaves the other waiting on a socket forever.
+    //
+    // The codec test above is the one that catches the defect that cost D338 a round, and it needs no socket. A
+    // real round-trip belongs in two processes, where neither side can starve the other and a crash is an exit
+    // status rather than a deadlock.
 }
