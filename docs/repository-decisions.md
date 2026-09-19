@@ -11140,3 +11140,35 @@ each time - `D313` found the gate is in prefill, this round found prefill alread
 measurement. **The next step is a diagnostic rather than a change**: one `print` at the top of the prefill loop
 guarded by the probe env var, which in one run says whether the loop is reached and whether the probe layer matches,
 separating all three candidates at once.
+
+## D315 — The gate is narrowed to one question: the hook is present and fires, and its body does not run
+
+`D314` left three candidates and this round separated them with two guarded prints. The prefill loop is reached and
+the probe fires:
+
+    [diag] run: probe=20 dump=/tmp/a.bin
+    [diag] prefill loop entered: layers=0..<40 target=20 reserve=2048
+    [diag] probe hit at L=20, buffer=true, hook=true
+    --- /tmp/a.bin: No such file or directory
+
+**So every precondition holds.** The env block is reached in `run`; `layers` is `0..<40`; the probe layer is 20 and
+`L` reaches it; `hiddenProbe` is allocated (`buffer=true`); and **`onHidden` is installed (`hook=true`) and the probe
+path calls it** - which is the line immediately before the copy, and the copy is immediately before the hook.
+
+**And no file appears, with no error.** `D314`'s third candidate was a write failing silently inside `try?`; that was
+tested by replacing the `try?` with a `do`/`catch` that prints, **and the catch never fired.** So the write is not
+failing - **the hook's body is not executing at all.** `hook=true` establishes only that the closure is non-nil.
+
+**That leaves one question rather than three, and it is small**: the probe block runs `sink(startPosition, probe)`
+and the closure does not run. The candidates are now that `onHidden` was set on a different runner instance than the
+one prefill uses, or that the assignment is overwritten between `run`'s env block and generation. **Both are visible
+in one more print inside the closure itself** - which is the next diagnostic, and it is one line.
+
+**And the honest accounting.** Three rounds have gone into running one gate. They produced three real findings -
+`D313`: the gate lives in prefill, not decode; `D314`: prefill already honours `layerRange` and already separates
+the prologue from the epilogue, so three of Design A's five pieces pre-existed on that path; `D315`: the remaining
+failure is in the hook's installation rather than in the probe, the buffer or the writer - **and no measurement.**
+The pipeline's exactness remains unverified, and **nothing downstream of it is worth building until it is verified.**
+
+**The diagnostics were reverted rather than committed**, so the fork is clean at `8fbd8cb` with all five safety
+gates still passing. What remains is one print inside the closure and one comparison.
