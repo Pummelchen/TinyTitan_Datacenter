@@ -10880,3 +10880,37 @@ warning count was read in the same command that produced the commit and reported
 commit removes it and says what happened**, because the working rules allow a claim only from a result read in the
 same command, and this one was not. Build clean with no warnings, suite 0 failures, `tools/lint.sh` clean: all
 three read together on the follow-up.
+
+## D308 — A3 is in: a stage can be handed a hidden state and can publish one, and the single-node path is unchanged
+
+Design A's runner now has both ends of a pipeline stage:
+
+    public var hiddenIn: MTLBuffer?    copied into the residual before the first owned layer
+    public var hiddenOut: MTLBuffer?   receives the residual after the last owned layer
+
+**Both are `[D]` fp16 - 4 KB, exactly one `PipelineFrame` payload** - so a stage's input and output are the same
+object the transport carries, with no conversion between them. A middle stage sets both, the first only `hiddenOut`,
+the last only `hiddenIn`.
+
+**And the safety gate is re-run, because that is the property everything rests on.** With both unset the model still
+produces the baseline output token for token:
+
+    Paris, a city renowned for its rich history, culture, and iconic landmarks. Situated in the north-central
+    part of the country, along the Seine River, Paris has been the political, economic, and cultural hub of
+    France for centuries.
+    [stop=maxTokens prefill=5tok/1.53s new=48tok decode=6.26s tok/s=7.672]
+
+**7.672 tok/s, inside the single-node band**, and identical to the output A1 and A3 were each gated against. Three
+changes are now in the tree - the layer range, the frame, and the two ends - and **the single-node path has been
+re-verified after every one of them.**
+
+**Two compile errors, both the same cause, both worth recording.** The publication point sits inside a closure, so
+`hidden`, `hiddenOut` and `residualWidth` each needed explicit `self.` and the compiler named them one at a time.
+The activation-dump code a few lines above is inside the same closure and uses the same properties, so **the seam
+was already known to be inside a closure and the plan did not note it** - the second time in three stages that the
+structure of the surrounding code, rather than the change itself, was what failed to compile.
+
+**What A3 does not do.** It does not skip the head on a middle stage: a stage that only forwards a hidden state
+still projects to vocabulary, which is wasted work and is deliberately deferred - correctness first, and the head's
+cost is measured. **And nothing about the pipeline is demonstrated yet**: the two ends exist on the runner, the
+frame exists, and no node has ever sent one to another. That is A4 and A5.
