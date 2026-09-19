@@ -11895,3 +11895,38 @@ for either, but **the buffer that carries it is only sized for one token today**
 prefill is simpler and slower, `t`-row handoff is faster and needs a buffer whose size depends on the chunk. **The
 thing worth writing down is that the choice exists and was not visible until the seed path was read**, and that the
 resource is `t x D x 2` bytes of shared memory per stage rather than the `D x 2` the property provides.
+
+## D337 — The handoff is t x D, decided by arithmetic: 5.3 MB and 45 ms for the longest prompt in the record
+
+`D336` left the handoff shape as a choice between `D` (one token, per-token prefill on middle stages) and `t x D`
+(one chunk, one pass per stage). **It is decided: `t x D` for prefill, with the existing `D` decode handoff
+unchanged**, and the reason is that the wider handoff is nearly free where the narrow one is not.
+
+    tokens     bytes      on the wire    per token
+         5    0.02 MB         0.2 ms       4 KB
+       128    0.52 MB         4.4 ms       4 KB
+      1321    5.41 MB        45.9 ms       4 KB
+      4096   16.78 MB       142.4 ms       4 KB
+
+**Even the longest prompt in this record - 1,321 tokens, the prefill measurement `D330` took - is 5.4 MB, or 46 ms
+on the measured 117.8 MB/s link.** That is one handoff per stage boundary and it is paid once per prompt.
+
+**The alternative is not comparable.** Per-token prefill turns a three-boundary prompt into **3 x 1,321 = 3,963
+single-token forwards**, each of which is a full pass over that stage's layers with all the per-call overhead this
+engine has already measured - command buffers, dispatch, the sampling path. **The measured 0.18 s chunked prefill
+becomes something in the minutes**, to save 46 ms of wire per boundary.
+
+**And the four-token-per-position case is worth stating because it is the design's own claim.** The hidden state is
+4 KB per token at `D` = 2048 in fp16, so a chunk of `t` tokens is `4t` KB - **the twelve kilobytes per token quoted
+in `docs/distribution-design.md` is the four-kilobyte state plus its overhead, and the arithmetic above confirms
+the 4 KB figure directly.**
+
+**What this costs, concretely, and it is the thing to remember.** `hiddenIn` is declared as a buffer holding `D`
+floats - **one row** - so a `t`-row handoff needs it sized from the chunk, `t x D x 2` bytes of shared storage per
+stage, allocated per prefill rather than once at construction. **`hiddenOut` has the same shape problem in mirror
+image**, and the `PipelineFrame` header already carries a `count` field that this design now has a use for: **it is
+the number of rows in the payload**, which is what lets a receiver size its buffer before reading.
+
+**And the decode path is untouched, which is the point.** `D336` found that decode already seeds from `hiddenIn`
+correctly for one row; **that is the steady state of a pipeline and it already works.** Only the prompt's entry into
+each middle stage needs the wider form, and it needs it once.
