@@ -14920,3 +14920,38 @@ the `both` role; the exactness gate at **0 of 2048**; the transport, pairing, se
 all verified; **a two-stage ring measured to convergence at 17.1 and 19.1 tok/s**; **the `both` role implemented and
 the binary deployed to three nodes**; and **the three-stage chain still unrun, with its environment recorded and its
 launch procedure corrected.**
+
+## D420 - The three-stage chain reaches its serve blocks; node4 has no model install
+
+**Launched as separate commands per node, which is what D400 and D419 both said and neither did:**
+
+    node4  26:40  sink     ->  error: installed tokenizer is missing chat_template.jinja
+    node1  13:26  both     ->  [shard] probe: reached the serve block
+    node3   0:13  source   ->  [shard] probe: reached the serve block
+
+**And the cause is not the chain.** Comparing every node's model directory directly:
+
+    node3:  manifest.json model_weights.bin packed_experts tokenizer verified-install.json
+    node1:  manifest.json model_weights.bin packed_experts tokenizer verified-install.json
+    node4:  (empty)
+
+**node4 has no install at all.** The two stages that hold the model reached their serve block and waited, exactly as
+the wiring intends; the one stage that owns the head had nothing to load. **So the three-stage chain reached the
+correct starting line rather than failing in the code** - a better place than D419 left it.
+
+**The remedy is a choice between two things.** Either **copy the install to node4** - a large payload, and the kind of
+operation this node's rules call heavy - **or run three stages across the two nodes that have the model**, putting two
+stages on one of them. **The second needs no transfer and no new code**: the ports are per-process and the middle
+stage's four variables are already proven to parse.
+
+**And the environment is now fully recorded, which is the real product of these two rounds:**
+
+    0:13   source   STAGE_CONNECT=node1:47701                        BACK_LISTEN=47703
+    13:26  both     STAGE_LISTEN=47701  STAGE_CONNECT=node4:47711    BACK_LISTEN=47702  BACK_CONNECT=node3:47703
+    26:40  sink     STAGE_LISTEN=47711                               BACK_CONNECT=node1:47702
+
+**Where the objective stands.** A1-A5 built and gated; the fork's suite green with the quiet switch, the lookahead and
+the `both` role; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and token edge
+all verified; **a two-stage ring measured to convergence at 17.1 and 19.1 tok/s**; and **the three-stage chain launched
+correctly and reaching its serve blocks, with node4's missing install as the one thing between this design and a
+three-stage measurement.**
