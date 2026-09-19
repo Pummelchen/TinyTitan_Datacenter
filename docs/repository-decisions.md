@@ -13919,3 +13919,36 @@ KV hypothesis is right the first token is right and the second is wrong, and if 
 the exactness gate at **0 of 2048**; **the forward edge, the reverse edge and the state pairing each measured correct
 by their own output** (`D389`, `D390`, `D391`); **and a sequence whose first token is right and whose second is not**,
 with the KV cache named as the remaining candidate and a two-token run as the test that needs no new code.
+
+
+## D393 — D392 is withdrawn: A finished, and my own cleanup killed B before it could
+
+**`D392` recorded that a one-token ring deadlocks. The logs say otherwise, and they were in the same output:**
+
+    A:  [wire] send pos=0 layer=20 values=10240
+        [stop=maxTokens prefill=5tok/0.71s new=1tok decode=0.00s]   alive=no
+    B:  [pipeline] stage installed for layers 20..<40
+        [wire] recv pos=0 got token=0 layer=20 values=10240         alive=no
+
+**A completed its one token.** `new=1tok`, `stop=maxTokens`, clean exit - so there was no deadlock on the first
+stage at all. **And B's last line is the handoff it received.** B was alive at that point and was then **killed by
+the `pkill` in my own cleanup, in the same shell command that printed its log.**
+
+**Which is the seventh withdrawal in this stretch and the first caused by the harness rather than by the inference.**
+`D392` read "neither stage finished" from an empty answer line, **when the stage that mattered had finished and the
+other had been stopped by the command that was reporting on it.** The instrument destroyed its own measurement - **the
+same shape as `D349`'s `nc -z` consuming the accept, and the fifth time in this session that a cleanup or a probe has
+invalidated what it was measuring.**
+
+**And `D392`'s premise was wrong in the same breath as its conclusion.** It argued that a successor generating one
+token never samples, **so the first stage would block forever on a return that cannot come.** A's log shows it did
+*not* block: `produce` ran, the token was emitted, and the process exited. **Whether the first stage should have
+blocked is a design question worth deciding - but it did not, and a record that says it did is worse than no record.**
+
+**What survives is unaffected and was already stated:** A1-A5 built and gated with **1652 tests and 0 failures**, the
+exactness gate at **0 of 2048**, **the forward edge, the reverse edge and the state pairing each measured correct by
+their own output** (`D389`, `D390`, `D391`), and **a sequence whose first token is right and whose second is not** with
+the KV cache as the named candidate.
+
+**And the two-token test still stands as the right one**, because it needs no new code and discriminates exactly as
+the one-token run was meant to - **and this time the cleanup will not start until the logs are read.**
