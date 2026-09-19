@@ -11,7 +11,7 @@
 
 **TinyTitan Datacenter** runs large Mixture-of-Experts language models across a cluster of
 Apple-silicon Macs, streaming routed experts from SSD on the
-[TinyTitan](https://github.com/Pummelchen/TinyTitan) runtime.
+TinyTitan runtime.
 
 What is new in each release lives in this repository's
 [releases](https://github.com/Pummelchen/TinyTitan_Datacenter/releases) and in the wiki's
@@ -121,7 +121,7 @@ tools/server_launcher.sh --client zed --model qwen38 4 --ram 8
   `llm-pi-ai` provider route, which `tools/dsh_route.sh` generates from the
   installed models (and `plugins/dsh-tinytitan` keeps current inside the harness,
   adding a compaction backend that does not think) — see
-  [Connect a client](https://github.com/Pummelchen/TinyTitan/wiki/OpenAI-Compatible-Server#connect-a-client).
+  Connect a client.
 - **Mac app and tools:** TinyTitan also provides a native Mac app, direct CLI
   generation, streaming responses, and client-authorized function-tool calls.
 
@@ -180,12 +180,12 @@ tools/server_launcher.sh --client zed --model qwen38 4 --ram 8
 
 ## Core Links
 
-- [Getting started](https://github.com/Pummelchen/TinyTitan/wiki/Getting-Started)
-- [Features](https://github.com/Pummelchen/TinyTitan/wiki/Features)
-- [Local server and launchers](https://github.com/Pummelchen/TinyTitan/wiki/OpenAI-Compatible-Server)
-- [Runtime controls](https://github.com/Pummelchen/TinyTitan/wiki/Runtime-Controls)
-- [Benchmarks](https://github.com/Pummelchen/TinyTitan/wiki/Benchmarks)
-- [Changelog](https://github.com/Pummelchen/TinyTitan/wiki/Changelog)
+- Getting started
+- Features
+- Local server and launchers
+- Runtime controls
+- Benchmarks
+- Changelog
 - [Repository layout](docs/repository-layout.md) — where everything lives, and
   the naming and file-size conventions
 

@@ -236,7 +236,7 @@ Your apps are talking to it. Now let's handle long documents properly →
 
 The complete API reference — every route, every field, the streaming event
 grammar — is
-[Local Server](https://github.com/Pummelchen/TinyTitan/wiki/OpenAI-Compatible-Server)
+Local Server
 on the wiki.
 
 *TinyTitan 5.1 at the time of writing. Client names are their owners' trademarks;

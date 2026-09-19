@@ -180,7 +180,7 @@ Both are off by default and exist for specific situations:
 
 The complete list of every environment variable and flag, with the
 measurement behind each default, is
-[Runtime Controls](https://github.com/Pummelchen/TinyTitan/wiki/Runtime-Controls)
+Runtime Controls
 on the wiki. This article is the map; that page is the territory.
 
 ## Where to go next

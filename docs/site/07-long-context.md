@@ -117,7 +117,7 @@ Now the feature worth getting excited about →
 **[Memory that remembers](08-memory-that-remembers.md)**
 
 Exact YaRN behaviour and every KV option:
-[Runtime Controls](https://github.com/Pummelchen/TinyTitan/wiki/Runtime-Controls)
+Runtime Controls
 on the wiki.
 
 *Memory figures are computed from the production Qwen/Ornith model topology

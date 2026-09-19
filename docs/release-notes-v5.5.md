@@ -83,7 +83,7 @@ filled in only at publish time.
 
 **Not re-measured for this release:** every performance number in the README,
 including the dense GPU-versus-CPU rows, quoted from the wiki's
-[One Prompt, Every Model](https://github.com/Pummelchen/TinyTitan/wiki/Capital-of-Paris-Smartness)
+One Prompt, Every Model
 page.
 
 ### Checksum

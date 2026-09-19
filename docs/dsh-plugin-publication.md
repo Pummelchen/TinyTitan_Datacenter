@@ -109,8 +109,8 @@ bundle, and `create-dshx` scaffolds a plugin project.
 repository:
 
 ```yaml
-url: https://github.com/Pummelchen/TinyTitan/tree/main/plugins/dsh-tinytitan
-name: Pummelchen/TinyTitan#dsh-tinytitan
+url: https://github.com/Pummelchen/TinyTitan_Datacenter/tree/main/plugins/dsh-tinytitan
+name: Pummelchen/TinyTitan_Datacenter#dsh-tinytitan
 category: model
 description:
   en: 'Keeps a local TinyTitan model server reachable from the harness: refreshes the llm-pi-ai route from the installed models and mounts a compaction backend that does not think.'
@@ -132,7 +132,7 @@ generated preset.
    account with 2FA; the name is unclaimed. The `repository` field is already
    correct. **Not done — it is the operator's account.**
 2. ~~**Add the `dsh-plugin` topic**~~ — **done 2026-09-14** on
-   `Pummelchen/TinyTitan`.
+   `Pummelchen/TinyTitan_Datacenter`.
 3. ~~**Open the one-file PR**~~ — **done 2026-09-14**:
    [PR #5094](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/5094),
    one file, +6/−0. Reviewed by that project's CI and a maintainer; nothing here
@@ -159,7 +159,7 @@ own tooling:
 - `node --test scripts/added-dates.test.mjs` — 3 passed.
 - `SKIP_PUBLISH_CHECKS=1 node scripts/build-site.mjs` with the READMEs
   regenerated the way `pr-check.yml` does it — **3,633 rows × 2 locales**, with
-  detail pages at `docs/p/Pummelchen/TinyTitan--plugins-dsh-tinytitan/` and
+  detail pages at `docs/p/Pummelchen/TinyTitan_Datacenter--plugins-dsh-tinytitan/` and
   sitemap entries in both locales.
 
 One trap worth recording: `build-site.mjs` parses the **generated READMEs**, not

@@ -10,7 +10,7 @@ forum, plus the welcome text below. Each file becomes one forum topic.
 
 ## Why this series exists
 
-The [GitHub wiki](https://github.com/Pummelchen/TinyTitan/wiki) is the precise,
+The GitHub wiki is the precise,
 engineering-facing documentation: exact flags, measured numbers, and the
 limits behind them. It is the right place to look something up.
 
@@ -41,17 +41,17 @@ the way it is, and what it will not do.
 
 | # | File | Title | Part | Wiki reference |
 | --- | --- | --- | --- | --- |
-| — | (welcome, below) | Welcome to the TinyTitan forum | Start here | [Home](https://github.com/Pummelchen/TinyTitan/wiki) |
-| 01 | `01-what-is-tinytitan.md` | What TinyTitan is (in plain words) | About | [Home](https://github.com/Pummelchen/TinyTitan/wiki/Home) · [Features](https://github.com/Pummelchen/TinyTitan/wiki/Features) |
-| 02 | `02-getting-tinytitan-running.md` | Getting TinyTitan running on your Mac | Getting started | [Getting Started](https://github.com/Pummelchen/TinyTitan/wiki/Getting-Started) |
-| 03 | `03-your-first-conversation.md` | Your first conversation | Getting started | [Getting Started](https://github.com/Pummelchen/TinyTitan/wiki/Getting-Started) |
-| 04 | `04-choosing-a-model.md` | Choosing a model: the one real decision | Features | [Features](https://github.com/Pummelchen/TinyTitan/wiki/Features) |
-| 05 | `05-the-dials.md` | The dials: what each setting actually does | Features | [Runtime Controls](https://github.com/Pummelchen/TinyTitan/wiki/Runtime-Controls) |
-| 06 | `06-connecting-your-apps.md` | Connecting your apps (the local server) | Features | [Local Server](https://github.com/Pummelchen/TinyTitan/wiki/OpenAI-Compatible-Server) |
-| 07 | `07-long-context.md` | Long context and the KV cache | Features | [Runtime Controls](https://github.com/Pummelchen/TinyTitan/wiki/Runtime-Controls) |
-| 08 | `08-memory-that-remembers.md` | Memory that remembers, and the guard | Features | [Runtime Controls](https://github.com/Pummelchen/TinyTitan/wiki/Runtime-Controls) · `docs/agent-memory.md` |
-| 09 | `09-why-tinytitan-runs-big-models.md` | Why TinyTitan can run models that "don't fit" | About | [System Design](https://github.com/Pummelchen/TinyTitan/wiki/System-Design) |
-| 10 | `10-what-tinytitan-will-not-do.md` | What TinyTitan will not do (and how to get help) | About | [FAQ](https://github.com/Pummelchen/TinyTitan/wiki/FAQ) |
+| — | (welcome, below) | Welcome to the TinyTitan forum | Start here | Home |
+| 01 | `01-what-is-tinytitan.md` | What TinyTitan is (in plain words) | About | Home · Features |
+| 02 | `02-getting-tinytitan-running.md` | Getting TinyTitan running on your Mac | Getting started | Getting Started |
+| 03 | `03-your-first-conversation.md` | Your first conversation | Getting started | Getting Started |
+| 04 | `04-choosing-a-model.md` | Choosing a model: the one real decision | Features | Features |
+| 05 | `05-the-dials.md` | The dials: what each setting actually does | Features | Runtime Controls |
+| 06 | `06-connecting-your-apps.md` | Connecting your apps (the local server) | Features | Local Server |
+| 07 | `07-long-context.md` | Long context and the KV cache | Features | Runtime Controls |
+| 08 | `08-memory-that-remembers.md` | Memory that remembers, and the guard | Features | Runtime Controls · `docs/agent-memory.md` |
+| 09 | `09-why-tinytitan-runs-big-models.md` | Why TinyTitan can run models that "don't fit" | About | System Design |
+| 10 | `10-what-tinytitan-will-not-do.md` | What TinyTitan will not do (and how to get help) | About | FAQ |
 
 ## The welcome text (for the pinned "Welcome" topic)
 
@@ -77,7 +77,7 @@ the way it is, and what it will not do.
 > hand if you would rather see what is happening.
 >
 > If you want the precise version — exact settings, measured numbers, and
-> the honest limits — the [wiki](https://github.com/Pummelchen/TinyTitan/wiki)
+> the honest limits — the wiki
 > is the professional reference.
 >
 > **Where to go**

@@ -47,7 +47,7 @@ top-level or `@main` entry in `Command/`; `plugins/dsh-tinytitan/` is the DeepSe
 Harness bundle (route writer + quiet compaction). `docs/repository-layout.md` has
 the conventions, `tests/` mirrors `sources/` path for path and never loads a model,
 and user and engineering documentation lives in the
-[GitHub Wiki](https://github.com/Pummelchen/TinyTitan/wiki).
+GitHub Wiki.
 
 ```bash
 swift build -c release
@@ -129,7 +129,7 @@ itself. Do not download a full checkpoint, duplicate the `.gturbo` model, create
 worktree, or purge caches just to run tests, a gate or a release.
 
 For performance results, build release once and follow the
-[community benchmark guide](https://github.com/Pummelchen/TinyTitan/wiki/Benchmarking-Guide)
+community benchmark guide
 exactly. Do not enable experimental controls or profiling. Launch helpers live in
 `benchmark/`; start the server before running any benchmark script.
 
@@ -169,7 +169,7 @@ none of it because the report looks obviously right or obviously wrong:
 
 ## Local server
 
-Follow the [server guide](https://github.com/Pummelchen/TinyTitan/wiki/OpenAI-Compatible-Server)
+Follow the server guide
 for launch commands, health checks, client setup, prompt reuse, tool loops, and
 supported API behavior. Apply the model-process checks above first; never start a
 second model process or terminate an existing one.
@@ -192,7 +192,7 @@ KV format. The HUD shows generation rate, token count, and decode-service memory
 Last run also shows time to first token and I/O. Build the app with its sibling
 `TinyTitanDecodeService`; it never loads a second in-process model. See
 [README](README.md) and
-[Runtime controls](https://github.com/Pummelchen/TinyTitan/wiki/Runtime-Controls).
+Runtime controls.
 
 ## Releases and handover
 

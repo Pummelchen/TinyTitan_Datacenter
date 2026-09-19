@@ -3,7 +3,7 @@
 #
 # Two ways to run it:
 #
-#   curl -fsSL https://raw.githubusercontent.com/Pummelchen/TinyTitan/main/tools/install_tinytitan.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Pummelchen/TinyTitan_Datacenter/main/tools/install_tinytitan.sh | bash
 #   tools/install_tinytitan.sh                      # from a clone, installs that clone
 #
 # It checks the Mac, gets the source, builds it, optionally downloads a model,
@@ -30,7 +30,7 @@
 #   --help, -h       this text
 set -euo pipefail
 
-REPO_URL="https://github.com/Pummelchen/TinyTitan.git"
+REPO_URL="https://github.com/Pummelchen/TinyTitan_Datacenter.git"
 DEFAULT_MODEL="ornith15-8bit"
 DEFAULT_DIR="$HOME/TinyTitan"
 APP_NAME="TinyTitan"
@@ -346,5 +346,5 @@ echo "  Then point a client at http://127.0.0.1:8080/v1 (any API key)."
 echo "  Keep the window open while you use it; TinyTitan runs one model at a time."
 echo
 echo "  New to this? Start here:"
-echo "    https://github.com/Pummelchen/TinyTitan/blob/main/docs/site/01-what-is-tinytitan.md"
+echo "    https://github.com/Pummelchen/TinyTitan_Datacenter/blob/main/docs/site/01-what-is-tinytitan.md"
 echo "  Questions: https://tinytitan.discourse.group/"

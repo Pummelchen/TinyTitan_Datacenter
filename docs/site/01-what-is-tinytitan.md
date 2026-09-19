@@ -115,7 +115,7 @@ says so plainly rather than guessing.
 Ready to try it? → **[Getting TinyTitan running on your Mac](02-getting-tinytitan-running.md)**
 
 Want the precise engineering version first? → the
-[wiki](https://github.com/Pummelchen/TinyTitan/wiki) is the professional
+wiki is the professional
 reference. This series is the friendly one; the wiki is the exact one.
 
 *TinyTitan 5.1 at the time of writing.*

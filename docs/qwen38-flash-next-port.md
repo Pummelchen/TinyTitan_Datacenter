@@ -1,6 +1,6 @@
 # Qwen3.8-Flash-Next port — verified design record
 
-Requested in [issue #2](https://github.com/Pummelchen/TinyTitan/issues/2). Every
+Requested in issue #2. Every
 number below was read from the official checkpoint's `config.json`, the
 `transformers` `qwen4_exp` modeling source, or the quantized checkpoints'
 tensor indexes — none is assumed. This document is the contract for the port;

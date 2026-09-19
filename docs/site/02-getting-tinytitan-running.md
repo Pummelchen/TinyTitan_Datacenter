@@ -109,7 +109,7 @@ folder, the second downloads TinyTitan, the third opens its folder:
 
 ```bash
 cd ~
-git clone https://github.com/Pummelchen/TinyTitan.git
+git clone `Pummelchen/TinyTitan`
 cd TinyTitan
 ```
 
@@ -258,7 +258,7 @@ It built, it downloaded, it started. Now let's actually talk to it →
 
 The precise, engineering version of this page — every flag and every
 requirement, stated exactly — is
-[Getting Started](https://github.com/Pummelchen/TinyTitan/wiki/Getting-Started)
+Getting Started
 on the wiki.
 
 *TinyTitan 5.1 at the time of writing. Requirements reflect the project's

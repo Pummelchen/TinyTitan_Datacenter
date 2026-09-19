@@ -9,7 +9,7 @@ benchmark reports from Apple Silicon Macs.
 - Preserve the bounded-memory model path. Never load a complete checkpoint,
   shard, or large model tensor into Swift heap memory.
 - Keep public runtime controls limited to those documented in
-  [Runtime controls](https://github.com/Pummelchen/TinyTitan/wiki/Runtime-Controls).
+  Runtime controls.
 - Add or update a focused test for behavior changes.
 
 Run the release build, the production gates, and the serial tests:
@@ -67,7 +67,7 @@ model, memory, macOS version, Swift version, and any protocol change.
 
 ## Benchmark reports
 
-Follow the [community benchmark protocol](https://github.com/Pummelchen/TinyTitan/wiki/Benchmarking-Guide). Review
+Follow the community benchmark protocol. Review
 all captured files before sharing them, and remove personal paths or unrelated
 process details.
 

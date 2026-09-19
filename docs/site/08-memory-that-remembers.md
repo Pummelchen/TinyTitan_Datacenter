@@ -254,11 +254,11 @@ this run a model that does not fit?* →
 **[Why TinyTitan can run models that "don't fit"](09-why-tinytitan-runs-big-models.md)**
 
 The memory design document and the guard's measurements:
-[`docs/agent-memory.md`](https://github.com/Pummelchen/TinyTitan/blob/main/docs/agent-memory.md)
+`docs/agent-memory.md`
 and
-[`docs/plan-memory-guard-and-shadow.md`](https://github.com/Pummelchen/TinyTitan/blob/main/docs/plan-memory-guard-and-shadow.md).
+`docs/plan-memory-guard-and-shadow.md`.
 Runtime settings:
-[Runtime Controls](https://github.com/Pummelchen/TinyTitan/wiki/Runtime-Controls).
+Runtime Controls.
 
 *Memory defaults and the guard/CPU figures are from TinyTitan 5.1's own
 measurements on a base 8-core M3 with 24 GB. The side-engine measurements are

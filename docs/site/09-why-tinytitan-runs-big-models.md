@@ -208,7 +208,7 @@ One article left, and it is the useful one →
 
 The full measurement record — including the retired conclusions —
 is `docs/qwen38-decode-20tps-concept.md` in the repository, and
-[System Design](https://github.com/Pummelchen/TinyTitan/wiki/System-Design) on the
+System Design on the
 wiki.
 
 *Token breakdown, hit rates, and the rejected-lever table are from the

@@ -40,7 +40,7 @@ Three places, and only the first is a literal:
    version literal in the tree. Grep for the previous version before believing
    this: `grep -rn "5\.1\b" --include="*.sh" --include="*.swift" sources/ tools/`.
 2. **The wiki `Changelog.md`** (`.qwen/wiki/Changelog.md`) — a new `## X.Y — <headline>`
-   section at the top, with `[Release vX.Y](https://github.com/Pummelchen/TinyTitan/releases/tag/vX.Y)`
+   section at the top, with `Release vX.Y`
    and user-facing bullets. Keep it compact: what a *user* can do now that they
    could not before, and the numbers that back it.
 3. **`README.md`** — **no release callout.** The README is the stable front
@@ -362,7 +362,7 @@ more than one that implies all of them ran.
 ## 6. After publishing
 
 ```bash
-gh release view vX.Y --repo Pummelchen/TinyTitan --json url,assets \
+gh release view vX.Y --repo Pummelchen/TinyTitan_Datacenter --json url,assets \
   --jq '"\(.url) \([.assets[].name] | join(", "))"'
 ```
 

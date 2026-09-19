@@ -23,7 +23,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO="${TINYTITAN_RELEASE_REPO:-Pummelchen/TinyTitan}"
+REPO="${TINYTITAN_RELEASE_REPO:-Pummelchen/TinyTitan_Datacenter}"
 PRODUCTS=(TinyTitanServer TinyTitanCLI TinyTitanMac TinyTitanDecodeService TinyTitanRepack TinyTitanBench)
 
 die() { echo "error: $*" >&2; exit 1; }

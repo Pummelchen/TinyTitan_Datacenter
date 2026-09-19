@@ -140,8 +140,8 @@ Model chosen and installed. Now the settings that actually change your
 results → **[The dials](05-the-dials.md)**
 
 Precise sizes and the full capability matrix live in
-[Features](https://github.com/Pummelchen/TinyTitan/wiki/Features) and
-[Getting Started](https://github.com/Pummelchen/TinyTitan/wiki/Getting-Started)
+Features and
+Getting Started
 on the wiki.
 
 *Sizes and speeds are the project's published figures from a base 8-core M3

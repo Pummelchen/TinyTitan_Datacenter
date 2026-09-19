@@ -155,7 +155,7 @@ def main():
     print("plain control question, with **thinking off**. The tables are generated from")
     print("the raw rows by `benchmark/capital_of_paris_report.py`; the harness that")
     print("produced them is `benchmark/capital_of_paris_smartness.py`, both in the")
-    print("[TinyTitan repository](https://github.com/Pummelchen/TinyTitan). The rows")
+    print("[TinyTitan Datacenter repository](https://github.com/Pummelchen/TinyTitan_Datacenter). The rows")
     print("themselves are gitignored, under")
     print("`benchmark/benchmark-results/capital-of-paris-20260911T1935/` "
           "(`results-v2-3x2.jsonl`")

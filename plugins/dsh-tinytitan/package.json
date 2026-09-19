@@ -22,7 +22,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Pummelchen/TinyTitan.git",
+    "url": "git+https://github.com/Pummelchen/TinyTitan_Datacenter.git",
     "directory": "plugins/dsh-tinytitan"
   },
   "dsh": {
