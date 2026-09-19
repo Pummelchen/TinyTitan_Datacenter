@@ -12988,3 +12988,37 @@ the ordering of A's two installs rather than in the network; if it does not, the
 round's apparent silent death are all the same presentation: **a process with nothing to log, waiting on a socket.**
 Three times the diagnosis was "it died" and three times it was "it is waiting". **For this design, "no output" has
 meant "blocked" every single time.**
+
+## D368 — 47702 is reachable, so the fault is inside A's process rather than in the network
+
+**The reachability test, which `D367` asked for:**
+
+    47702 LISTENING after 5s
+    node3 -> node1:47701   UNREACHABLE
+    node3 -> node1:47702   REACHABLE
+
+**Both results are correct and they mean different things.** 47701 is B's *forward* listen, and B has not bound it
+yet - **it is still blocked in its back-listen, waiting for A** - so "unreachable" there is simply "nothing is
+listening". **47702 is bound and node3 reaches it without difficulty.**
+
+**So the network is not the blocker, and the last three rounds' suspects are all eliminated by measurement rather
+than by argument:** the address is correct (`D363`), the routing is symmetric (`D364`), the listening side is
+confirmed (`D367`), and **now the port is reachable from the node that A runs on.**
+
+**Which leaves A's own connect call, and one asymmetry that is now the whole of the question.** The forward edge -
+A connecting to B:47701 - **has worked for several rounds**, so node3's process *can* originate an outbound
+connection. And `nc` from node3 reaches 47702. **So the same node, the same process kind, and the same port are each
+individually fine, and the only thing that has not been observed working is A's `installReverseEdge` connect in
+particular.**
+
+**What makes that narrower than it sounds.** `installReverseEdge` for the `source` role connects and takes
+`pair.input`; **the forward path connects and takes `pair.output`**. Those are different lines, and only one of them
+has ever been exercised. **The next check is therefore to make A's reverse connect print what it is doing before it
+does it** - the address, the port and the result - **because every network-level explanation has now been excluded by
+a direct test, and what is left is the code path itself.**
+
+**And a note on how much has been eliminated by cheap tests rather than by reasoning.** Four rounds of the reverse
+edge have produced: a bind ordered after a connect, a role assumption the environment forbade, a stage misread as
+dead when it was waiting, and now a port proven reachable. **Each was settled by one command, and none by a
+hypothesis held for longer than a round.** The remaining question is the smallest of them and it is inside the
+process.
