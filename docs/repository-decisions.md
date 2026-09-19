@@ -15635,3 +15635,41 @@ attention core - and only then would distribution have something left to divide.
 one stage each, correct output, 6.016 tok/s, and every stage within 9% of the others. **That is a memory-distribution
 result, and it is real; it was never going to be a 3x throughput result, and now the record says why with numbers from
 the engine itself.**
+
+## D441 - The step is 47% expert I/O plus 50% GPU waits, serialised - so the target needs overlap and tensor splitting, not layers
+
+**`D440` gave the total and the expert share. Reading the profiler's remaining lines gives the rest:**
+
+    [phases over 32 tokens, decode 4530 ms]
+      cb1 encode+commit:          93.4 ms     2%
+      expert io await:          2127.5 ms    47%
+      cb2 encode+commit:          27.3 ms     1%
+      unaccounted (GPU waits):  2281.6 ms    50%
+
+    per token:  total 141.6   expert-I/O 66.5   GPU-wait 71.3   encode 3.8 ms
+
+**And the first fact is that the two big phases are ADDITIVE.** 66.5 + 71.3 = 137.8 of the 141.6 ms in a token -
+**the expert read and the GPU work are not overlapping, they are happening one after the other.** That alone is worth
+stating because it is not what a streaming engine is supposed to do: the design intends layer L's expert read to be
+hidden behind layer L+1's attention.
+
+**So there are two levers, and they are different in kind:**
+
+  * **overlap expert I/O with GPU work** - if the 66.5 ms were hidden behind the 71.3 ms of GPU waits, the step would be
+    **71.3 + 3.8 = 75.1 ms -> 13.3 tok/s**, roughly **2x** the present 7.05. This needs no distribution at all and is a
+    single-node fix;
+  * **split the GPU work itself across the four machines** - tensor-parallel rather than layer-parallel, so that all
+    four nodes work on the *same* token. The GPU phase is 71.3 ms/token; split four ways that is **17.8 ms + 3.8 encode
+    = 21.6 ms/token -> 46 tok/s before communication**, which comfortably clears the 47.6 ms target even after a real
+    all-reduce.
+
+**And the second is the one the objective needed, with a reason this time.** A layer pipeline divides *memory* but is
+serial by construction (`D437`), so it cannot reduce the 71.3 ms that dominates. **The GPU phase is the thing to divide,
+and dividing it requires every node to hold a slice of every layer rather than a set of layers** - which is the
+architecture the objective's ~31 tok/s projection assumed and the layer-pipeline design did not implement.
+
+**Where the objective stands.** The four-stage layer chain is delivered and correct - four Mac minis, one stage each,
+6.016 tok/s, stages balanced within 9% - and **its ceiling is now measured rather than argued**: 141.6 ms/token of
+which 47% is expert I/O and 50% is GPU waits, serialised. **The route to 21 tok/s is (1) overlap the expert read with
+the GPU work, worth ~2x on one node, and (2) tensor-split the GPU work across the four nodes, which is the step that
+actually needs the cluster.** Neither is a layer pipeline, and the record now says which to build.
