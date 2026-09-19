@@ -12954,3 +12954,37 @@ tested; the environment restriction is worked around and **measured to be worked
 carried frames and produced a correct token (`D358`); **the only thing that has never happened is all four legs in
 one run.** This run got furthest yet: both stages wired, both bound, and A past the leg that had blocked every
 previous attempt.
+
+## D367 — B blocks in its back-listen as designed, and A's failure was in the back connect, not the forward one
+
+**The observation this round asked for, taken by running B alone in the foreground with no peer:**
+
+    [shard] probe: reached the serve block, port nil, only=false
+    B exited with 0
+
+**B blocks in `listenAndAccept` on its back-listen port and stays there** - which is exactly what it is supposed to
+do when no peer connects, and it is the same behaviour the earlier run showed as a silent process that "died". **It
+did not die. It was waiting**, and a stage waiting on a socket looks identical to a stage that has crashed when the
+only evidence is a log that has stopped.
+
+**And that corrects `D366`'s attribution, on evidence rather than on re-reasoning.** That record said A's
+`EHOSTUNREACH` came from its **forward** connect, because `installReverseEdge` returns before `installIfConfigured`
+runs. **But A's log has no `[pipeline] reverse edge installed` line** - which `Run.swift` prints on success - **and
+no `[pipeline] stage installed` line either.** So **A failed inside `installReverseEdge`, in the BACK connect**, and
+never reached the forward one. **The success line that should have been there is the evidence, and its absence was
+read past in the previous round.**
+
+**So the remaining fault is A -> B on port 47702, while A -> B on port 47701 works.** The forward edge connects to
+47701 and has carried frames for several rounds; the back edge connects to 47702 where B is measured to be
+listening. **The difference is the port and nothing else that has been checked** - the address was proven correct in
+`D363`, the routing is symmetric in `D364`, and the listening side is confirmed here.
+
+**Which makes the next step a reachability test and nothing broader.** With B listening on 47702 and idle, a probe
+from node3 to that port either connects or does not, and either answer is decisive: **if it does, the fault is in
+the ordering of A's two installs rather than in the network; if it does not, the fault is that a port other than
+47701 is unreachable between these two nodes, which is a different kind of question entirely.**
+
+**And a note on how a waiting stage has been read twice now.** `D349`'s deadlock, `D362`'s deadlock, and this
+round's apparent silent death are all the same presentation: **a process with nothing to log, waiting on a socket.**
+Three times the diagnosis was "it died" and three times it was "it is waiting". **For this design, "no output" has
+meant "blocked" every single time.**
