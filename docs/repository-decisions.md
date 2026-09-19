@@ -16037,3 +16037,36 @@ configuration - the operator's standing rule is that the cluster layout is not c
 session has already had one round lost to assuming a machine's behaviour rather than asking about it. **The
 measurement that would settle it is one command per node and a repeat of `D449`/`D451` over the new interface; the
 permission is the operator's.**
+
+## D453 - D452 is withdrawn: `RUNNING` in `flags` is not link-up. All four machines' Thunderbolt ports are INACTIVE - there is no cable
+
+**`D452` read `flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST>` on `en2`/`en3` as "the link is up" and
+concluded the target's wall might already be wired. It is not, and the error is the same one this session has now made
+four times: reading a value's meaning from its name.**
+
+**macOS reports interface *administration* in `flags` and link *state* in `status:`, and the status was not checked.**
+It has been now, on all four machines:
+
+    node1  en2=[inactive] en3=[inactive] en4=[inactive] en5=[inactive]
+    node2  en2=[inactive] en3=[inactive] en4=[inactive] en5=[inactive]
+    node3  en2=[inactive] en3=[inactive] en4=[inactive] en5=[inactive]
+    node4  en2=[inactive] en3=[inactive] en4=[inactive] en5=[inactive]
+
+**Every Thunderbolt port and every Ethernet adapter on all four minis has no link.** `RUNNING` in `flags` means the
+interface is administratively up, which it is even with nothing plugged in - and `media: autoselect <full-duplex>`
+rather than `media: none` was the other half of the same misreading. **`en0` at `1000baseT <full-duplex>` with a real
+address is the only link these machines have, and it is 1 GbE** - so `D449`'s 118 MB/s and `D451`'s 765 us stand, and
+nothing needs re-measuring.
+
+**Which does not change the conclusion, it changes the action.** The finding is not "there is a hidden fast link" but
+**"the hardware is present and the cable is not"**: `en2`/`en3` are real Thunderbolt networking services that macOS has
+already configured by name, and they are inactive because nothing is plugged into them. **The step that reaches 21
+tok/s is therefore physical - connect the four machines' Thunderbolt ports, or attach the `en4`/`en5` adapters to a
+10GbE switch - and after that the measurement is one command per node and a repeat of `D449` and `D451` over the new
+interface.** No engine change is required for the link, and the tensor-parallel work that would use it is the one
+decomposition this session measured to be worth building (`D451`: 12-16 tok/s on 1 GbE, ~37 on a 70 us link).
+
+**The tally of this class of mistake is now four, and they are all the same mistake.** `D444`: a number whose unit is
+unknown is not evidence. `D445`: a number whose unit is misread is worse. `D446`: a value whose meaning is inferred
+from its name is worse still. **`D453`: a *flag* whose meaning is inferred from its name - `RUNNING` is not "linked",
+and `media: autoselect` is not "connected".** Read the field the system defines for the question you are asking.
