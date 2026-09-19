@@ -14519,3 +14519,40 @@ suite is 1565+ tests with the quiet switch in and green**; the exactness gate at
 pairing, seed, counts, frame shape and token edge all verified; **a two-token ring whose first token is right and
 whose second is not**; **and the throughput gap now measured rather than argued: 3.4 tok/s, with the first stage at
 4.6x the law and the diagnostics excluded as a cause.**
+
+
+## D410 - The ring costs 3.3x over running one stage alone, and the cost is 207 ms of waiting, not work
+
+**Each stage timed alone, same layers, same prompt, same four tokens, no ring and no reverse edge:**
+
+    solo A (0:20,  standalone):  prefill=0.71s  new=4tok  decode=0.35s  tok/s=11.295   =  87.5 ms/token
+    solo B (20:40, standalone):  prefill=0.34s  new=4tok  decode=0.53s  tok/s=7.487    = 132.0 ms/token
+
+    in the ring:                 A decode=1.18s (295 ms/token)      B decode=0.41s (102 ms/token)
+
+**And the arithmetic falls out of those four numbers.**
+
+  * **A's own twenty layers cost 87.5 ms/token** - against the law's 64.4 ms for twenty layers, so the first stage is
+    **1.36x** the law on its own, which is the ordinary cost of a measurement taken on a shared farm;
+  * **in the ring A pays 295 ms**, so **207 ms is not work - it is waiting**;
+  * **B's own twenty layers cost 132 ms**, so the lock-step accounts for **132 of that 207**, and **75 ms is still
+    unattributed** even after the wait is allowed for;
+  * **and B is *faster* in the ring (102 ms) than alone (132 ms)**, which is the one direction nobody predicted -
+    **B's standalone run has no incoming handoff to seed from, so it does its own embed and its own prologue**, and
+    the ring gives it a state instead.
+
+**And the objective's gap is now stated in the right units.** One stage alone runs at **11.3 tok/s**; the ring runs at
+**3.4 tok/s**; **so the ring costs 3.3x over the work it distributes.** That is the whole distance to the 21 tok/s
+target: **not that the stages are slow - A at 87.5 ms and B at 132 ms are the law's own order - but that putting them
+in a ring multiplies the cost by three.**
+
+**And that reframes the remaining question in one sentence.** `D397` called it lock-step, `D398` bounded the
+lock-step at 129 ms, and this round measures the total waiting at 207 ms with 132 ms of it explained. **So the fault
+is not that a stage waits - a pipeline must - but that the wait is longer than the work it waits for**, and the
+75 ms residue plus B's own 132 ms is what a one-position lookahead would hide.
+
+**Where the objective stands.** A1-A5 built and gated; the fork's suite green with the quiet switch in; the exactness
+gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and token edge all verified; **a two-token
+ring whose first token is right and whose second is not**; and the throughput gap **measured from both sides** - 3.4
+tok/s in the ring against 11.3 for one stage alone, with 207 ms of waiting per token of which 132 ms is the peer's
+step and 75 ms is unattributed.
