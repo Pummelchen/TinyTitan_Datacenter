@@ -15288,3 +15288,50 @@ relay are all implemented and previously verified against the whole suite**; the
 transport, pairing, seed, counts, frame shape and token edge all verified; **a two-stage ring at 17.1 and 19.1 tok/s**;
 **a 13-layer stage alone at 48.7 ms, the law exactly**; **a three-stage chain at 110 ms/token after the relay**; and
 **the sink move that should remove the residual 59 ms written, building, and awaiting a clean full-suite run.**
+
+## D430 - The sink move buys 2%, D428 is refuted, and the session ends with the objective unmet and the position measured
+
+**The sink moved to relay on receipt, verified green, deployed and measured:**
+
+    relay only:           node3 8.866   node1 9.142   head 9.646 tok/s    = 110 ms/token
+    with the sink moved:  node3 8.893   node1 9.265   head 9.718 tok/s    = 108 ms/token
+
+**Two percent.** `D428` predicted the residual 59 ms was a token waiting a full iteration in `pendingIncoming`; **the
+measurement says it is not.** The change is correct, it is committed, and it is worth 2% - **and the hypothesis that
+motivated it is refuted by its own measurement, which is the fifth time this session a stated mechanism has been
+disproved by the run that tested it.**
+
+**And the full suite was certified green on a quiet machine this time** - `swift test --no-parallel` **exit 0, 8 test
+binaries, no issues** - so `D429`'s socket failure was the machine being busy with three model processes, and the
+distinction between that and a real failure was worth the round spent establishing it.
+
+**So where the objective actually stands, at the end of this session, stated without a thesis.**
+
+**Built and gated.** A1-A5: an optional layer range that is bit-identical when unset, a frame protocol, a stage
+installer, both reverse-edge roles including `both`, a lookahead, a relay, and a quiet switch. **The exactness gate is
+0 of 2048 elements differing. The fork's suite is 1565+ tests across 8 binaries with 0 failures, verified by running
+it rather than citing it.**
+
+**Measured correct.** The **forward edge** carries a hidden state between machines and produces **the correct first
+token** (`D358`, `D389`). The **reverse edge** carries the head's choice back **token for token** (`D390`). The
+**pairing** is per-position (`D391`). **A three-stage chain runs end to end**, with the token travelling back through
+a middle stage (`D423`).
+
+**Measured fast, and this is the part the objective turns on.** A thirteen-layer stage **alone** costs **48.7 ms/token
+against the law's 48.6** - the stage *is* the law (`D425`). The **two-stage ring** runs at **17.1 and 19.1 tok/s**
+(`D415`). **The three-stage chain runs at 8.9** - slower, and the record has four measured reasons why: the return
+path's hop count, a middle stage re-sampling instead of relaying (`D426`, worth 20%), a forwarding delay (`D428`,
+worth 2% and refuted), and **a residual ~57 ms that remains unexplained.**
+
+**Not met.** The objective asks for **four Mac minis running the 35B model at 21 tok/s or better.** What exists is
+**a correct multi-stage layer pipeline at 17.1 tok/s on two machines**, with the four-stage target further away than
+two stages rather than closer - **because the token's return path grows with the stage count while the work per stage
+shrinks, and on this hardware and these stage sizes the two have already crossed.** The projection of ~31 tok/s in the
+design document assumed the opposite, and **this session's measurements say that assumption is the thing to revisit
+rather than the implementation.**
+
+**And the one thing that has never been wrong across the whole session.** Every fault has been at an **interface** - a
+shadowed parameter, a dead closure, an uncounted row, a bind ordered after a connect, a detached process, a helper
+calling itself, a re-sampling middle stage. **The arithmetic was proved exact in `D325` and has not once been wrong**,
+the stages are the law to a tenth of a millisecond, and **when this engine is wrong it is wrong about who talks to
+whom, never about what to compute.**
