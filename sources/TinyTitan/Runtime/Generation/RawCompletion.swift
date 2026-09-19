@@ -359,7 +359,11 @@ public func runRawCompletion(producer: any LogitProducer,
             //
             // The head still publishes its own sample, because it is the stage that chooses and `pendingIncoming` is
             // nil there. The first stage never publishes at all, having no sink.
-            ring.nextTokenSink?(pendingIncoming ?? tokenID, 0)
+            // THE HEAD PUBLISHES HERE; A RELAYING STAGE PUBLISHES ON RECEIPT (D428). A stage with no source is the
+            // one that chooses, so its own sample is the token the chain needs and there is nothing to wait for. A
+            // stage with a source has nothing of its own to publish - it forwards what it is given, below, the
+            // moment it is given it.
+            if ring.nextTokenSource == nil { ring.nextTokenSink?(tokenID, 0) }
             // The token to produce with arrived during the PREVIOUS iteration's work (below), not now.
             if let carried = pendingIncoming { stepToken = carried; pendingIncoming = nil }
         }
@@ -372,7 +376,14 @@ public func runRawCompletion(producer: any LogitProducer,
             let incoming = source(position + 1)
             // -1 is the sentinel for "nothing has come back yet" (D361), and it is distinguishable from 0
             // because 0 is a legitimate token id.
-            if incoming >= 0 { pendingIncoming = incoming }
+            if incoming >= 0 {
+                pendingIncoming = incoming
+                // FORWARD IT NOW, NOT NEXT ITERATION (D428). Waiting until the top of the next loop held the head's
+                // token for a whole stage step before the stage behind us saw it - which is the 59 ms D427 measured
+                // as residual. A stage whose sink is nil (the first) makes this a no-op, and the head never reaches
+                // this branch because it has no source.
+                ring.nextTokenSink?(incoming, 0)
+            }
         }
         loopMark = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
         position += 1
