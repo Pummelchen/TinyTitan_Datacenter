@@ -15170,3 +15170,38 @@ all verified; **a two-stage ring at 17.1 and 19.1 tok/s**; **a three-stage chain
 first token, each stage exactly at the law, and its regression localised**; and **the middle stage's re-sampling
 identified as the reason the extra hop costs a step rather than a wire crossing - with the fix written down as one
 variable substituted for another.**
+
+## D427 - The relay removes one hidden step and one remains: the chain needs a two-deep lookahead, not a one-deep one
+
+**The relay `D426` specified, written and measured:**
+
+    after:   node3 8.866   node1 9.142   head 9.646 tok/s    = 110 ms/token
+    before:  7.284 / 7.464 / 7.738                           = 137 ms/token
+    predicted:  48.7 ms of work + 2.4 ms of wire             =  51 ms
+
+**The fix is real and it is worth 20%** - the relay stopped a middle stage from putting the head's token through a
+sampler nobody wanted, and the chain went from 137 to 110 ms. **But the prediction was 51 and the measurement is 110,
+so 59 ms is still unhidden - almost exactly one more stage step.**
+
+**And that is the arithmetic of a two-hop path with a one-hop lookahead.** `D411`'s lookahead fetches at
+`position + 1`, which hides **one** dependency: the first stage asks for the token while its peer is still working on
+it. In a three-stage chain the first stage's token now depends on **two** dependent receives - the middle stage must
+receive before it can relay - **so one position hides the hop from middle to first and leaves the hop from head to
+middle exposed.** The relay removed the *sampling* cost of the second hop (`D426`); what is left is its *latency*.
+
+**So the next step is arithmetic rather than diagnosis: a lookahead deep enough to hide `n-1` hops.** For a
+three-stage chain that is two positions, and the change is the same shape as `D411`'s - `pendingIncoming` becomes a
+small queue rather than a single value, the sink drains from it, and the source fills it - **with the important
+property that the middle stage's relay makes the queue advance without waiting for its own produce**, which is what
+the last round bought.
+
+**And the two-stage ring remains the fastest thing built.** 17.1 and 19.1 tok/s against the three-stage chain's 8.9 -
+**so on this hardware, at these stage sizes, two stages beat three, and the record can now say why with numbers
+rather than with a scaling assumption.** The target of 21 tok/s is closer with two stages than with three, and a
+deeper lookahead is what would change that.
+
+**Where the objective stands.** A1-A5 built and gated; the fork's suite green with the quiet switch, the lookahead,
+the `both` role and the relay; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape
+and token edge all verified; **a two-stage ring at 17.1 and 19.1 tok/s**; **a 13-layer stage alone at 48.7 ms, the law
+exactly**; **a three-stage chain running end to end, correct first token, improved from 137 to 110 ms by the relay**;
+and **the residual 59 ms identified as the second hop's latency, with a two-deep lookahead written down as the fix.**
