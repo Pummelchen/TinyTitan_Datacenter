@@ -15789,3 +15789,74 @@ and therefore like a cache hit - the opposite conclusion. **A number whose unit 
 and a number whose unit is misread is worse than no number (`D445`).** The next step is a code read of the ring's
 submit path, not another measurement: what gates `submit`, and why it fires fewer than six times in a run that begins
 1178 times.
+
+## D446 - D445 is withdrawn: the ring DOES issue, and every issued prefetch is reclaimed unconsumed
+
+**`D445` concluded that the ring was not submitting its reads, from `submitted` being `0.00` per begin. That field is
+not a counter** - `begin` computes it by *sampling* slot states:
+
+    switch slot.operation?.state {
+    case .submitted: observedSubmitted &+= 1     // slots FOUND in this state, at this instant
+    case .inFlight:  observedInFlight  &+= 1
+    default:         observedHeld      &+= 1
+    }
+
+**So `submitted=0.00` says only that at the instant `begin` sampled, no slot happened to be in the `.submitted` state.**
+The count of submissions is `issuedReads`, incremented where the read is actually started (`issuedReads &+=
+selectedSlots.count`), and **it was never printed**. It is printed now, and the correction is:
+
+    begins=1178   issued=1045   reclaimed=1045   queue_ms=0.01   load_ms=1.72
+
+**The ring is issuing.** 1045 submissions, one per layer per token (0.89 per begin), each a 1.72 ms load - and
+1045 x 1.72 = 1797 ms, which is the await the profiler reports. **So my "it is not submitting them" was wrong, and
+the honest reading of the new field is the opposite one: the ring is issuing exactly the reads that cost the time.**
+
+**And the genuinely new fact is the third column: `reclaimed=1045` equals `issued=1045`.** Every prefetch the ring
+issues is **reclaimed** - its slot recycled - and `reclaim*Nanos` are only accumulated on the reclaim path, so the
+1.72 ms in the summary is the cost of reads whose buffers were **not consumed**. **A prefetch that is issued and then
+reclaimed rather than consumed is a prefetch that was useless: the demand path still missed and still waited.**
+
+**Which moves the question one step along and makes it sharper.** Not "why does the ring not submit" (it does) and not
+"is the expert read hideable" (the ring hid nothing) but **"why is every predicted read reclaimed instead of
+consumed?"** That is the prediction-to-consume path - `readyBuffers` and `consume` - and it is the next read.
+
+**And the meta-lesson is the sharpest one this session has produced, because it is the third time.** `D444`: a number
+whose unit is unknown is not evidence. `D445`: a number whose unit is misread is worse. **`D446`: a number whose
+*meaning* is inferred from its name is worse still** - `observedSubmitted` reads like a submission count, is a state
+sample, and I built a conclusion on the name rather than on the three lines that compute it. **Read the assignment,
+not the identifier.**
+
+## D447 - D446 is withdrawn too: `consume` credits the same counter, and depth is not the lever either
+
+**`consume` increments `reclaimedOps` exactly as the reclaim path does** (`ExpertPrefetchRing.swift:167` and `:182`):
+
+    func consume(layer:experts:) { ... if let op = slots[index].operation {
+        reclaimedOps &+= 1; reclaimedQueueNanos &+= op.submissionToStartNanos; reclaimedLoadNanos &+= op.loadNanos } ... }
+
+**So `reclaimed` counts consumed ops as well as recycled ones**, and `issued = 1045 = reclaimed` is exactly what a
+*working* ring looks like rather than the signature of a useless one. **`D446`'s "every prefetch is reclaimed
+unconsumed" is withdrawn** - read the assignment, not the identifier, and this time read *all* the assignments to it.
+
+**And the four per-begin averages sum to the ring's real size: 1.13 free + 0.00 submitted + 0.10 in-flight + 0.77 held
+= 2.00 slots.** Two staged expert buffers per layer, against eight experts in a route.
+
+**Which makes the depth question worth asking, and it has an answer:**
+
+    TINYTITAN_PREFETCH_TOP_M   slots   tok/s   issued   load_ms
+    default (from profile)      2.0    7.047     1045      1.75
+    2                           4.0    6.951     1802      2.80
+    8                          16.9    6.211     2576      4.96
+    16                            -        -        -         -
+
+**Deeper is worse, monotonically, and the per-read load time nearly triples (1.75 -> 4.96 ms).** That is the signature
+of a **contended device, not a starved ring**: asking for more concurrent reads makes each read slower by more than the
+concurrency buys. So `D442`'s and `D443`'s negative results are joined by a third and the shape is now consistent -
+**more prefetch is not faster, at any depth, through any knob.**
+
+**And what the numbers say the await actually is.** `issued = 1045` across 32 tokens x 40 layers = 1280 layer-steps is
+**about one expert miss per layer**, each costing 1.75 ms of device latency: 40 misses per token at 1.75 ms is
+**70 ms/token, which is the 47% await**. So the time is **~40 real, unavoidable expert misses per token** - not a
+scheduling artefact, not a prediction failure, not a queue that needs to be deeper. **The remaining lever is to hide
+those 1.75 ms behind work that does not need the experts, which is `D441`'s layer-loop overlap, or to reduce the miss
+count itself** - and the reference's cache measurements (5.164 / 6.019 / 7.075 tok/s at 1 / 2 / 3 GB) say the miss count
+is what its own tuning moved.
