@@ -13060,3 +13060,44 @@ rather than a theory.**
 proven across machines with a correct token (`D358`); the reverse edge proven to connect in isolation (`D369`); and
 **no run in which both are live has completed.** The remaining fault is now reproducible, isolated to one variable,
 and one command away from being bisected.
+
+## D370 — The bisection was not controlled: the failure has been observed once, and B differed between the runs
+
+**The three cases `D369` and this round produced:**
+
+    isolated   A: BACK_CONNECT only                        -> [back] connected
+    case 1     A: BACK_CONNECT + forward LISTEN            -> [back] connected
+    full       A: BACK_CONNECT + forward CONNECT           -> EHOSTUNREACH, 450 attempts
+
+**And the causality is impossible as stated.** `Run.swift:325` calls `installReverseEdge` and `:328` calls
+`installIfConfigured` - **the reverse connect runs first**, so nothing the forward install does can affect it. The
+program order was checked rather than assumed, and it rules the obvious explanation out.
+
+**Which means the comparison was not controlled, and the fault is in how it was made.** Two things differ between
+the runs and only one of them was being varied:
+
+  * A's forward edge was a **LISTEN** in the working cases and a **CONNECT** in the failing one;
+  * **B was configured differently too** - the full run gave B `TINYTITAN_STAGE_LISTEN=47701` as well as its
+    back-listen, so B was a two-edge stage, while the bisection's B listened on the back edge only.
+
+**And worse, the failing configuration has been run exactly once.** Every statement about it rests on a single
+observation from `D366`, which makes "the forward CONNECT causes it" a claim about one sample compared against two
+samples from a differently-configured peer. **This record has logged that mistake four times** - a test count carried
+from two binaries, a patch trusted for its anchor, a build standing in for a suite, and a socket probe consuming the
+accept - **and this is the fifth, made while quoting the other four.**
+
+**What follows is one run, not an argument.** Repeat the full configuration unchanged and ask whether it fails the
+same way. **If it does, the fault is deterministic and the bisection can be redone properly - holding B fixed and
+varying one thing on A. If it does not, the single observation was a transient and three rounds have been spent
+reasoning about an event that happened once.**
+
+**And there is a concrete reason to expect a transient, which is worth stating before the run rather than after it.**
+A connect that fails with `EHOSTUNREACH` against a peer that is measurably listening, from a node that measurably
+reaches that port, **is not a deterministic network state** - the isolated and case-1 runs prove the path works. **The
+remaining candidates are timing and load**, and this farm is shared with other work, which is the same caveat every
+measurement in this record carries.
+
+**Where the objective stands.** Unchanged by this round: four legs written and tested, the forward edge proven with a
+correct token (`D358`), the reverse edge proven to connect (`D369`), **and no run with both live completed.** But the
+honest addition is that **the last three rounds' conclusions rest on fewer observations than they should**, and the
+next run is worth more than any further reading.
