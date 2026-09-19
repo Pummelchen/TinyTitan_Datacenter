@@ -11820,3 +11820,46 @@ recorded twice already in other forms: **a model derived by subtraction was trea
 subtraction is valid only if the fixed cost is identical across the runs, and that assumption was never tested -
 it was convenient, and it produced a number that fitted the design's projection. **The direct measurement cost
 four runs and should have been taken before the projection was written, not after.**
+
+## D335 — The middle ranges were computing garbage: skipping the prologue skips the residual seed, which is exactly where hiddenIn belongs
+
+`D334` recorded that a standalone `10:20` run costs 2.6x what subtraction predicted and left the cause unidentified.
+The one-layer shift names it:
+
+    0:10   2.02 s  23.817      0:10   2.01 s  23.876   <- reproducible
+    1:11   2.80 s  17.155      10:20  2.79 s  17.212
+    2:12   2.40 s  19.992      11:21  2.30 s  20.900
+
+**Shifting the range by ONE layer costs 0.78 s of the same ten layers of work**, so the effect is tied to the
+lower bound and not to which layers are run. And `runPrologue = layers.lowerBound == 0` - so **every one of those
+shifted runs skipped the prologue**, and `Prefill.swift` says what the prologue is for:
+
+    // Only the first layer group seeds the residual. Layer-major calls this once per
+    // (layer, chunk); re-embedding on every layer would reset the residual the layers
+    // are accumulating into.
+    if runPrologue { ... blit.copy(..., to: scratch.hidden) }
+
+**So a non-zero lower bound never seeds the residual.** The layers accumulate into whatever `scratch.hidden` held
+from the previous call - which is why all four of those runs emitted gibberish (`ROKE加拿大...`) and why the prompt
+came back as noise. **They were computing a partial forward over an uninitialised residual.**
+
+**Which means `D334`'s own numbers are invalid too, and the withdrawal stands for a second and better reason.**
+The four direct measurements are not stage costs - **they are ten layers applied to garbage.** And the timing
+difference has a plausible mechanism rather than a mysterious one: **arithmetic over uninitialised memory produces
+NaNs and denormals, and this record already measured that denormal handling costs real time on this hardware
+(`D108` found an Apple GPU flushing a denormal product to zero).** A `+38%` step from that is credible where a
+`2.6x` from layer position was not.
+
+**And the finding that matters for Design A is not about timing at all.** A middle stage in the pipeline **has a
+non-zero lower bound by construction**, so it will skip the prologue - **and the residual it should start from is
+exactly the hidden state the previous stage sends.** `RealForwardRunner` already has a `hiddenIn` property for
+this, added in A4. **The pipeline's correctness therefore depends on `hiddenIn` seeding the residual on the
+prologue-skipped path, and that wiring is the next thing to check** - not the timing, and not the balance.
+
+**What this costs the record.** `D333`'s decomposition: withdrawn (`D334`). `D334`'s direct measurements: also
+invalid, because they ran without a seed. **The cumulative curve stands as measured, because every point of it was
+taken at lower bound 0 and therefore had a seed.** That curve - 40 -> 129.8, 30 -> 87.1, 20 -> 64.4, 10 -> 41.9
+ms/token - **is the only sound stage-arithmetic evidence in the record**, and `D333`'s subtraction from it is
+still the best available estimate of stage cost, unconfirmed rather than refuted.
+
+**Three rounds, one anomaly, and the answer was in a comment in the file being measured.**
