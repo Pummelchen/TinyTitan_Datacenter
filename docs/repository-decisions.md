@@ -15595,3 +15595,43 @@ not.
 not because of overhead, but because the serial sum is `19.3n + 90` ms and the target is 47.6 ms, which is below even
 the single-stage figure. **What remains genuinely open is whether intra-token parallelism helps**, and that question
 now has a proper instrument instead of a borrowed table.
+
+## D440 - 21 tok/s is unreachable on this engine, proved with this fork's own profiler: the non-expert-I/O floor is above the target
+
+**`D439` found the fork's own profiler and said the next round should use it. This is that round, and one run settles the
+question.**
+
+    ssh node3  TURBO_FIELDFARE_PHASES=1  --max-new 32
+
+    [phases over 32 tokens, decode 4530 ms]
+      expert io await:   2127.5 ms
+
+**And the first thing that does is validate the instrument**: 4530 / 32 = **141.6 ms/token**, against the
+independently measured 141.9 ms/token from the throughput runs. **The profiler and the wall clock agree to 0.2%.**
+
+**Then it divides the step:**
+
+    141.6 ms/token total
+      66.5 ms/token  expert I/O await        47%   <- the ONLY part any distribution can divide
+      75.1 ms/token  everything else         53%
+
+    21 tok/s = 47.6 ms/token
+
+**And the arithmetic is decisive: if expert I/O cost NOTHING AT ALL - not sharded, not overlapped, simply free - the
+step would still be 75.1 ms/token, which is 13.3 tok/s.** The non-expert-I/O floor is **above the target**. So:
+
+  * **perfect, free, instantaneous 4-way sharding of the expert read gives 1.89x, i.e. 13.3 tok/s** - and that is a
+    ceiling that assumes the sharding itself is free, which `D90`-`D92` showed it is not;
+  * **nothing else helps**: expert sharding divides 47% and stops there; a layer pipeline divides *time* not at all
+    (`D437`, confirmed to 1% by this fork's own law in `D439`);
+  * **and combining them cannot go below the 75.1 ms floor**, because that floor is neither expert I/O nor layer count.
+
+**So the objective's 21 tok/s is not achievable on this engine, and this is now a measured bound rather than a scaling
+assumption.** The ~31 tok/s projection in the design document is not reachable by any arrangement of these four
+machines; it would require the 53% that is not expert I/O to come down first - dense dequantisation, the LM head, the
+attention core - and only then would distribution have something left to divide.
+
+**And what the four-node work did buy stands on its own.** The chain holds a 35 B model across four 8 GB machines with
+one stage each, correct output, 6.016 tok/s, and every stage within 9% of the others. **That is a memory-distribution
+result, and it is real; it was never going to be a 3x throughput result, and now the record says why with numbers from
+the engine itself.**
