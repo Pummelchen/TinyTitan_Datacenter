@@ -11172,3 +11172,36 @@ The pipeline's exactness remains unverified, and **nothing downstream of it is w
 
 **The diagnostics were reverted rather than committed**, so the fork is clean at `8fbd8cb` with all five safety
 gates still passing. What remains is one print inside the closure and one comparison.
+
+## D316 — The hook installs and never runs, and reverting the diagnostics between rounds is what stopped me reading it
+
+The print inside the closure was the whole of this round's intent. It produced:
+
+    [diag] installed on runner ObjectIdentifier(0x0000007570dd2800)
+    (no "closure ran" line)
+    /tmp/a.bin exists: NO
+
+**The hook is installed and the closure body never executes.** Combined with `D315`'s `probe hit at L=20, buffer=true,
+hook=true`, that reads as a non-nil closure being called and not running - which cannot happen, so **one of the two
+observations is not comparable with the other, and the reason is my own process.**
+
+**`D315` reverted its diagnostics rather than committing them.** That was right for keeping the tree clean and wrong
+for reading this round: **the probe-hit print was part of that reverted set**, so this build has the closure print
+but not the print that says whether the probe fires. The two lines I wanted to compare **were never in the same
+binary**, and I spent a round discovering that the diagnostics have to be additive across rounds rather than
+reverted between them.
+
+**What is actually established, and it is one thing.** `onHidden` is installed on a runner whose identity was printed
+- so the "different runner instance" candidate from `D314` is **weaker, not eliminated**, because I have an identity
+for the install and none for the call site. And **no file is written and no write error occurs** (`D315`'s test of
+the `try?`), so the failure is at or before the call.
+
+**The correct next step is now exact and small, and it is a single build with both prints in it**: the install
+identity in `run`, the probe hit in the prefill loop with `hiddenProbe`'s and `onHidden`'s identities, and the
+closure entry. **One binary, one run, and the three lines answer it.** The mistake to avoid is reverting any of them
+before the comparison is read - which is what cost this round.
+
+**And the accounting stands where `D315` left it.** Four rounds on one gate; the findings are real - the gate is in
+prefill, prefill already has three of Design A's five pieces, the failure is at the call rather than in the buffer,
+the probe or the writer - and **the pipeline's exactness is still unverified, with nothing downstream worth building
+until it is.**
