@@ -14482,3 +14482,40 @@ binaries plus the decode-service binary, 0 failures, with the quiet switch in an
 transport, pairing, seed, counts, frame shape and token edge are all verified; **a two-token ring produces a correct
 first token and a wrong second**; and the 10x throughput gap is, at last, **measurable with a switch rather than
 argued about.**
+
+
+## D409 - Candidate one is refuted by measurement: the diagnostics cost 2%, and the end stage runs at 4.6x the law
+
+**The experiment `D399` named four rounds ago, finally run - same ring, same prompt, same four tokens, twice:**
+
+    LOUD   A:  prefill=0.75s  new=4tok  decode=1.20s  tok/s=3.345
+    LOUD   B:  prefill=1.57s  new=4tok  decode=0.40s  tok/s=9.951
+    QUIET  A:  prefill=0.73s  new=4tok  decode=1.18s  tok/s=3.397
+    QUIET  B:  prefill=1.53s  new=4tok  decode=0.41s  tok/s=9.720
+
+**The instrumentation costs 1.7% on A and 2.5% on B.** So the first candidate - that the `[tok]`, `[seed]` and
+`[wire]` prints are synchronous stderr writes and that the throughput law's 41.9 ms/token was measured before any of
+them existed - **is refuted, and it is refuted cheaply, which is what the switch was built for.** Four rounds went
+into making this measurement possible; **the measurement itself took one run and closed the candidate.**
+
+**And the numbers that were always there are now readable, and they matter more than the candidate.**
+
+  * **A, owning `0..<20`, runs at 295 ms/token.** The law says twenty layers should cost **64.4 ms** - measured on one
+    node in a full run - **so the first stage is 4.6x slower than the law**, and that is with its diagnostics costing
+    2% and its own handoff being 12 KB.
+  * **B, owning `20..<40`, runs at 102 ms/token** - **1.6x the law's 64.4 ms**, and B is the stage that does the
+    sampling *and* the head.
+  * **The ring's whole step is A's 295 ms**, because B finishes in 102 and waits - **so the objective's number is
+    3.4 tok/s against the 21 tok/s target**, and it is the first stage that sets it.
+
+**And that inverts `D398`'s two remaining candidates.** The second one was "the end stage does more than 64.4 ms,
+because A also embeds the token and runs the head" - **and the measurement says the opposite: B does the head and
+still comes in at 1.6x, while A does neither and comes in at 4.6x.** So the extra 230 ms on A is **not work A is
+doing**; it is **A waiting**, which is the lock-step `D397` named - **and `D398` computed that the lock-step could
+account for at most 129 ms, so 100 ms of A's 295 is still unexplained even after the wait is allowed for.**
+
+**Where the objective stands, and it is a different place from an hour ago.** A1-A5 built and gated; **the fork's
+suite is 1565+ tests with the quiet switch in and green**; the exactness gate at **0 of 2048**; the transport,
+pairing, seed, counts, frame shape and token edge all verified; **a two-token ring whose first token is right and
+whose second is not**; **and the throughput gap now measured rather than argued: 3.4 tok/s, with the first stage at
+4.6x the law and the diagnostics excluded as a cause.**
