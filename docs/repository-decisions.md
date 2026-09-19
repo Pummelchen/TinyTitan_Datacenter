@@ -11403,3 +11403,38 @@ source, which `D300` read for the ANE study and which is the reference for this 
 **and nothing that any part of this engine reads was removed.** The one judgement call is the HF cache, and it is
 recorded as one: it is regenerable, it is not read by the engine, and its removal makes the reference gates
 *not checked* until they run again.
+
+## D323 — It is not the memcpy: an element-wise copy segfaults identically, so it is one of the pointers
+
+`D320` recommended two routes - a debugger, or a different way of building the copy. The debugger is unavailable and
+that is now a recorded fact rather than an assumption:
+
+    lldb --batch -o run -- TinyTitanCLI ...
+    error: process exited with status -1 (this is a non-interactive debug session,
+           cannot get permission to debug processes.)
+
+**macOS will not let a non-interactive SSH session attach to a process**, so `lldb` is not an instrument available
+from here. The second route was taken instead: the bulk copy replaced with an element-wise loop over the same two
+pointers, which is the same read and write with no library call in between.
+
+    exit=139
+
+**Identical.** So `memcpy` is not the fault, the clamp is not the fault, and the width is not the fault - **the first
+element access through one of the two pointers is.** `dst.len=4096` and `src.len=16777216` are both metadata and
+both correct, which is exactly the distinction `D318` raised.
+
+**And it revives the candidate `D319` thought it had dismissed, because `D319`'s test was too broad.** The evidence
+was that `scratch.routeIDs.contents()` is read at `Prefill.swift:1414`, so scratch buffers are shared-storage, so
+`scratch.hidden.contents()` must be too. **`routeIDs` and `hidden` are different buffers**, and a property of one is
+not a property of the other. **The generalisation was mine and it was wrong**, and it cost a round.
+
+**The decisive test is one property, not another run**: `MTLResource.storageMode` on both buffers, printed beside
+the lengths already there. **`.shared` and `.private` are different values, the crash is on the first element access,
+and printing the mode separates the two pointers in a single line** - after which `scratch.hidden` either takes a
+blit through a command buffer, as the activation dumps do, or `hiddenProbe` does.
+
+**Where this leaves the gate, and the honest framing.** Nine rounds, one gate, still unrun. The last four produced:
+the failure is a SIGSEGV (`D318`); it is not the size (`D320`); it is not the `memcpy` (`D323`); and the debugger is
+unavailable (`D323`). **Each is a real elimination and together they leave one property to print** - and the
+recommendation from `D320` stands: **if the next print does not settle it, stop guessing and take the path the code
+base has already proved, by copying through a command buffer the way `dumpActivation` does.**
