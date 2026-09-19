@@ -10777,3 +10777,34 @@ per-stage cache hit rate far below the measured **68.1%** breaks the streaming t
 **Nothing is claimed about Design A's throughput.** The ~31 tok/s is a projection from measured inputs, section 12
 of the design document says so, and the 35B's ten layers is 4.53 GB against ~4.5 GB of usable memory - **so a 35B
 result will flatter the design and must be reported with the cache capped.**
+
+## D305 — A1 is in and its gate passes: the layer range changes nothing when it is unset
+
+Design A's first stage, and the one every later stage rests on: **which layers a node owns is now a property, and
+the decode loop honours it.**
+
+    RealForwardRunner       public var layerRange: Range<Int>?        <- nil means all of them
+    +Decode.swift:192       for L in layerRange ?? 0..<cfg.numLayers
+
+**The gate was fixed before the change and it is the only gate that makes the rest trustworthy**: with the range
+unset, a single node must produce exactly what it produced before. It does, on the real model:
+
+    Paris, a city renowned for its rich history, culture, and iconic landmarks. Situated in the north-central
+    part of the country, along the Seine River, Paris has been the political, economic, and cultural hub of
+    France for centuries.
+    [stop=maxTokens prefill=5tok/1.60s new=48tok decode=6.23s tok/s=7.708]
+
+**Token for token the baseline output**, at **7.708 tok/s**, inside the single-node band of 7.377-7.974 the record
+already carries. Suite 0 failures, `tools/lint.sh` clean, and the fork's `distribution` branch at `e73040c`.
+
+**One thing the change taught that the plan did not anticipate**: the decode loop lives in an **extension**, and
+extensions cannot carry stored properties, so the first attempt failed to compile. The property belongs in
+`RealForwardRunner` and the loop reads it across the extension boundary. That is recorded because the same mistake
+is available at every later stage - the seams in `docs/design-a-plan.md` are spread across files and at least one of
+them is an extension.
+
+**What A1 does and does not give.** It gives **a node that stops after a chosen layer and leaves the hidden state in
+its residual buffer** - which is the whole of what a pipeline stage must be able to do. It does not give the frame
+that carries that state to the next stage (A2), the CLI surface to set the range, the embed/head placement (A3), or
+the chunked prefill (A4). **And nothing about Design A's throughput is claimed**: the 35B is still running all 40
+layers on one node at 7.7 tok/s, exactly as before.
