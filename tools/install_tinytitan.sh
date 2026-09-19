@@ -293,8 +293,8 @@ LAUNCHER
   <key>CFBundleName</key><string>TinyTitan</string>
   <key>CFBundleDisplayName</key><string>TinyTitan</string>
   <key>CFBundleIdentifier</key><string>local.tinytitan.app</string>
-  <key>CFBundleVersion</key><string>5.5</string>
-  <key>CFBundleShortVersionString</key><string>5.5</string>
+  <key>CFBundleVersion</key><string>1.1</string>
+  <key>CFBundleShortVersionString</key><string>1.1</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>TinyTitan</string>
   <key>CFBundleIconFile</key><string>TinyTitan</string>
