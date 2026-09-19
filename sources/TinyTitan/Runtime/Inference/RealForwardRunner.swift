@@ -830,7 +830,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
 // FP16, like `routing_w`. The kernel declares `device half* y` and `device const half* residual`, and
         // a Float `y` is written as halfs and read back as floats - which is garbage, and was node1's NaN. The
         // residual happened to survive because zero is zero in both widths; `y` did not.
-        self.remoteY = try (0..<8).map { _ in context.device.makeBuffer(length: D * MemoryLayout<Float16>.stride, options: .storageModeShared)! }
+        self.remoteY = (0..<8).map { _ in context.device.makeBuffer(length: D * MemoryLayout<Float16>.stride, options: .storageModeShared)! }
         self.remoteResidual = context.device.makeBuffer(length: D * MemoryLayout<Float16>.stride, options: .storageModeShared)!
         // Eight, not one: the kernels validate `topK == maxStreamedExperts`, so a request always has eight slots
         // and only the first is weighted. The other seven compute the same expert and contribute zero.
