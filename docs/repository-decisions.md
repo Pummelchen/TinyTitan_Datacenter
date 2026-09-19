@@ -14955,3 +14955,41 @@ the `both` role; the exactness gate at **0 of 2048**; the transport, pairing, se
 all verified; **a two-stage ring measured to convergence at 17.1 and 19.1 tok/s**; and **the three-stage chain launched
 correctly and reaching its serve blocks, with node4's missing install as the one thing between this design and a
 three-stage measurement.**
+
+## D421 - The both role works and the reverse pair connects over localhost; the outbound leg fails exactly as D387 predicts
+
+**Three stages on two nodes, node1 holding the middle and the head:**
+
+    node3  0:13   source   STAGE_CONNECT=node1:47701                      BACK_LISTEN=47703
+    node1  13:26  both     STAGE_LISTEN=47701  STAGE_CONNECT=127.0.0.1:47711  BACK_LISTEN=47702  BACK_CONNECT=node3:47703
+    node1  26:40  sink     STAGE_LISTEN=47711                             BACK_CONNECT=127.0.0.1:47702
+
+    node3 0:13  source:   [shard] probe: reached the serve block
+    node1 13:26 both:     [back] connecting to 192.168.18.29:47703 as both
+                          [back] first connect failed: No route to host
+    node1 26:40 sink:     [back] connected
+                          [pipeline] reverse edge installed
+
+**Three things, and two of them are new.**
+
+**The `both` role runs.** It parsed, it reached the point of opening its reverse connect, and it reported its role as
+`both` - **so the change `D418` made is exercised by a real process rather than only by the suite**, which is the first
+time since it was written.
+
+**The reverse pair connects over localhost.** The head stage's `BACK_CONNECT=127.0.0.1:47702` reached the middle
+stage's `BACK_LISTEN=47702` and printed `[back] connected` - **so a middle stage's listening endpoint and a sink's
+connecting endpoint agree on a real socket**, which is the half of the four-stage wiring that the two-stage ring never
+exercised.
+
+**And the outbound leg failed with `EHOSTUNREACH` - on a process launched with `nohup`.** That is precisely the
+condition `D387` named: **the reverse edge's connect works when the process stays attached to the launching session and
+fails when it is detached**, and the four-stage work reintroduced the detached form without noticing. **So this is not
+a new fault and not a fault in `both`; it is `D387`'s discriminator being violated by the way the chain was launched**,
+and the correction is to run the middle stage in the foreground with its session held open.
+
+**Where the objective stands.** A1-A5 built and gated; the fork's suite green with the quiet switch, the lookahead and
+the `both` role; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and token edge
+all verified; **a two-stage ring measured to convergence at 17.1 and 19.1 tok/s**; **the three-stage chain launched on
+two nodes with its middle stage parsing `both` and its reverse pair connected over localhost**; and **the single
+remaining obstacle named rather than guessed: the outbound connect needs the attached-session form that D387 measured,
+and the chain was launched detached.**
