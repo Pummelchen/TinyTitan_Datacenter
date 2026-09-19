@@ -10989,3 +10989,47 @@ reproduce, the pipeline is wrong at a level no transport can fix and the transpo
 **Nothing about throughput is claimed.** The only pipeline-relevant number this build has is `D306`'s single-stage
 **21.482 tok/s for ten layers**, which is the arithmetic the design rests on. **No two stages have ever exchanged a
 frame, and no pipeline has been measured.**
+
+## D311 — The file handoff cannot work: the pipeline is a ring, not a chain, and the token loop closes it
+
+`D310` said the pipeline's exactness gate was "one wiring away" - a `0:20` run writing `PipelineFrame`s and a `20:40`
+run reading them, both on one node, no socket. **Working out what the second run would actually consume shows the
+idea is wrong**, and it is wrong in a way that changes Design A's shape.
+
+**A generation is a closed loop.** Each token's forward pass ends in a sample, and **the sampled token is the next
+token's input**:
+
+    embed(t) -> layers -> head -> sample -> t+1 -> embed(t+1) -> ...
+
+**So a `0:20` run cannot produce the inputs a `20:40` run needs.** The first twenty layers' output goes to the head,
+which samples a token; with only twenty layers that sample is the garbage `D306` recorded - `Paris
+ParisillacenneredBy...` - **and it becomes the next token the first stage embeds.** The hidden states run one writes
+are therefore hidden states **for the wrong tokens**, and no amount of replaying them reconstructs the generation.
+
+**What the pipeline actually is, and the plan had it as a chain.** `docs/design-a-plan.md` draws
+`node0 -> node1 -> node2 -> node3 -> head`, which is right for a **single token's forward pass** and wrong for
+**generation**, because the last stage's sample must return to the first stage to begin the next token. **The
+topology is a ring**:
+
+    stage0 -> stage1 -> stage2 -> stage3 -> sample -> back to stage0
+
+**And that also answers where the head belongs.** `D306` measured ten layers plus the head at **21.482 tok/s** and
+noted the head is the binding stage; in a ring the sampler's result has to travel back anyway, so the return leg
+carries **one token index, four bytes**, against the forward leg's 4 KB - the wire cost of closing the loop is
+nothing.
+
+**Two consequences for the build, and the second is the useful one.**
+
+  * **The exactness gate needs both stages live.** Not two runs, but two stages exchanging in one generation -
+    which on one machine means either two processes with a reply channel or **two runners in one process**. The
+    first is what the real design is; the second needs about twice the memory, and **the 35B's ten layers is 4.53 GB
+    against ~4.5 GB usable, so two runners on one 8 GB node is not available for this model.**
+  * **And the honest way to test exactness on one node is therefore a layer-level comparison, not a token-level
+    one**: run `0:40` with a `hiddenOut` on layer 20 and record the state, then run `0:20` with the same `hiddenOut`
+    and compare the two buffers **for the same token**. That is the same forward pass truncated at the same point,
+    it needs no second runner and no transport, and **it tests exactly the property the pipeline depends on** - that
+    a stage's output is a function of its input and its own layers, with nothing else in it.
+
+**So this round produced no code and a corrected design**, which is the better outcome: the file-handoff wiring would
+have been built, run, and produced a comparison that could only ever have been wrong. **A5 is now: the layer-20
+state comparison, then the ring.**

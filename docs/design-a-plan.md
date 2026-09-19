@@ -11,8 +11,15 @@ Node *i* owns **ten consecutive layers** and **all 256 experts of those layers**
 per-layer cache. Only the hidden state crosses the wire. From `docs/distribution-design.md` section 4:
 
 ```
-node0 L0-L9 ──4KB──> node1 L10-L19 ──4KB──> node2 L20-L29 ──4KB──> node3 L30-L39 → head
+node0 L0-L9 ──4KB──> node1 L10-L19 ──4KB──> node2 L20-L29 ──4KB──> node3 L30-L39 → head → sample
+   ^                                                                                        |
+   └─────────────────────────────── one token index, 4 bytes ────────────────────────────────┘
 ```
+
+**It is a ring, not a chain (`D311`).** A generation is a closed loop: each token's forward pass ends in a sample and
+the sampled token is the next token's input, so the last stage's result must return to the first stage. The forward
+leg carries 4 KB of hidden state per hop and the return leg carries **one token index** - closing the loop costs
+nothing on a 117.8 MB/s wire. The chain above is right for a *single* forward pass and wrong for *generation*.
 
 | | measured input | 4-stage projection |
 | --- | --- | --- |
@@ -47,7 +54,11 @@ projects to vocabulary.
 **A4. Chunked prefill.** Prefill by 4,096-token chunks per stage, because that is the chunk size the record
 established for the ANE and because a chunk is what amortises a stage's weight reads.
 
-**A5. Two-node measurement first**, then four. The gate is the same discipline the whole record uses: node,
+**A5. Exactness at a layer boundary, then the ring.** `0:40` with a `hiddenOut` on layer 20 recorded, against
+`0:20` with the same `hiddenOut`, compared **for the same token** - a forward pass truncated at the same point, which
+tests that a stage's output is a function of its input and its own layers and nothing else. **A file handoff between
+two separate runs cannot work** (`D311`): the first stage would embed the token its own truncated forward pass
+sampled, so the states it wrote belong to the wrong tokens. **Then two-node measurement**, then four. The gate is the same discipline the whole record uses: node,
 configuration, generation length, loads, and a median over repeats.
 
 ## What will falsify it
