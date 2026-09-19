@@ -15860,3 +15860,38 @@ scheduling artefact, not a prediction failure, not a queue that needs to be deep
 those 1.75 ms behind work that does not need the experts, which is `D441`'s layer-loop overlap, or to reduce the miss
 count itself** - and the reference's cache measurements (5.164 / 6.019 / 7.075 tok/s at 1 / 2 / 3 GB) say the miss count
 is what its own tuning moved.
+
+## D448 - The cache lever is real and is already at its optimum; the wall is the 8 GB machine, not the tuning
+
+**`D447` said the remaining levers were to hide the expert latency or to reduce the miss count, and that the
+reference's own tuning moved the miss count. The miss count is a flag, so it was swept - and the flag rejects
+arbitrary values (`--expert-cache-slots` takes 8, 16, 24, 32, 40, 48, 64, 96, 112, 128, 160, 192, 256; my first attempt
+at 20 and 80 died with `invalid value`, which is why two rows were blank):**
+
+    slots   tok/s   expert io await   swap used
+     16     6.024      3004.7 ms       543 M
+     24     6.485      2630.6 ms       543 M
+     32     7.027      2240.7 ms       543 M
+     40     7.398      1996.6 ms       543 M     <- optimum
+     48     7.285      1972.3 ms       551 M
+     64     4.901      2581.4 ms       646 M
+     96     2.576      2222.9 ms      1557 M     <- swapping
+
+**The lever works exactly as the mechanism predicts** - the await falls 3005 -> 1997 ms as the cache grows, which is
+misses being turned into hits - and then **the machine runs out of memory and the whole thing collapses**, 7.4 -> 4.9
+-> 2.6 tok/s as swap goes 543 M -> 646 M -> 1557 M. **That is the same shape the reference measured** (5.164 / 6.019 /
+7.075 tok/s at 1 / 2 / 3 GB, then 2.756 at 4 GB, "the last one collapsing because a 4 GB wired cache, the dense
+weights, the KV and the prompt cache no longer fit in 8 GiB").
+
+**And the default is already the optimum.** The profile's derived budget lands at 40, where 7.398 tok/s is the best of
+the seven points and 48 is within noise of it. **So the last single-node knob family is not misconfigured either, and
+this closes it:** `D442` (prefetch depth), `D443` (four tunables), `D447` (ring slots) and now the cache itself all
+say the same thing - **this engine is at its optimum for this machine, and the remaining gap is 62 ms/token of expert
+await that the machine cannot cache its way out of because it has 8 GB.**
+
+**Which is the one place the four-node layout could still pay, and it is not layering.** The await is 44% of the step
+and it is a *cache capacity* problem, not a compute problem - and four machines have four times the memory a single
+node can spend on experts. **A cluster that pools expert residency can hold a cache no single 8 GB node can afford,
+without dividing the layer chain and without the serial penalty `D437` measured.** That is the original expert-sharding
+shape rather than `Design A`'s layer pipeline, and it is now the only lever left that both uses all four nodes and
+targets the measured bottleneck.
