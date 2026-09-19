@@ -15895,3 +15895,32 @@ node can spend on experts. **A cluster that pools expert residency can hold a ca
 without dividing the layer chain and without the serial penalty `D437` measured.** That is the original expert-sharding
 shape rather than `Design A`'s layer pipeline, and it is now the only lever left that both uses all four nodes and
 targets the measured bottleneck.
+
+## D449 - Pooled expert residency is infeasible on this farm's interconnect, measured: 118 MB/s against a 1.1 GB/s disk
+
+**`D448` ended on the one lever that both uses all four nodes and targets the measured bottleneck**: the 44% await is
+a *cache capacity* problem, and four machines have four times the memory to spend on experts - so pool expert
+residency, without dividing the layer chain and without `D437`'s serial penalty. **That was a design proposal, and it
+had an unmeasured premise: that a peer can serve an expert faster than the local disk can.**
+
+**It cannot, and the measurement is trivial.** A 256 MB stream between two nodes:
+
+    CLIENT sent 268435456 bytes in 2.276 s = 118.0 MB/s
+    SERVER recv 268435456 bytes in 2.285 s = 117.5 MB/s
+
+**118 MB/s is 1 GbE.** An expert is `3 x 2048 x 512` parameters, about 1.7 MB at 4-bit, so:
+
+    peer fetch over this interconnect ... 14.4 ms per expert
+    local disk miss (from D447)  .......  1.55 ms per expert
+    network / local ....................  9.3x SLOWER
+
+**`D447` measured 40 misses per token at 1.55 ms each, which is the 44% await. Served from a peer they would cost
+40 x 14.4 = 576 ms/token, about 1.7 tok/s** - not a speedup, a collapse. To beat the local disk an expert has to
+arrive in under 1.55 ms, which needs about **1.1 GB/s**, i.e. 10 GbE or Thunderbolt rather than the 1 GbE these four
+machines are connected by.
+
+**So the last lever that used the cluster is closed by measurement rather than by argument**, and the position is now
+narrow enough to state in one line: **the 44% await is expert-cache capacity; the machine has 8 GB and swaps before the
+cache is big enough (`D448`); and the interconnect is 9.3x too slow to borrow a peer's memory (`D449`).** What is left
+is the one lever that needs neither more RAM nor a faster wire - **hiding the 1.75 ms behind work that does not need
+the experts, which is `D441`'s layer-loop overlap.** Every other direction has now been tried, measured and closed.
