@@ -281,10 +281,24 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     public var hiddenProbeLayer: Int?
     public var hiddenProbe: MTLBuffer?
 
-    /// A `[D]` fp16 shared buffer - what a probe or a pipeline stage hands between boundaries. The device comes
-    /// from a buffer the runner already owns, because `context` is an init local and not a property.
-    public func makeHiddenStateBuffer() -> MTLBuffer {
-        verificationHidden.device.makeBuffer(length: hiddenStateBytes, options: .storageModeShared)!
+    /// An `[rows, D]` fp16 shared buffer - what a probe or a pipeline stage hands between boundaries. The device
+    /// comes from a buffer the runner already owns, because `context` is an init local and not a property.
+    ///
+    /// `rows` defaults to 1, which is the per-token handoff and the pipeline's steady state: `D336` found the
+    /// decode path already seeds from a one-row `hiddenIn` and is correct. **Prefill needs more than one row** -
+    /// `executePrefillChunk` works on `t` tokens at once - and `D337` settled that a `t x D` handoff beats
+    /// per-token prefill by three orders of magnitude in call count, for 46 ms of wire on the longest prompt in
+    /// the record. So the same factory sizes both, and a receiver sizes from `PipelineFrame`'s `count` field.
+    public func makeHiddenStateBuffer(rows: Int = 1) -> MTLBuffer {
+        verificationHidden.device.makeBuffer(length: hiddenStateBytes(rows: rows),
+                                              options: .storageModeShared)!
+    }
+
+    /// The byte width of a `rows`-row handoff, so a caller can size a `PipelineFrame` payload without recomputing
+    /// the residual width. A non-positive `rows` is one, never zero: a zero-length buffer is not a useful handoff
+    /// and `makeBuffer(length: 0)` is a fault rather than a small buffer.
+    public func hiddenStateBytes(rows: Int) -> Int {
+        hiddenStateBytes * max(1, rows)
     }
 
     /// The residual width in bytes, so a caller can size a record without recomputing it.
