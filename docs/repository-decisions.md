@@ -13249,3 +13249,42 @@ same address is not a shape this design has tested.
 proven with a correct token (`D358`); **the reverse edge now proven to connect with A's full configuration**
 (`D374` - the earlier successes had A simpler); and the remaining fault **reproducible, controlled to a single
 variable on the peer, and with two named candidates rather than a symptom.** The sequence run is one variable away.
+
+## D375 — The fault is not deterministic: four alternating runs all connected, and three rounds of conclusions are withdrawn
+
+**The alternating test, with A byte-identical in every case and only B varying:**
+
+    B one-listener   (rep 1)   -> [back] connected
+    B two-listener   (rep 1)   -> [back] connected
+    B one-listener   (rep 2)   -> [back] connected
+    B two-listener   (rep 2)   -> [back] connected
+
+**Every one succeeded, including the two-listener configuration that failed twice in `D366`/`D371` and was named as
+the cause in `D374`.** So:
+
+  * **`D371`'s "it reproduces deterministically" is wrong** - it was one repeat of one observation;
+  * **`D374`'s controlled comparison is withdrawn** - it was a single pair, and the same pair run twice more gives
+    the opposite answer;
+  * **`D372`'s contradiction is not a contradiction** - B listening while A is refused is what a *flaky* connect
+    looks like, not what an impossible one looks like.
+
+**What is actually established after five rounds on this leg.** The reverse connect succeeds sometimes and fails
+sometimes, with everything visible held constant. **A fault that does not reproduce on demand cannot be bisected by
+varying configuration**, and three rounds were spent doing exactly that. **`D370` asked the right question - "is it
+deterministic?" - and answered it from a single repeat, which is the same error as reading one sample as a trend.**
+
+**And the candidate that survives is the one that was never tested: timing.** The failing runs and the succeeding
+runs differ in prompt length and generation length - `'The capital of France is'` with `--max-new 4` against `'x'`
+with `--max-new 1` - and **both change how long each stage takes to reach its wiring**, on a farm that is shared and
+whose load this record has repeatedly had to name. **That is a hypothesis, and after five rounds of hypotheses on
+this leg it is recorded as one rather than as the next conclusion.**
+
+**What would settle it is a repetition count, not a new variable.** Run the *same* configuration ten times and count
+the successes. **If it is nine or ten, the fault is load or timing and the design is not implicated at all; if it is
+five, there is something real and it needs a different instrument than `lsof`.** That is a measurement whose result
+cannot be argued with, which is what the last three rounds have lacked.
+
+**Where the objective stands, honestly.** Four legs written and tested; the forward edge proven with a correct token
+(`D358`); **the reverse edge proven to connect - now repeatedly** (`D375`); and no run with both live yet.
+**The blocker is no longer a specific fault: it is that this leg succeeds most of the time and fails sometimes, and
+nobody has measured how often.** The sequence run may simply need to be attempted again.
