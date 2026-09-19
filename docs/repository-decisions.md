@@ -12011,3 +12011,64 @@ contained not only the refutation but the fix and the reason. **Three times now 
 code being diagnosed**: `D335` found the residual seed this way, `D336` found that decode already handled it, and
 this round found both the refutation and the pattern. **Reading the code before forming a hypothesis about it is
 not a shortcut; it is the cheaper path, and it keeps being the cheaper path.**
+
+## D340 — The all-reduce wire budget is ~5x smaller than the brief computes, and Design A does not reduce at all
+
+A brief arrived proposing three options for `ShardExchange.allReduce`'s wire volume, on the premise that **"at the
+target 21 tok/s the interconnect becomes the binding constraint."** Read against the mechanism it describes, the
+premise does not follow.
+
+**The brief's mechanism and its arithmetic disagree, and the mechanism is the authority.** It says allReduce
+"encodes **this node's own terms only**, sends that same frame to every peer", which is what sharding means - and
+then budgets `(N-1) x 2.5 MB = ~7.5 MB`. **7.5 MB is what every node would send if every node held every expert**,
+which is the configuration sharding exists to avoid:
+
+    per token, all selected experts      320 x 8 KB = 2.56 MB    <- the whole cluster's terms
+    per node, its OWN terms              320/4 x 8 KB = 0.64 MB
+    broadcast to three peers             3 x 0.64 MB = 1.92 MB sent
+    received                             3 x 0.64 MB = 1.92 MB
+
+**7.5 MB is the aggregate across the fabric, not one node's serial load** - and 1 GbE is **full duplex**, so send
+and receive overlap:
+
+    1.92 MB / 117.8 MB/s = 16.3 ms/token  -> ~61 tok/s,  ~32 with the head's ~1.8 MB
+
+**Both are above the 21 tok/s target.** So "the current protocol cannot reach it" is not supported by the
+mechanism; what is supported is 2-5x of headroom depending on the head.
+
+**And the brief's own acceptance rule catches this before any option is chosen:** *"If the ledger does not show
+~7.5 MB/token today, the geometry assumption is wrong and the whole budget must be recomputed."* **It will not
+show 7.5 MB per node** - it should show ~1.9 MB `bytesSent` and ~1.9 MB `bytesReceived`, with the aggregate at
+~7.5 MB. **Run `ExchangeLedger` first**; by the brief's own criterion the budget then lands at ~61 tok/s, not 12.
+
+**And this record already measured where the exchange's time goes, and it is not bytes.** `D92`: encode 0.002 s,
+send 0.007 s, **receive 1.11-2.31 s**, merge 0.002 s - receive is **99.6%** of the exchange, and the reading was
+that the cluster waits for peers to **have** something to send, i.e. compute imbalance. `D278` measured the RPC at
+**0.565 ms** against **0.079 ms** of wire, so those 2.95 ms were **GPU dispatch and the wait**. **A byte-volume
+optimisation would be optimising a term that measured near zero** - and the brief's own last line says so: *"a byte
+win can be a latency loss."* Measure the ledger and the per-layer wall time before choosing A, B or C.
+
+**On the D17 question the brief is right and this design makes it moot.** *"Bit-identity to the sequential
+single-node sum is fundamentally incompatible with parallel pre-reduction"* is correct. **But Design A never
+reduces contributions at all** - it sends hidden states:
+
+    sharded design, per token   ~2.56 MB of contributions, plus a reduction
+    Design A,    per token       12 KB of hidden state, 4 KB per stage hop
+
+**200x less wire and no reduction, so the ordering invariant does not arise.** The pipeline's equivalent invariant
+is **already satisfied bit-identically**: the A5 gate measured **0 of 2048 elements differing** between a `0:40`
+run's state entering layer 20 and what a `0:20` stage publishes. **The brief frames the choice as "matches naive
+fp32 order" versus "deterministic and independent of N"; the pipeline needs neither, because it does not sum
+across nodes.**
+
+**`TCP_NODELAY` is confirmed absent, and the reading matters for how it is fixed.** `DecodeTCPSocket` sets
+`SO_NOSIGPIPE` on every socket and **never** sets `TCP_NODELAY`, so Nagle plus delayed ACK applies to every small
+frame. **But the brief's two-write pattern (length prefix, then payload) is currently *masked* by Nagle** - those
+two writes get coalesced. **Enabling `TCP_NODELAY` without also merging the writes could therefore make it worse**,
+so the two should land and be measured together, and separately from any volume change.
+
+**And `PipelineLink` is committed** (`10b4e86`), with the round-38 defect named in it: `PipelineFrame` encodes
+token, layer, count, reserved, and the first version read `count` at offset **12** - the reserved word, always
+zero - so the reader computed an empty payload, `decode` threw, the sender's task died, and the reader saw
+`ECONNRESET`. **That presents as a socket or port fault and is neither**, and it cost two wrong hypotheses before
+the offset was checked against `encode`. `countOffset` is a named constant with that history beside it.
