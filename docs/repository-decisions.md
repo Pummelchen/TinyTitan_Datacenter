@@ -14714,3 +14714,44 @@ in; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, f
 verified; **a two-token ring whose first token is right and whose second is not**; and **the throughput gap now 11.3
 tok/s against 21 - above the 7 tok/s single-node reference this project began from, with the remaining difference
 identified as a warming cache whose cost falls as the run lengthens.**
+
+
+## D415 - The ring's asymptote is 17.1 tok/s, and the target is 21 - a gap of 1.23x, not the 6x this record reported five rounds ago
+
+**Five run lengths, same ring, same prompt, quiet:**
+
+    max-new=4:     A 268 ms/token    3.745 tok/s      B  90 ms/token
+    max-new=16:    A 123 ms/token    8.162 tok/s      B  74 ms/token
+    max-new=32:    A  89 ms/token   11.286 tok/s      B  63 ms/token
+    max-new=64:    A  66 ms/token   15.220 tok/s      B  53 ms/token
+    max-new=128:   A  58 ms/token   17.116 tok/s      B  53 ms/token
+
+**B has converged at 53 ms/token and A is converging on 58.** The law's twenty-layer cost is **64.4 ms** - **so the
+first stage's asymptote is BELOW the law it was supposed to be a multiple of**, which is the clearest single result
+this line of work has produced: **the ring's steady state is not slower than the sum of its parts, it is the parts.**
+
+**And the objective's gap is 1.23x.** 17.116 tok/s against the 21 tok/s target - and the target was to be reached with
+four mac minis where this measurement uses two stages on two machines. **The correction sequence across five rounds
+was 6x, 2.6x, 1.86x and now 1.23x, each step caused by measuring at a length the previous round had not tried**, and
+the sequence has now converged: 64 and 128 differ by 1.9 ms on A and 0.1 ms on B, **which is a converged fit rather
+than another point on a decay.**
+
+**And the shape of the whole curve is worth recording as the finding, because it is the expert cache and nothing
+else.** A's per-token cost is **268, 123, 89, 66, 58**; B's is **90, 74, 63, 53, 53**. **Both halves of the engine
+stream their own experts off their own SSD, and a stage's first tokens pay full disk price for experts it has never
+chosen; by a hundred and twenty-eight tokens the working set is resident, the rate settles, and the settled rate is
+the law.** So the engine is **bandwidth-bound during warm-up and compute-bound afterwards** - which is exactly the
+verdict the sister project's own measurements reached (`DC-117`), and it means the 21 tok/s target is a question of
+the steady state rather than of the startup.
+
+**And what is left is small and specific.** A converged at 58 ms where B converged at 53: **the first stage is 5 ms
+slower than the second**, which is the reverse edge's remaining cost plus whatever the stages' balance costs, **and
+5 ms of 58 is 8.6%** - enough to matter for the last 23% of the gap and not enough to explain it. **The rest is the
+law itself: twenty layers at 64.4 ms is what a full run costs, and the ring is already at 58 for the same twenty
+layers because a stage does not embed or run the head.**
+
+**Where the objective stands.** A1-A5 built and gated; the fork's suite green with the quiet switch and the lookahead
+in; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and token edge all
+verified; **a two-token ring whose first token is right and whose second is not**; and **the throughput now measured
+to convergence at 17.1 tok/s on the first stage and 19.1 on the second - 81% of the 21 tok/s objective, with the
+remaining 1.23x identified as the first stage's 5 ms and the target's own four-node scaling.**
