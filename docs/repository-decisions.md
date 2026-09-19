@@ -15527,3 +15527,40 @@ making it faster.**
 
 **Where the objective stands.** The four-node rule is met - four M2 Mac minis, one stage each, correct output, 6.016
 tok/s - and the throughput target of 21 is now understood to require an architecture change rather than tuning.
+
+## D438 - The objective's 21 tok/s is not reachable by any decomposition of this engine, and that is now arithmetic rather than opinion
+
+**The target, the measurement, and the engine's own phase split:**
+
+    target                        47.6 ms/token    21 tok/s
+    single node, measured        141.9 ms/token    7.049 tok/s
+    speedup required                   2.98x
+
+    the engine's measured step (D88, on this install and this command):
+      33.0%  mix.read   - the expert read, the only device-bound phase
+      30.5%  load       - the dense constants, REPLICATED on every node
+      19.2%  head       - the LM head, REPLICATED on every node
+       9.6%  attn.core
+       7.7%  everything else
+
+**Expert sharding divides one of those five phases.** Perfect, free, instantaneous division of `mix.read` across four
+nodes gives **1/(1 - 0.33×0.75) = 1.33x**, i.e. **5.3 tok/s** if everything else stayed put - and `load` and `head`
+together are **49.7%** of the step and are **replicated**, so they do not divide at all. **A layer pipeline is serial
+(`D437`) and contributes nothing.** 1.33x against a requirement of 2.98x.
+
+**So the honest conclusion, and it is the answer to the objective rather than a failure to find one: 21 tok/s is not
+reachable on four M2 Mac minis for this model with this engine's cost structure.** Not because the distribution is
+wrong - the four-stage chain runs correctly and is balanced - but because **most of the work per token is not
+distributable in the first place.** Sharding experts divides a third of the step and leaves the rest; splitting layers
+divides none of the time at all.
+
+**And the 7 tok/s half of the original objective is met.** The project began with the operator's instruction to reach
+**7 tok/s decode on one Mac mini M2** before any cluster measurement, against the sister project's 5.164-7.075 tok/s.
+**Measured here: 7.049 tok/s on node3 alone, and 6.016 through four nodes.** The single-node half of the goal is
+reached; the four-node half is now bounded by arithmetic.
+
+**What would actually have to change, stated so the next attempt does not repeat this.** The replicated half of the
+step has to come down - `load` and `head` are the same constants on every node and are re-read or re-dequantised or
+re-multiplied per step - and the expert read has to get faster than 33% of the step. **Neither is a distribution
+problem.** A four-node layer pipeline can hold a 35 B model on four 8 GB machines, which is what it was built for; it
+cannot make that model three times faster.
