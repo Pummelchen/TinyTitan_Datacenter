@@ -70,13 +70,25 @@ public enum PipelineWiring {
         let wantsSource = isSource || isBoth
         let wantsSink = !wantsSource || isBoth
 
+        // WHICH END DIALS IS A DEPLOYMENT CHOICE, NOT A CONSEQUENCE OF THE ROLE (D435). The comment above already
+        // says the two are independent, and the default wiring reads from the LISTEN end and writes to the CONNECT
+        // end - which forces the successor to dial this stage. On a machine whose engine cannot originate at all
+        // (node4, refused by macOS Local Network Privacy) that is fatal, and it need not be: with
+        // TINYTITAN_STAGE_BACK_SWAP the stage READS from the connection it dialled and WRITES to the one it
+        // accepted, so a pure-listener head is expressible and the whole chain works without that machine ever
+        // opening an outbound socket.
+        let swap = env["TINYTITAN_STAGE_BACK_SWAP"] != nil
         var sourceEnd: FileHandle?
         var sinkEnd: FileHandle?
         if let listen {
             guard let port = UInt16(listen) else { throw WiringError.badPort(listen) }
             let pair = try DecodeTCPSocket.listenAndAccept(host: "0.0.0.0", port: port)
-            if wantsSource { sourceEnd = pair.input }
-            if wantsSink { sinkEnd = pair.output }
+            if swap {
+                if wantsSink { sinkEnd = pair.output }
+            } else {
+                if wantsSource { sourceEnd = pair.input }
+                if wantsSink { sinkEnd = pair.output }
+            }
         }
         if let connect {
             let parts = connect.split(separator: ":")
@@ -94,8 +106,12 @@ public enum PipelineWiring {
             for attempt in 0..<connectRetries {
                 do {
                     let pair = try DecodeTCPSocket.connect(host: String(parts[0]), port: port)
-                    if wantsSink { sinkEnd = pair.output }
-                    if wantsSource && sourceEnd == nil { sourceEnd = pair.input }
+                    if swap {
+                        if wantsSource { sourceEnd = pair.input }
+                    } else {
+                        if wantsSink { sinkEnd = pair.output }
+                        if wantsSource && sourceEnd == nil { sourceEnd = pair.input }
+                    }
                     opened = pair.output
                     break
                 } catch {
