@@ -10852,3 +10852,31 @@ its hidden state, sent to the next stage, rather than a premature projection to 
 **Nothing about the pipeline is claimed.** One node with ten layers is not four nodes with a pipeline; the frame
 that carries the hidden state does not exist yet (A2), and the fixed 19 ms is currently paid by every node that runs
 the head - which is exactly the replication Design A exists to remove.
+
+## D307 — A2 is in: the pipeline frame, and the only thing Design A puts on the wire
+
+A stage must be able to hand its hidden state to the next one, and that is now a type with tests:
+
+    PipelineFrame   header: token (u32), layer (u32), count (u32), reserved   - 16 bytes, fixed
+                    payload: `count` fp16 values
+
+**4 KB at this model's D = 2048, or about 0.03 ms on the measured 117.8 MB/s wire** - which is the projection's
+whole wire term, now a byte count in the tree rather than an assertion in a document. A test asserts the encoded
+size is exactly 16 + 4096 for the real width, so the "kilobytes not megabytes" claim is checked.
+
+**It is deliberately not built on the expert-exchange protocol.** That protocol carries a routing table, ownership
+and a reduce, because expert sharding needs all three; **a layer pipeline needs none of them** - a stage owns a
+contiguous range and forwards what it computed. `DecodeTCPSocket` is reused for the connection and nothing else is,
+which is the point: **Design A's transport is smaller than the one it replaces, not a variation of it.**
+
+**Three tests, and the third is the one that matters.** An exact round trip at the real 2,048 width; the size
+assertion above; and **refusals on a truncated header and a truncated payload**. A frame that is silently
+padded or short-read is how a wrong forward pass comes to look right, which is the failure mode every exactness
+guard in this record exists to prevent.
+
+**And one correction, recorded rather than amended away.** The commit that added the frame claimed "build clean
+with no warnings". There was one - a `try` on a non-throwing `map`, left by the eight-slot batch work - and the
+warning count was read in the same command that produced the commit and reported as zero anyway. **A follow-up
+commit removes it and says what happened**, because the working rules allow a claim only from a result read in the
+same command, and this one was not. Build clean with no warnings, suite 0 failures, `tools/lint.sh` clean: all
+three read together on the follow-up.
