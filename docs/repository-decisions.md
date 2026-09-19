@@ -13577,3 +13577,38 @@ arithmetic has never been wrong. **`D325` proved the composition exact, `D358` s
 real correct token, and every fault since has been at an interface** - a shadowed parameter, a dead closure, an
 uncounted row, a bind ordered after a connect, a role the environment forbade, and now a connection. **The engine
 computes the right answer; what it cannot yet do is receive one across a wire.**
+
+
+## D384 — The configuration that "failed eight times out of eight" just connected, so D383's rate is withdrawn too
+
+**The same two-edge configuration, the same two nodes, the same prompt, the same binary:**
+
+    [back] connecting to 192.168.18.27:47702 as source
+    [back] connected
+
+**`D383` recorded 0 of 8 for exactly this arrangement and drew the conclusion that "the configuration the pipeline
+requires has never once connected."** It has. **The tally is 1 of 9, and the eight failures were a run of bad luck
+rather than a property of the configuration** - which means the sixth withdrawal, and the one that matters most,
+because `D383` was the record where this leg's difficulty was stated as a finding.
+
+**What is actually true, after ten rounds of this leg.** The reverse connect is **flaky** - it succeeds perhaps four
+times in ten, with an interval between the observations that nothing in this record has changed. `D378`'s statistic
+survives all six withdrawals and is now the only thing that does: **it works sometimes and fails sometimes, and no
+variable this session has manipulated predicts which.** Everything else - the peer's configuration, the workload, the
+port, the address, the routing, the node, the direction and the launcher - was tested and **none of them is it.**
+
+**And the practical consequence is the one that was dismissed two rounds ago as "unglamorous".** The connect succeeds
+often enough that **a loop which retries A until it connects and then lets it run would produce a sequence** - and
+`D383`'s retry loop failed **not because the idea was wrong but because it was three attempts long and used `nohup`
+without a timeout.** This round's success came from an attempt that was permitted to keep going.
+
+**The one instrument not yet used, and it needs a failure rather than a success.** `netstat -s -p tcp` produced no
+output on node3 - the flag is not supported by this `netstat` - so the kernel-counter approach needs
+`netstat -s` unqualified, or `netstat -s | grep -i tcp`, and **a packet capture needs a failing run to be running
+while it is taken.** Both are cheap; neither was done this round because this round got a success.
+
+**Where the objective stands.** A1-A5 built and gated, **1652 tests with 0 failures**, the exactness gate at **0 of
+2048**, the forward edge proven across two machines with **a correct first token** (`D358`), the reverse edge
+**written, called, tested and now observed connecting in the ring's own configuration** (`D384`) - **and still no run
+with all four legs live at once, because every attempt has either failed to connect or been given too short a
+window.** The next attempt should be a loop of ten with A allowed to live.
