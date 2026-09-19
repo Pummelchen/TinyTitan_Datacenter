@@ -12420,3 +12420,38 @@ and the expected-looking thing was the correct one.
 **The state of the ring.** Frames cross between two machines; both stages install; the transport is verified; the
 prefill is seeded. **What is not yet true is an end-to-end token** - the decode handoff desynchronises, and the next
 step is to count A's publishes against B's receives per token rather than to guess.
+
+## D351 — The prefill handoff works across two machines, and counting found it in one run
+
+    A (publisher, layers 0..<20):  [wire] send pos=0 layer=20 values=2048
+    B (consumer, layers 20..<40):  [wire] recv pos=0 got token=0 layer=20 values=2048
+                                   [wire] recv FAILED for pos=5
+
+**A row of 2048 half-precision values crossed the LAN between two machines and arrived with its shape and its
+identity intact.** `D350` fixed the seed; this is the seed arriving.
+
+**And the fault that preceded it was found by counting rather than by reasoning.** The decode handoff had
+desynchronised and **three hypotheses had cost two rounds**; printing every position each side sends and every
+position it receives for **answered it in one run**. The publisher printed **no `[wire] send` line at all** while its
+consumer reported `recv FAILED for pos=0` - and the cause was one line of wiring: **`PipelineWiring` allocated
+`hiddenIn` for a consumer and nothing for a publisher**, and both the post-loop publish and the decode hook are gated
+on `hiddenOut` being non-nil. **A stage that connected published nothing, and its peer waited for a frame that could
+not come.**
+
+**That is the third time this session that a one-line absence produced a symptom that read as a deep fault** -
+`D329`'s shadowed `layerRange`, `D349`'s `127.0.0.1`, and now a nil `hiddenOut`. **Each was found by making the
+system report what it was doing rather than by reasoning about what it must be doing**, and the sequence is
+consistent enough to be a rule: **when two components disagree, print both sides before forming a hypothesis about
+either.**
+
+**What is still not true: the decode handoff.** A published exactly one frame - its post-loop prefill state - and
+sent nothing for its four decode tokens, so B's first decode receive found nothing.
+`RealForwardRunner+Decode.swift:585` is the publish and it is gated on `hiddenOut` and `onHidden`, **both of which are
+now set**, so the question is no longer what is missing from the wiring but **what lies between that line and the four
+tokens.** The instrument stays in the code until that is answered, because the last two rounds are the argument for
+keeping it.
+
+**The ring's state, precisely.** Frames cross between two machines; both stages install; the transport is verified;
+the prefill handoff is verified end-to-end with a measured payload; **a sequence of tokens is not yet possible**
+because the per-token handoff does not fire on the publisher. **One line of the pipeline is now the whole of the
+remaining work**, and the instrument to find it is already in place.
