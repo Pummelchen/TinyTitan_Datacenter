@@ -12,7 +12,7 @@
 
 ## Project Target
 
-Run large >120B MOE LLMS on a distributed network of Mac Mini/Studio's using **expert parallelism** with SSD streaming to reduce RAM requirements.
+Run large >120B MOE LLM on a distributed network of Mac Mini/Studio's using **expert parallelism** with SSD streaming to reduce RAM requirements.
 
 ## Project Status
 
