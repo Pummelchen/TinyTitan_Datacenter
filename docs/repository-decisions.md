@@ -13993,3 +13993,43 @@ print of `publishedRows` at each publish would settle it in one run, and it is t
 2048**; the forward edge, the reverse edge and the state pairing each measured correct by their own output; **a
 two-token ring that completes cleanly with the first token right and the second wrong**; and the remaining fault
 narrowed to **one value published by one stage at one step**.
+
+
+## D395 — D394's hypothesis is refuted by reading the code: the decode publish is correct
+
+**The two lines `D394` suspected:**
+
+    sources/TinyTitan/Runtime/Inference/RealForwardRunner+Decode.swift:649
+        self.publishedRows = 1
+        if let out = self.hiddenOut, let sink = self.onHidden { sink(position, out) }
+
+**The assignment is present, it is immediately before the sink, and the comment above it says exactly what `D394`
+worried about** - *"set explicitly so that a prefill's chunk count does not leak into the first decode step"*. The
+blit above it is bounded by `min(residualWidth * stride, out.length)`, which is one row. **So the decode publishes
+one row, labelled one row, and `D394` is withdrawn.**
+
+**And the withdrawal was available for the cost of a `grep`, which is the second time in three rounds that reading
+the code answered a question a hypothesis was about to be built on.** `D390` and `D391` were both answered by
+instruments, and this one by looking - **and the record has a trap about exactly this, from `D335`, `D336` and
+`D339`, where the answer was in a comment in the file being diagnosed.**
+
+**What that leaves, stated without a new hypothesis.** The prefill token is right and the decode token is wrong; the
+handoff, the pairing, the seed and the published counts are all measured or read correct; **and the fault is therefore
+in the value itself rather than in how it is labelled or delivered.** The candidates that remain are the ones that
+would corrupt a *state* rather than a *message*:
+
+  * **A's residual after layer 20 at the first decode step may not be what a single node's layer-20 residual is at
+    that position.** `D325` proved a stage's output is its input and its own layers - **for a probe at layer 20 with
+    the residual entering it**, and the decode's residual is built by a different path than the prefill's;
+  * **or B's first decode step applies layers 20..40 to that residual without the state a single node would have at
+    that point** - a KV or GDN state difference rather than a residual one.
+
+**And the instrument for both is one that does not exist yet: a way to compare a stage's residual against a single
+node's at the same position and layer, during a decode step rather than a prefill.** `D325`'s probe compares exactly
+that at the **entry to a layer**, so extending it to the decode path is the obvious next step - **and it is a
+probe extension, not a hypothesis about which of the two candidates is right.**
+
+**Where the objective stands.** A1-A5 built and gated, **1652 tests with 0 failures**, the exactness gate at **0 of
+2048**; the forward edge, the reverse edge, the pairing and the published counts each measured or read correct; **a
+two-token ring that completes with the first token right and the second wrong**; and **the fault localised to a
+state value whose delivery is now proven sound.**
