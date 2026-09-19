@@ -1,5 +1,9 @@
 # TinyTitan Datacenter
 
+**TinyTitan Datacenter — short name `ttd` — is a dedicated repository.** It stands on its own: it
+builds and runs without any other repository, and it neither links to nor depends on one. The
+streaming runtime it ships is its own source, carried under the attribution in [`NOTICE`](NOTICE).
+
 <!-- agent-harnesses:begin -->
 > **One instruction file.** This is it. Codex, DeepSeek Harness, OpenCode,
 > Qwen Code, Qoder and Zed read `AGENTS.md` directly, and Claude Code reads it

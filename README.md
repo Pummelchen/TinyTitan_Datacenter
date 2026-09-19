@@ -4,6 +4,10 @@
 
 # TinyTitan Datacenter
 
+**TinyTitan Datacenter — short name `ttd` — is a dedicated repository.** It stands on its own: it
+builds and runs without any other repository, and it neither links to nor depends on one. The
+streaming runtime it ships is its own source, carried under the attribution in [`NOTICE`](NOTICE).
+
 [![Stars](https://img.shields.io/github/stars/Pummelchen/TinyTitan_Datacenter?style=flat-square&logo=github&label=Stars&color=e3b341)](https://github.com/Pummelchen/TinyTitan_Datacenter/stargazers)
 [![Views (14d)](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Pummelchen/TinyTitan_Datacenter/main/.github/traffic.json)](https://github.com/Pummelchen/TinyTitan_Datacenter)
 [![Last Commit](https://img.shields.io/github/last-commit/Pummelchen/TinyTitan_Datacenter?style=flat-square&logo=git&label=Last%20Commit&color=2ea44f)](https://github.com/Pummelchen/TinyTitan_Datacenter/commits/main)
