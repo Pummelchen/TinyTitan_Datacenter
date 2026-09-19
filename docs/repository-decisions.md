@@ -12274,3 +12274,34 @@ from the buffer and this stage's last layer; `nextHidden` becomes `PipelineLink.
 runner already owns; `hiddenIn` seeds the first layer and `hiddenOut` carries the last. **Both halves are now
 verified - the hooks by the A5 gate, the wire by `D345` - and what remains is the composition, which is a small
 amount of code over two things that work.**
+
+## D347 — The ring's composition core is written and verified without a model, in 0.026 seconds
+
+`PipelineStage` is the four lines that were missing between two halves that each already work: `frame(from:...)`
+reads a buffer a stage published into a `PipelineFrame`, and `store(_:into:)` writes a received frame into a buffer
+the runner owns - which is what `nextHidden` returns.
+
+    ✔ a published buffer becomes a frame of the right rows
+    ✔ a received frame lands in the buffer unchanged
+    ✔ a frame larger than the destination is refused, not truncated
+    ✔ rowWidth is a parameter, so a chunk is not mistaken for one token
+      Test run with 4 tests in 1 suite passed, exit 0, 0.026 s
+
+**It is written as pure functions over an `MTLBuffer` precisely so it is testable without the engine.** The
+composition is what could be wrong here, not the forward pass, and testing the composition against the real model
+would test the model. **A Metal device is the entire requirement** - so what would have been another unverified
+commit is four green assertions in twenty-six milliseconds. **This is the pattern the last several rounds kept
+missing: when a piece needs the 19 GB install to test, that is usually a sign the piece is drawn at the wrong
+boundary.**
+
+**And one of the four properties is the ring itself.** `store` followed by `frame` is **the identity** - the frame a
+stage receives and writes is the frame it hands on. The other three are the failures that are worse than a crash:
+**a frame larger than its destination throws rather than truncates**, because a short write leaves the residual
+partly seeded and **an unseeded residual computes garbage while looking like it worked** (`D335`); and **`rowWidth` is
+a parameter rather than inferred from `buffer.length`**, because a length says how many half floats a buffer holds
+and not how they divide into rows - guessing would be right for the one-row decode handoff and silently wrong for a
+`t`-row chunk.
+
+**What is not here, and it is the next step rather than this one**: `install(on:)` - the two assignments that put
+these on a runner's `onHidden` and `nextHidden`. That needs a runner, so it needs the model and the CLI. **The
+composition is proved; the wiring that hands it a real buffer is not.**
