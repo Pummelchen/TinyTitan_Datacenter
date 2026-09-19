@@ -45,6 +45,15 @@ VERSION="${TAG#v}"
 STAGE_ROOT="$ROOT/.build/releases/tinytitan-release-$VERSION"
 STAGE="$STAGE_ROOT/TinyTitan_Datacenter-$VERSION-macos-arm64"
 ARCHIVE="$STAGE_ROOT/TinyTitan_Datacenter-$VERSION-macos-arm64.tar.gz"
+
+# Identity is single-sourced in VERSION (RELEASE.md 1.3) and mirrored in the installer's
+# Info.plist. A mirror that disagrees is a defect, so the release refuses rather than guesses.
+FILE_VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null || true)"
+[ "$FILE_VERSION" = "$VERSION" ] \
+  || die "VERSION says '${FILE_VERSION:-<missing>}' but the tag says '$VERSION'"
+PLIST_VERSION="$(sed -n 's/.*CFBundleShortVersionString<\/key><string>\([^<]*\)<.*/\1/p' "$ROOT/tools/install_tinytitan.sh" | head -1)"
+[ "$PLIST_VERSION" = "$VERSION" ] \
+  || die "CFBundleShortVersionString says '${PLIST_VERSION:-<missing>}' but the tag says '$VERSION'"
 SCRATCH="$STAGE_ROOT/build"
 
 cd "$ROOT"
@@ -256,7 +265,7 @@ find "$BIN" -maxdepth 1 -name '*.bundle' -exec cp -R {} "$STAGE/" \;
 cp "$ROOT/LICENSE" "$ROOT/NOTICE" "$ROOT/THIRD_PARTY_NOTICES.md" "$STAGE/"
 
 cat > "$STAGE/README-binaries.txt" <<TXT
-TinyTitan $VERSION — prebuilt binaries (macOS, Apple Silicon / arm64)
+TinyTitan Datacenter $VERSION — prebuilt binaries (macOS, Apple Silicon / arm64)
 
 Built from tag $TAG with: swift build -c release
 Requires macOS 26+. Apple Silicon only; there is no x86_64 build.
