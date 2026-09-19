@@ -78,8 +78,7 @@ public enum PipelineWiring {
             // test - the address (D363), the routing (D364), the listening side (D367) and the port's reachability
             // from this node (D368) - so what is left is this path, and a path that fails silently cannot be told
             // apart from one that was never entered.
-            FileHandle.standardError.write(Data(
-                "[back] connecting to \(parts[0]):\(port) as \(role)\n".utf8))
+            PipelineStage.note("[back] connecting to \(parts[0]):\(port) as \(role)\n")
             for attempt in 0..<connectRetries {
                 do {
                     let pair = try DecodeTCPSocket.connect(host: String(parts[0]), port: port)
@@ -90,19 +89,17 @@ public enum PipelineWiring {
                     // hides whether the target was ever reachable at all, and the first attempt is the one that
                     // says what the network thought.
                     if attempt == 0 {
-                        FileHandle.standardError.write(Data(
-                            "[back] first connect failed: \(error)\n".utf8))
+                        PipelineStage.note("[back] first connect failed: \(error)\n")
                     }
                     last = error
                     usleep(200_000)
                 }
             }
             guard let ready = opened else {
-                FileHandle.standardError.write(Data(
-                    "[back] gave up after \(connectRetries) attempts: \(last)\n".utf8))
+                PipelineStage.note("[back] gave up after \(connectRetries) attempts: \(last)\n")
                 throw last
             }
-            FileHandle.standardError.write(Data("[back] connected\n".utf8))
+            PipelineStage.note("[back] connected\n")
             end = ready
         }
         guard let end else { return false }
@@ -116,14 +113,12 @@ public enum PipelineWiring {
                 // alignment and this is the instrument for it: the sequence of tokens consumed here, against the
                 // sequence published by the peer, is the whole question - and printing positions alone (D350's
                 // instrument) cannot answer it because the positions are already known to line up.
-                FileHandle.standardError.write(Data(
-                    "[tok] told pos=\(position) token=\(token)\n".utf8))
+                PipelineStage.note("[tok] told pos=\(position) token=\(token)\n")
                 return Int32(token)
             }
         } else {
             runner.nextTokenSink = { token, layer in
-                FileHandle.standardError.write(Data(
-                    "[tok] chose pos=\(layer) token=\(token)\n".utf8))
+                PipelineStage.note("[tok] chose pos=\(layer) token=\(token)\n")
                 try? PipelineStage.sendToken(Int(token), layer: layer, to: end)
             }
         }
