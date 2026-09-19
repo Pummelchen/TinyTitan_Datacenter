@@ -13952,3 +13952,44 @@ the KV cache as the named candidate.
 
 **And the two-token test still stands as the right one**, because it needs no new code and discriminates exactly as
 the one-token run was meant to - **and this time the cleanup will not start until the logs are read.**
+
+
+## D394 — The prefill token is right and the decode token is wrong, with the pairing verified - so it is A's published decode state
+
+**The two-token ring, read before anything was touched:**
+
+    B:  [wire] recv pos=0 got token=0 values=10240
+         Paris                              the PREFILL token - correct
+        [tok] chose pos=0 token=11751
+        [seed] decode pos=5 fromSeed=true    the decode used the seed, as D388 designed
+        (blank)                              the DECODE token - wrong
+        [stop=maxTokens prefill=5tok/1.55s new=2tok]
+
+    reference (single node, --max-new 2):  " Paris,"
+
+**So the fault is now localised to one value: the state A published for its decode step.** Everything around it is
+measured correct - the handoff arrives (`D390`), the pairing is per-position (`D391`), the seed is consumed where it
+should be (`D388`), and the token that produced it flowed back correctly (`D390`). **The prompt's state is right,
+because B's first token is right and that token came from the prefill's rows.**
+
+**And there is one asymmetry between the two paths that has never been examined, which is where this now points.**
+The **prefill** publish copies `t` rows from `scratch.hidden` and sets `publishedRows = t` (`D355`). The **decode**
+publish copies **one** row from `self.hidden` and sets `publishedRows = 1`. **Both blit from a storageModePrivate
+buffer into `hiddenOut` - and `hiddenOut` is sized for 4096 rows** (`D354`), **so the decode's one-row copy lands at
+offset zero of a buffer whose previous contents were five rows from the prefill.** If anything downstream reads more
+than one row - **and `nextHidden`'s consumer does, because `frame(from:...)` is called with the stage's
+`publishedRows` on the publisher's side but the RECEIVER stores whatever count the frame carries** - then the
+decode's frame is one row and correct. **But if `publishedRows` is not reset from `t` to `1` before the first decode
+publish, the decode sends the prefill's five rows with the wrong one first** - and that is a fault that would leave
+**the first token right and the second wrong**, exactly as measured.
+
+**That is a hypothesis with a one-line test rather than a mechanism fitted to a sample.** `D355` added
+`publishedRows = t` in the prefill and `self.publishedRows = 1` in the decode, **in that order in the source** - and
+the decode's assignment is inside the `runSync` closure while the prefill's is at the top level of its function. **A
+print of `publishedRows` at each publish would settle it in one run, and it is the same instrument shape that found
+`D391`.**
+
+**Where the objective stands.** A1-A5 built and gated, **1652 tests with 0 failures**, the exactness gate at **0 of
+2048**; the forward edge, the reverse edge and the state pairing each measured correct by their own output; **a
+two-token ring that completes cleanly with the first token right and the second wrong**; and the remaining fault
+narrowed to **one value published by one stage at one step**.
