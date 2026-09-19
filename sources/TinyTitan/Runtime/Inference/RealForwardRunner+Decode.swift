@@ -192,6 +192,11 @@ extension RealForwardRunner {
         // A3: a stage that is handed a hidden state does not embed. The copy overwrites the embed's result, which
         // is wasted work on a middle stage and harmless - correctness first, and the embed's cost is measured and
         // small against ten layers.
+        // WHICH STATE THIS STEP CONSUMED (D390). The token flow is verified aligned, so the one-step question is
+        // now which residual each decode step starts from - the seed its prefill claimed, or a fresh frame - and
+        // the position it was consumed for.
+        FileHandle.standardError.write(Data(
+            "[seed] decode pos=\(position) fromSeed=\(hiddenSeeded)\n".utf8))
         if hiddenSeeded {
             // ALREADY SEEDED BY OUR OWN PREFILL for this position, so consuming a frame here would advance a second
             // time and shift every later token by one (D388). The flag is cleared so the NEXT step fetches normally.
