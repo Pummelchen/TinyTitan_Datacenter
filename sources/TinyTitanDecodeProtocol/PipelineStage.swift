@@ -98,6 +98,12 @@ extension PipelineStage {
             stage.onHidden = { position, buffer in
                 let outgoing = frame(from: buffer, rowWidth: rowWidth, rows: rows,
                                      position: position, layer: exitLayer)
+                // COUNTING, NOT GUESSING (D350). The decode handoff desynchronised and the cheapest way to find out
+                // how is to print what each side thinks it is doing: every position this stage publishes, and every
+                // position the peer says it is receiving for. A pair of lists answers the question that three
+                // hypotheses did not.
+                FileHandle.standardError.write(Data(
+                    "[wire] send pos=\(position) layer=\(exitLayer) values=\(outgoing.hidden.count)\n".utf8))
                 try? PipelineLink.send(outgoing, to: output)
             }
         }
@@ -105,8 +111,10 @@ extension PipelineStage {
             guard let landing = stage.hiddenIn else {
                 throw StageError.noLandingBuffer
             }
-            stage.nextHidden = { _ in
+            stage.nextHidden = { position in
                 guard let received = try? PipelineLink.receive(from: input) else {
+                    FileHandle.standardError.write(Data(
+                        "[wire] recv FAILED for pos=\(position) - the peer sent nothing usable\n".utf8))
                     // POISON THE LANDING BUFFER RATHER THAN LEAVING IT AS IT WAS. `nextHidden` returns a
                     // non-optional buffer, so it cannot signal this failure by returning nothing - and the first
                     // version returned the buffer unchanged, which meant a stage that never received anything
@@ -120,6 +128,8 @@ extension PipelineStage {
                     return landing
                 }
                 _ = try? store(received, into: landing)
+                FileHandle.standardError.write(Data(
+                    "[wire] recv pos=\(position) got token=\(received.token) layer=\(received.layer) values=\(received.hidden.count)\n".utf8))
                 return landing
             }
         }

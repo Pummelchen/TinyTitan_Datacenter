@@ -51,6 +51,14 @@ public enum PipelineWiring {
         if listen != nil, runner.hiddenIn == nil {
             runner.hiddenIn = runner.makeHiddenStateBuffer()
         }
+        // AND `hiddenOut` FOR A PUBLISHER, which the first version forgot. Both the post-loop publish and the
+        // decode hook are gated on `hiddenOut` being non-nil, so a stage that connects but is never given one
+        // publishes NOTHING - and the peer blocks on a frame that will never arrive. The instrumented run said so
+        // in one line: the publisher printed no `[wire] send` at all while its consumer reported
+        // `recv FAILED for pos=0`. Counting the two sides took one run where three hypotheses had taken two.
+        if connect != nil, runner.hiddenOut == nil {
+            runner.hiddenOut = runner.makeHiddenStateBuffer()
+        }
 
         var input: FileHandle?
         if let listen {
