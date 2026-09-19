@@ -12798,3 +12798,32 @@ because the sockets are now built rather than because the pipeline works.
 **And the verification discipline held this round.** `swift test --filter PipelineStage` was run rather than a build
 alone, which is the correction `D359` recorded - **a green build is not a green suite**, and the previous four rounds
 had used the two interchangeably.
+
+## D362 — The loop uses the reverse edge, and the ring deadlocked on the order of bind and connect
+
+**Two changes, and the second was found by a deadlock rather than by reading.**
+
+**The generation loop uses the edge.** Sample, publish what was sampled through `nextTokenSink`, replace the token
+with whatever came back from `nextTokenSource`, then produce. **The order is one line rather than two because the
+sink carries what was SAMPLED** - running it after the source overwrites `tokenID` would publish the token this stage
+was told to use as though it had chosen it. **Both hooks are reached by casting `producer` to `RealForwardRunner`
+rather than by adding them to `LogitProducer`**: putting them on that protocol would oblige every conformer and every
+fake, **which is precisely the cost `D359` recorded** when a protocol change left a stale fake breaking the suite for
+four rounds. The two properties belong to the ring, not to the act of producing logits.
+
+**And a stage must BIND BEFORE IT CONNECTS.** `installReverseEdge` binds this stage's back-listen port;
+`installIfConfigured` connects the forward edge to a successor that may not have bound yet. **With the connect first,
+a successor that accepts the moment its model loads then tries its own back-connect to a port this stage has not
+bound - and both sides wait for the other.** The first sequence run deadlocked exactly there: **A never reached its
+back-listen, B never finished, and the only evidence was a nine-minute silence.** The listen test loop printed nothing
+because the condition it was watching never became true, which is the one shape of failure that leaves no log line.
+
+**This is the second deadlock in this design, and the two have the same structure.** `D349`'s `nc -z` probe consumed
+the accept; this is a bind that happens after a connect that depends on it. **Both are ordering faults between two
+ends of a socket, and both present as nothing happening rather than as something failing** - which is why the
+instruments that found them were a socket table read and a timeout, not an assertion.
+
+**What is still not taken: the sequence run.** The order is fixed and the code builds and passes its tests, and **no
+run has yet used the reverse edge** - the deadlock was the first attempt and it did not reach the loop. **The next
+run is the one that says whether the objective's central claim holds for a sequence**, and every leg it needs is now
+committed.
