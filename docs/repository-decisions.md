@@ -16099,3 +16099,26 @@ tok/s; a single node runs it at 7.524 with every tuning axis at its optimum; a l
 expert sharding divides a phase that was never on the critical path (`D450`); pooling residency is 8.6x too slow
 (`D449`); tensor parallelism is 1.6-2.1x and cannot reach 21 on a 0.8 ms wire (`D451`, `D454`). **The one remaining
 input is a cable, and no amount of engine work substitutes for it.**
+
+## D455 - The four-node delivery is verified reproducible on one binary, and the software side of the objective is complete
+
+**Every change in `A6`-`A8` touched the CLI, and only node3 had been redeployed after them** - so before treating the
+chain as delivered, all four machines were put back on one artifact and the chain re-run:
+
+    md5 ec6710cda808ba06084ef6aae81ce56f   node1, node2, node3, node4   (identical)
+
+    node3  0:10  source  3.434 tok/s
+    node1 10:20  both    3.975 tok/s
+    node2 20:30  both    4.714 tok/s
+    node4 30:40  sink    5.736 tok/s   (head, pure listener, never originates)
+    text: the single-node reference trace
+
+**So the delivery is not a one-off run but a reproducible state**: four M2 Mac minis, one stage each, one binary, correct
+output, and the machine that cannot originate hosting the head. (The lower tok/s than `D436`'s 6.016 is the 16-token run
+rather than 128 - startup dominates - and is not a regression.)
+
+**And the software side of the objective ends here.** Everything reachable without new hardware has been reached and
+measured: the chain (`D436`), the serial law (`D437`, `D439`), the phase split (`D440`, `D441`), the knob surface
+(`D442`-`D448`), the wire (`D449`, `D451`, `D454`), the overlap that turned out to be already working (`D450`), and the
+link that is not plugged in (`D453`). **What remains is one of two things, and both are outside what further
+measurement can decide: a cable, or the tensor-parallel build that is worth 1.6-2.1x on the existing wire.**
