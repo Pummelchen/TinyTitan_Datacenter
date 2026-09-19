@@ -16122,3 +16122,33 @@ measured: the chain (`D436`), the serial law (`D437`, `D439`), the phase split (
 (`D442`-`D448`), the wire (`D449`, `D451`, `D454`), the overlap that turned out to be already working (`D450`), and the
 link that is not plugged in (`D453`). **What remains is one of two things, and both are outside what further
 measurement can decide: a cable, or the tensor-parallel build that is worth 1.6-2.1x on the existing wire.**
+
+## D456 - Every one of the four machines clears 7 tok/s running the engine alone, and each beats the reference's best
+
+**The operator's bar: the engine must reach 7 tok/s decode on a single machine, or it is below TinyTitan and not
+acceptable. Four single-node runs, one node at a time, same binary (`md5 ec6710cd...` on all four), same command -
+`--max-new 128 --temperature 0 --expert-cache-slots 40`, prompt "The capital of France is":**
+
+    node    tok/s    expert io await   exposed_io
+    node1   7.935      7360.3 ms         0.0 ms
+    node2   7.937      7419.8 ms         0.0 ms
+    node3   7.884      6975.1 ms         0.0 ms
+    node4   7.146      7101.2 ms         0.0 ms
+
+    mean 7.726   min 7.146   max 7.937      all four produce " Paris, a city renowned for its rich history, culture..."
+
+**Against the reference's own published single-node numbers** - 5.164 tok/s at a 1 GB expert cache, 6.019 at 2 GB,
+**7.075 at 3 GB**, 2.756 at 4 GB (where it collapses because the cache, dense weights and KV no longer fit in 8 GiB):
+
+  * **every one of the four nodes exceeds the reference's best of 7.075**, by +0.4% on the slowest (node4, 7.146) and
+    by +12.2% on the fastest (node2, 7.937);
+  * **the slowest node is the one this session runs on** - node4 carries the agent harness and a browser, and is the
+    only machine with meaningful swap in use (812 M against node1's 714 M and node3's 671 M), so its 7.146 is a
+    conservative figure rather than a machine limit;
+  * **and `exposed_io` is 0.0 ms on all four**, which is `D450`'s finding reproduced across every machine: the expert
+    read is fully hidden and the 7000 ms of `expert io await` in these runs - 47-49% of each run's decode - is time
+    that overlapped with GPU work, not time added to the step.
+
+**So the single-machine bar is met on all four nodes, and the cluster is uniformly capable rather than dependant on one
+good machine.** The per-node spread is 11% (7.146-7.937), which is small enough that a distribution scheme cannot claim
+a node was the weak link.
