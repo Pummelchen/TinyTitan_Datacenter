@@ -14262,3 +14262,42 @@ available instrument, and the cheapest available instrument was always one layer
 2048**; the transport, pairing, seed, counts, frame shape and token edge all verified; **a two-token ring whose first
 token is right and whose second is not**; and a 10x throughput gap whose cause remains unnamed, **with the instrument
 that would name it now specified rather than discovered.**
+
+
+## D402 - The quiet switch is written, breaks the wiring suite with SIGBUS, and is reverted - and the commit went out before the suite was run
+
+**What was built and what it cost.**
+
+`D401` specified the instrument: one predicate reading `TINYTITAN_QUIET`, consulted at every diagnostic site, so the
+prints can be silenced while the timing line stays. **It was written - a `PipelineStage.note` helper and thirteen
+rewritten sites, plus a local predicate for the two sites in `TinyTitan` because that module does not depend on
+`TinyTitanDecodeProtocol`.** It built with **0 warnings and 0 errors**, and then:
+
+    swift test --no-parallel --filter PipelineStage
+    error: ... swiftpm-testing-helper ... exited with unexpected signal code 10
+    Suite "PipelineStage composition"  -> all 4 tests passed
+    Suite "PipelineStage wiring"       -> "a stage's published state reaches a consuming stage unchanged" CRASHED
+    Note: Some test targets reported failures: TinyTitanDecodeServiceTests
+
+**Signal 10 is SIGBUS, in the one suite that drives `install(on:...)` - the wiring path - and not in the composition
+suite**, which is where a mangled string would have shown up. **So the change is reverted rather than diagnosed**, and
+the suite is green again at `f1f64de` with **8 tests in 3 suites, 0 failures**. The cause is recorded as **unknown and
+unexplained**, because a fault that appears when a diagnostic is added and disappears when it is removed is not
+something to guess at in the round that also has to leave the tree working.
+
+**And the mistake that matters is procedural and it is `D359`'s, repeated.** The commit **went out before the suite
+was run** - the build was verified, the tests were run afterwards, and by then the tree was already committed. **The
+record's own trap list has this written twice**, once as *"a green build is not a green suite"* and once as the
+`D124` case where a commit claimed gates that were not run. **The revert is the right outcome; the sequence that made
+it necessary is the fourth instance this session of verifying one layer and claiming another.**
+
+**Which leaves the throughput question exactly where `D401` left it, and one thing worth keeping from this round.**
+The instrument is **specified precisely enough to build** and its first build had a real fault in the wiring path that
+the *composition* suite did not catch. **The next attempt should run `swift test --no-parallel` in full - not the
+filtered suite - before committing**, because the fault was in the suite this round did not run first, and because
+the filtered run is now known to pass while the full one does not.
+
+**Where the objective stands.** A1-A5 built and gated, **1652 tests with 0 failures** (the fork's own count is 8 in
+the affected suites and unchanged by the revert); the exactness gate at **0 of 2048**; the transport, pairing, seed,
+counts, frame shape and token edge all verified; **a two-token ring whose first token is right and whose second is
+not**; and **a 10x throughput gap still unmeasured, with its instrument specified and one failed attempt behind it.**
