@@ -18,11 +18,6 @@ What is new in each release lives in the
 
 <br>
 
-✨ New Research Project: <br>
-[TinyTitan Datacenter](https://github.com/Pummelchen/TinyTitan_Datacenter) - Run large MOE LLM models on a distributed cluster of Mac Mini/Studio's
-while keeping them on SSD/NVMe for near linear scale of decode tok/s.
-
-
 
 ## Benchmarks
 
