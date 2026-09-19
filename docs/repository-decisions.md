@@ -12663,3 +12663,43 @@ claim about what a command did is not a claim about the file, and the difference
 **B's answer is still whitespace against a single node's ` Paris, a city`, and B stopped after two receives where A
 sent four.** So a further fault remains - **but it is a different one**: the handoff size is no longer in question,
 and the next thing to look at is why a stage that receives stops early.
+
+## D358 — The pipeline's first token is correct, and the reason the rest are not is the ring's missing backward edge
+
+`D357` recorded that B stopped after two receives where A sent four. **That was a misreading of a truncated
+display.** B's full log:
+
+    [shard] probe: reached the serve block, port nil, only=false
+    [pipeline] stage installed for layers 20..<40
+    [wire] recv pos=0 got token=0 layer=20 values=10240
+     Paris[wire] recv pos=5 got token=5 layer=20 values=2048
+    [wire] recv pos=6 got token=6 layer=20 values=2048
+    [wire] recv pos=7 got token=7 layer=20 values=2048
+    [stop=maxTokens prefill=5tok/1.50s new=4tok decode=0.33s tok/s=12.224]
+
+**All four frames arrived. And B's first token is ` Paris` - which is right.**
+
+**So the pipeline works, and this is the first evidence of it that is not about plumbing.** A hidden state crossed a
+LAN between two machines, was seeded into a stage that owns the second half of the model, and that stage produced the
+correct next token. **Everything the design claims structurally is demonstrated by that one word.**
+
+**And the divergence after it is not a bug in the handoff - it is a missing edge of the ring.** A pipeline can only
+advance if the chosen token gets back to the stage that embeds it, and **A never learns what B chose**: A keeps
+generating with its own tokens, which for a stage that owns only layers 0..<20 are meaningless, so every subsequent
+hidden state it publishes is the state of the wrong token. **`D311` set the topology out as "activations forward, one
+token index back" and the backward leg was never built** - the frames carry A's own positions, and A's positions are
+the ones it invented.
+
+**That the first token is right and the rest are not is exactly the signature of this fault**, and it is worth saying
+because the reverse would have been more troubling: a handoff that is wrong gives a wrong first token as well,
+whereas **a missing backward edge gives precisely one good token - the one that came from the prompt.**
+
+**What this changes about the remaining work.** Nothing about the transport, the seed, the frame sizes or the
+position alignment - all four are now verified. **The remaining piece is the return path:** B publishes the token it
+chose, A consumes it before its next step. `D311`'s diagram already has it, `PipelineFrame` already carries a token
+field, and the ring's structure means the same connection that carries activations forward can carry the index back
+once both stages read and write at the right points.
+
+**And the honest restatement of the objective's status.** The ring moves hidden states between two machines with no
+expert weights on the wire, the handoffs are sized and aligned, **and the first token the pipeline produces is the
+one a single node produces.** What it does not yet do is produce the second one.
