@@ -454,10 +454,15 @@ extension RealForwardRunner {
             // at different layer ranges can be compared - both embed the SAME prompt tokens, so the state entering
             // layer L at a given position is the same point in the same forward pass either way. In decode the two
             // runs have already sampled different tokens and diverge (`D313`).
-            if let probeLayer = hiddenProbeLayer, L == probeLayer, let probe = hiddenProbe {
-                memcpy(probe.contents(), scratch.hidden.contents(),
-                       D * MemoryLayout<Float16>.stride)
-                if let sink = onHidden { sink(startPosition, probe) }
+            if let probeLayer = hiddenProbeLayer, L == probeLayer {
+                let selfID = ObjectIdentifier(self)
+                FileHandle.standardError.write(Data(("[diag] probe hit L=\(L) runner=\(selfID) buffer=\(hiddenProbe != nil)"
+                    + " hook=\(onHidden != nil)\n").utf8))
+                if let probe = hiddenProbe {
+                    memcpy(probe.contents(), scratch.hidden.contents(),
+                           D * MemoryLayout<Float16>.stride)
+                    if let sink = onHidden { sink(startPosition, probe) }
+                }
             }
             try await runPrefillLayer(
                 L, cb: &cb, scratch: scratch, layerViews: layerViews,

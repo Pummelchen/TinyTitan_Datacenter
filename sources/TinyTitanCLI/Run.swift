@@ -287,7 +287,9 @@ public func run(args: Args,
             runner.hiddenProbe = runner.makeHiddenStateBuffer()
         }
         if let dumpPath = ProcessInfo.processInfo.environment["TINYTITAN_DUMP_LAYER_STATE"] {
+            FileHandle.standardError.write(Data("[diag] run installs hook on runner \(ObjectIdentifier(runner))\n".utf8))
             runner.onHidden = { position, buffer in
+                FileHandle.standardError.write(Data("[diag] CLOSURE RAN pos=\(position)\n".utf8))
                 var record = Data()
                 var p = UInt32(truncatingIfNeeded: position)
                 withUnsafeBytes(of: &p) { record.append(contentsOf: $0) }
