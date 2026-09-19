@@ -13507,3 +13507,25 @@ this session has not attempted and neither of which is a twenty-second command.
   * **no run has ever had all four legs live at once**;
   * **the remaining fault is a flaky `EHOSTUNREACH` on one outbound connect, with no variable found in six rounds of
     trying, and the next instrument must be able to see packets rather than processes.**
+
+
+## D382 — The kernel log is silent and the connect succeeded this time, so the flakiness is real and the pipeline's own configuration is the harder one
+
+**The instrument `D377` and `D381` called for, used:**
+
+    log stream --predicate 'eventMessage CONTAINS "47702" OR eventMessage CONTAINS "No route"'   on node3
+    [back] connecting to 192.168.18.27:47702 as source
+    [back] connected
+    --- kernel log lines mentioning 47702 or No route: none (1 line total) ---
+
+**Two things at once, and neither is what the last two rounds expected.**
+
+**The connect succeeded** - so this run adds another success to the tally, and **it succeeded with B configured as a single-listener stage.** Every run that has failed had B configured for both edges; every run that has succeeded on the first attempt has not. **That is a correlation, and after five withdrawals this record is not going to call it a cause** - but it is the only one that has survived more than two samples, and **it is also the configuration the pipeline actually needs**, because a two-stage ring requires the downstream stage to listen on the forward edge *and* the reverse one.
+
+**And the kernel said nothing.** One line in the whole capture, none of it about the port or the error. So the two possibilities `D381` named - **a SYN never sent, or a SYN refused** - remain undistinguished, **because on this run there was no failure to distinguish.** A capture taken during a *failing* run is what is needed, and this round did not get one.
+
+**So the honest position is narrower than `D381` left it.** The fault is real and intermittent; it has never been observed with B configured for one edge; **it has been observed five times with B configured for two**; and **the pipeline needs the two-edge configuration**, which is why the sequence run has never happened.
+
+**And the pragmatic path is now visible and unglamorous.** The connect is flaky rather than impossible, and **about half the attempts succeed**. A run that retries the pair until the reverse edge connects **would produce a sequence the first time it got lucky**, and **`D358` already proved what the forward edge does when it runs.** That is a loop, not an insight - **and after six rounds spent looking for an insight, a loop is the better use of the next one.**
+
+**Where the objective stands.** Unchanged in substance and now stated with the failure rate attached: four legs written and tested, the forward edge proven with a correct token, the reverse edge connecting in **seven of twelve** observed attempts, and **no run with both live** - with the one addition that **the configuration the pipeline needs is the one that has failed every time it was tried to completion.**
