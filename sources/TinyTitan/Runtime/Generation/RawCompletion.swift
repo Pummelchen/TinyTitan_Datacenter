@@ -375,7 +375,15 @@ public func runRawCompletion(producer: any LogitProducer,
                 // downstream was computed from a token nobody selected. Token 1 stayed right because it comes from
                 // the prefill's logits; every token after it was computed from that wrong state.
                 let first = source(position)
-                if first >= 0 { stepToken = first }
+                if first >= 0 {
+                    stepToken = first
+                    // RELAY IMMEDIATELY, for the reason D429 moved the other relay (D433). A middle stage that waits
+                    // until the END of its iteration to forward the head's token deadlocks a three-stage chain: it
+                    // blocks on its predecessor's frame while its predecessor blocks on this very token. In a
+                    // two-stage ring the first stage has no sink so this is a no-op, which is why the two-stage case
+                    // never showed it.
+                    ring.nextTokenSink?(first, 0)
+                }
             }
         }
         try await producer.produce(token: stepToken, position: position, slot: slot,
