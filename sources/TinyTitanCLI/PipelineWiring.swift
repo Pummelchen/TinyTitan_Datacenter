@@ -34,6 +34,10 @@ public enum PipelineWiring {
         case badPort(String)
     }
 
+    /// Rows a handoff buffer can carry - enough for every prompt this engine has been run against, and 16 MB at
+    /// D=2048, which is nothing beside the 19 GB install.
+    static let chunkRows = 4096
+
     /// How many times to retry the connect to a successor, at 200 ms each - about 90 seconds, which is comfortably
     /// past a cold 19 GB model load on this hardware and still finite.
     static let connectRetries = 450
@@ -48,8 +52,12 @@ public enum PipelineWiring {
 
         // A stage that accepts must have somewhere for the received frame to land, and `hiddenIn` is that buffer.
         // `install` refuses without one rather than dropping the input silently.
+        // SIZED FOR A CHUNK, not for one token. A prefill publishes and consumes `t` rows at once (D337), and a
+        // one-row buffer silently truncates that to one - which is how the ring produced whitespace where a single
+        // node produces ' Paris, a city'. Oversizing is only SAFE because the row count now travels with the
+        // publish (`D354`): without that, the receiver would read the whole 16 MB allocation.
         if listen != nil, runner.hiddenIn == nil {
-            runner.hiddenIn = runner.makeHiddenStateBuffer()
+            runner.hiddenIn = runner.makeHiddenStateBuffer(rows: Self.chunkRows)
         }
         // AND `hiddenOut` FOR A PUBLISHER, which the first version forgot. Both the post-loop publish and the
         // decode hook are gated on `hiddenOut` being non-nil, so a stage that connects but is never given one
@@ -57,7 +65,7 @@ public enum PipelineWiring {
         // in one line: the publisher printed no `[wire] send` at all while its consumer reported
         // `recv FAILED for pos=0`. Counting the two sides took one run where three hypotheses had taken two.
         if connect != nil, runner.hiddenOut == nil {
-            runner.hiddenOut = runner.makeHiddenStateBuffer()
+            runner.hiddenOut = runner.makeHiddenStateBuffer(rows: Self.chunkRows)
         }
 
         var input: FileHandle?

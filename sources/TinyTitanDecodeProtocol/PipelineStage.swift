@@ -66,6 +66,9 @@ public enum PipelineStage {
 /// in milliseconds instead of against a 19 GB model.** `RealForwardRunner` already has all four properties, so the
 /// conformance below is empty and the engine is untouched.
 public protocol PipelineEndpoints: AnyObject {
+    /// How many rows the last publish wrote. Set by the publisher before it calls `onHidden`, because a receiver
+    /// cannot infer it from a buffer's length (`D354`).
+    var publishedRows: Int { get set }
     var hiddenIn: MTLBuffer? { get set }
     var hiddenOut: MTLBuffer? { get set }
     var onHidden: ((Int, MTLBuffer) -> Void)? { get set }

@@ -635,6 +635,9 @@ extension RealForwardRunner {
                             blitCB.waitUntilCompleted()
                         }
                     }
+                    // ONE ROW, always, and set explicitly so that a prefill's chunk count does not leak into the
+                    // first decode step.
+                    self.publishedRows = 1
                     if let out = self.hiddenOut, let sink = self.onHidden { sink(position, out) }
 
                     try gLmHead(cb)

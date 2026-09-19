@@ -263,6 +263,16 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     /// what this stage sends. Both are `[D]` fp16 - 4 KB, one `PipelineFrame` payload (`docs/design-a-plan.md` A3).
     ///
     /// With both nil nothing changes, which keeps the single-node path and A1's gate intact.
+    /// HOW MANY ROWS THE LAST PUBLISH WROTE. A stored property on the class rather than anything cleverer, because
+    /// an extension cannot hold state and the protocol that needs it lives in the CLI (`D348`). It is a plain
+    /// `Int`, so declaring it here needs no import and the module graph is untouched.
+    ///
+    /// It exists because the count cannot be inferred: the handoff buffers are deliberately oversized so a chunk
+    /// fits, which makes their capacity a SYSTEMATICALLY wrong answer rather than an occasionally wrong one
+    /// (`D354`). One row where five were needed produced whitespace - a wrong answer that looked like an answer -
+    /// and 4096 where five were needed failed immediately. The count has to travel from the publish site.
+    public var publishedRows: Int = 1
+
     public var hiddenIn: MTLBuffer?
     public var hiddenOut: MTLBuffer?
 

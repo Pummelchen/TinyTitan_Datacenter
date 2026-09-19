@@ -514,13 +514,20 @@ extension RealForwardRunner {
         // A5: a stage that does not reach the epilogue publishes its residual - that is what it hands to the next
         // stage. `runEpilogue` already exists and means exactly "this stage owns through the last layer".
         if !runEpilogue, let out = hiddenOut {
-            let n = min(hiddenStateBytes, min(out.length, scratch.hidden.length))
+            // THE CHUNK, NOT ONE ROW (D353). A stage publishes the state of every token it just processed - `t`
+            // rows - and its successor's prefill consumes exactly that many. Publishing one row meant a five-token
+            // prompt arrived one-fifth seeded, so the consumer computed a chunk that was four-fifths whatever its
+            // landing buffer held, and the ring produced whitespace where a single node produces ' Paris, a city'.
+            // Bounded by the destination, which is why the destination is allocated for a chunk (D354).
+            let n = min(t * residualWidth * MemoryLayout<Float16>.stride,
+                        min(out.length, scratch.hidden.length))
             if let blitCB = ctx.queue.makeCommandBuffer(), let blit = blitCB.makeBlitCommandEncoder() {
                 blit.copy(from: scratch.hidden, sourceOffset: 0, to: out, destinationOffset: 0, size: n)
                 blit.endEncoding()
                 blitCB.commit()
                 await blitCB.completed()
             }
+            publishedRows = t
             if let sink = onHidden { sink(startPosition, out) }
         }
 
