@@ -14225,3 +14225,40 @@ round - **the instrumentation, and how much work an end stage actually does.**
 program reads rather than as a shell redirect, **so there is no redirection to lose**; run the two cases as two
 separate commands rather than as a function called twice, **so a mistake in one cannot be inherited by the other**;
 and read the timing line from a file **before** any cleanup.
+
+
+## D401 - The diagnostics and the timing line share stderr, so redirection cannot separate them - a gated switch can
+
+**The quiet run, done as `D400` said it should be - two separate commands, the redirect inside, the logs read before
+any cleanup:**
+
+    B listening (diagnostics discarded)
+    A exit=0
+    A timing, quiet:   (nothing)
+    B timing, quiet:   (nothing)
+    B answer:           Paris
+
+**The answer came through and both timing lines vanished.** So the timing line the engine prints -
+`prefill=...s new=...tok decode=...s` - **is written to stderr, the same stream as the `[tok]`, `[seed]` and `[wire]`
+diagnostics.** Discarding one discards the other, **and the experiment `D399` proposed cannot be built out of shell
+redirection at all.** That is a useful negative: **four rounds have now been spent on the throughput gap and this one
+established only that the instrument for it does not exist yet.**
+
+**And the shape of the fix is now unambiguous rather than exploratory.** The diagnostics are already emitted through
+one place - `FileHandle.standardError.write(Data(...))` at each site, added by `D391`-`D399` and by six earlier
+rounds - **so one predicate read once at start-up and consulted at each site silences all of them while leaving the
+timing line alone.** That is a small, mechanical edit: a `TINYTITAN_QUIET` read beside the other environment reads in
+`Run.swift`, and the print sites gated on it. **Nothing about the engine changes, and the throughput law's own
+baseline was measured with no diagnostics at all, so the comparison would be like for like for the first time.**
+
+**And the honest accounting of the last four rounds, which is worth one paragraph because the pattern is now
+established.** `D397` blamed the lock-step and was corrected by its own arithmetic in `D398`; `D399` refuted one
+candidate by reading twelve lines and named an experiment costing one edit; `D400` failed to carry that edit through a
+shell function; and this round found that the edit is not an edit but a code change. **Four rounds, no measurement of
+the gap.** The common thread is not carelessness in any one round - it is that **each round reached for the cheapest
+available instrument, and the cheapest available instrument was always one layer too shallow for the question.**
+
+**Where the objective stands.** A1-A5 built and gated, **1652 tests with 0 failures**, the exactness gate at **0 of
+2048**; the transport, pairing, seed, counts, frame shape and token edge all verified; **a two-token ring whose first
+token is right and whose second is not**; and a 10x throughput gap whose cause remains unnamed, **with the instrument
+that would name it now specified rather than discovered.**
