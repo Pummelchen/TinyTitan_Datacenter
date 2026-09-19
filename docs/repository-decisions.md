@@ -15924,3 +15924,41 @@ narrow enough to state in one line: **the 44% await is expert-cache capacity; th
 cache is big enough (`D448`); and the interconnect is 9.3x too slow to borrow a peer's memory (`D449`).** What is left
 is the one lever that needs neither more RAM nor a faster wire - **hiding the 1.75 ms behind work that does not need
 the experts, which is `D441`'s layer-loop overlap.** Every other direction has now been tried, measured and closed.
+
+## D450 - Exposed I/O is ZERO: the overlap is already done, and the critical path is GPU compute
+
+**`D441` named two levers and `D449` closed the cluster one. Lever 1 was "overlap the expert read with the GPU work",
+and the whole of `D442`-`D448` was spent trying to move a number - `expert io await`, 47% of the step - on the
+assumption that it was exposed time. It is not.**
+
+**The engine already measures this, and nobody had looked.** `RealForwardRunner+Decode.swift:1740` maintains
+`totalExposedIoNanos` from a `CommandCompletionClock`, and `ServerInference.swift:1805` turns it into an overlap
+efficiency - **but `TinyTitanCLI` never printed it**, so every run in this session reported expert I/O without saying
+how much of it was exposed. Printed:
+
+    [overlap] exposed_io=0.0 ms over 32 tokens = 0.0 ms/token
+    expert io await: 1944.0 ms
+    decode 4.25 s -> 7.524 tok/s
+
+**Zero. Every microsecond of the 1944 ms of expert I/O was hidden behind other work.** So:
+
+  * **`D441`'s premise was wrong and is withdrawn.** The 47% was never exposed wall-clock; it is I/O that happens
+    *during* the GPU phase, which is why it and the GPU waits sum to the step - they are concurrent, and the phase
+    buckets double-count the interval rather than describing a serial sequence;
+  * **lever 1 is already implemented and already working**, which is what `D442`-`D448` were really measuring: none of
+    those knobs moved throughput much because there was very little exposed time to move;
+  * **and `D448` is consistent rather than contradicted** - at 8 cache slots the read outgrows the overlap window and
+    part of it becomes exposed, which is why 8 slots costs 2 tok/s. 40 slots is where the read *fits* inside the GPU
+    work. The cache optimum is the overlap optimum.
+
+**Which leaves the step as: GPU compute, plus a small encode, on the critical path.** At 4.25 s over 32 tokens the
+step is **132.8 ms/token**, and the profiler's GPU-wait bucket is **2183 ms = 68 ms/token, about 51%**. **The expert
+read is not the bottleneck. The GPU work is** - and GPU work is divided by tensor parallelism and by nothing else this
+session has tried.
+
+    GPU work alone        68 ms/token
+    split four ways       17 ms/token  + encode 4 ms = 21 ms/token -> 47 tok/s before any communication
+
+**against a target of 47.6 ms/token.** So the arithmetic that `D440` used to declare 21 tok/s unreachable was using
+the *wrong* 47%: the distributable fraction is not the expert read but the **GPU phase**, and the four-node cluster can
+divide it. **The route to the target is tensor-parallel, and it is the only route that was ever real.**
