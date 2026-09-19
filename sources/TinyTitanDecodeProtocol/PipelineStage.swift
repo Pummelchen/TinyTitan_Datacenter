@@ -23,6 +23,8 @@ public enum PipelineStage {
     public enum StageError: Error, Equatable {
         /// The frame carries more values than the destination buffer holds.
         case frameTooLarge(values: Int, capacity: Int)
+        /// `install` was given a stage with no `hiddenIn`, so a received frame would have nowhere to land.
+        case noLandingBuffer
     }
 
     /// Read one or more rows of half-precision values from a published buffer into a frame.
@@ -54,5 +56,60 @@ public enum PipelineStage {
             buffer.contents().copyMemory(from: source.baseAddress!, byteCount: source.count)
         }
         return frame.hidden.count
+    }
+}
+
+/// **The four things a stage needs from a runner, and nothing else.**
+///
+/// Drawn as a protocol rather than taking `RealForwardRunner` directly, for the same reason `PipelineStage`'s two
+/// functions are pure: the wiring is what could be wrong, and **a protocol lets the wiring be tested against a fake
+/// in milliseconds instead of against a 19 GB model.** `RealForwardRunner` already has all four properties, so the
+/// conformance below is empty and the engine is untouched.
+public protocol PipelineEndpoints: AnyObject {
+    var hiddenIn: MTLBuffer? { get set }
+    var hiddenOut: MTLBuffer? { get set }
+    var onHidden: ((Int, MTLBuffer) -> Void)? { get set }
+    var nextHidden: ((Int) -> MTLBuffer)? { get set }
+}
+
+extension PipelineStage {
+    /// **Put this stage on the ring.** `output` carries what this stage publishes, `input` carries what the previous
+    /// stage sent, and both are the same socket seen from its two ends - the ring's forward edge and its backward one
+    /// are one connection.
+    ///
+    /// `rows` is the handoff width: **1 for the per-token decode handoff and the chunk width for a prefill**, which
+    /// is the same code either way (`D337`). `exitLayer` is the layer this stage's output corresponds to, and it is
+    /// what the receiver needs to know which state it is holding.
+    ///
+    /// **`hiddenIn` is the buffer `nextHidden` fills**, because a buffer has to come from somewhere and this stage
+    /// already owns one sized for the handoff it expects. It is required rather than optional: without it a receive
+    /// would have nowhere to land, and a stage that silently drops its input is worse than one that refuses to start.
+    /// **`input` and `output` are both optional, because a ring has two ends that are not stages.** The head of the
+    /// pipeline consumes nothing - it embeds - so it has no `input`; the tail publishes nothing - it runs the head
+    /// and samples - so it has no `output`. Requiring both, as the first version did, made the head unable to
+    /// install at all, and the test against a fake is what caught it rather than a four-node run.
+    public static func install(on stage: some PipelineEndpoints,
+                               input: FileHandle?,
+                               output: FileHandle?,
+                               rowWidth: Int,
+                               rows: Int = 1,
+                               exitLayer: Int) throws {
+        if let output {
+            stage.onHidden = { position, buffer in
+                let outgoing = frame(from: buffer, rowWidth: rowWidth, rows: rows,
+                                     position: position, layer: exitLayer)
+                try? PipelineLink.send(outgoing, to: output)
+            }
+        }
+        if let input {
+            guard let landing = stage.hiddenIn else {
+                throw StageError.noLandingBuffer
+            }
+            stage.nextHidden = { _ in
+                guard let received = try? PipelineLink.receive(from: input) else { return landing }
+                _ = try? store(received, into: landing)
+                return landing
+            }
+        }
     }
 }

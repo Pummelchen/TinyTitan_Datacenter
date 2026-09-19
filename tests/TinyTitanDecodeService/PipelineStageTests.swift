@@ -61,3 +61,78 @@ struct PipelineStageTests {
         #expect(PipelineStage.frame(from: b, rowWidth: 4, rows: 3, position: 0, layer: 0).hidden.count == 12)
     }
 }
+
+/// A stand-in for a runner, so the WIRING can be tested without one. `install(on:)` writes two closures and reads
+/// one buffer, and those are the whole of its contract - so a fake with four properties exercises everything a real
+/// runner would, in milliseconds, and without 19 GB of weights.
+private final class FakeEndpoint: PipelineEndpoints {
+    var hiddenIn: MTLBuffer?
+    var hiddenOut: MTLBuffer?
+    var onHidden: ((Int, MTLBuffer) -> Void)?
+    var nextHidden: ((Int) -> MTLBuffer)?
+}
+
+@Suite("PipelineStage wiring", .serialized)
+struct PipelineStageWiringTests {
+    static let port: UInt16 = 47_700
+
+    private func device() throws -> MTLDevice {
+        try #require(MTLCreateSystemDefaultDevice(), "no Metal device")
+    }
+
+    private func connectWhenListening(_ port: UInt16, retries: Int = 150) throws
+        -> (input: FileHandle, output: FileHandle) {
+        var last: Error = PipelineStage.StageError.noLandingBuffer
+        for _ in 0..<retries {
+            do { return try DecodeTCPSocket.connect(host: "127.0.0.1", port: port) }
+            catch { last = error; usleep(20_000) }
+        }
+        throw last
+    }
+
+    /// The property that matters: a stage that publishes hands the SAME values to a stage that consumes. That is
+    /// the ring, exercised on a real socket, with no runner and no model in it.
+    @Test("a stage's published state reaches a consuming stage unchanged")
+    func ringRoundTrip() throws {
+        let d = try device()
+        let values = (0..<8).map { Float16($0) - 2 }
+        let published = d.makeBuffer(length: values.count * MemoryLayout<Float16>.stride, options: .storageModeShared)!
+        values.withUnsafeBytes { published.contents().copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
+
+        var consumer: FakeEndpoint?
+        let done = DispatchSemaphore(value: 0)
+        // The consumer listens; the producer connects and installs itself with `input` and `output` being the two
+        // ends of ONE connection, which is what a ring edge is.
+        DispatchQueue.global().async {
+            defer { done.signal() }
+            guard let pair = try? DecodeTCPSocket.listenAndAccept(host: "127.0.0.1", port: Self.port) else { return }
+            let fake = FakeEndpoint()
+            fake.hiddenIn = d.makeBuffer(length: 8 * MemoryLayout<Float16>.stride, options: .storageModeShared)!
+            try? PipelineStage.install(on: fake, input: pair.input, output: pair.output,
+                                       rowWidth: 8, rows: 1, exitLayer: 20)
+            if let consume = fake.nextHidden { _ = consume(0) }
+            consumer = fake
+        }
+
+        let pair = try connectWhenListening(Self.port)
+        let producer = FakeEndpoint()
+        // A PRODUCER: it publishes and consumes nothing, so it installs with no input and needs no landing buffer.
+        try PipelineStage.install(on: producer, input: nil, output: pair.output,
+                                  rowWidth: 8, rows: 1, exitLayer: 20)
+        producer.onHidden?(0, published)
+
+        #expect(done.wait(timeout: .now() + 15) == .success, "the peer did not finish")
+        let landed = consumer!.hiddenIn!.contents().bindMemory(to: Float16.self, capacity: 8)
+        #expect(Array(UnsafeBufferPointer(start: landed, count: 8)) == values,
+                "the consumed residual is not the published one")
+    }
+
+    @Test("a stage with nowhere to land refuses to install")
+    func noLandingBuffer() throws {
+        let fake = FakeEndpoint()
+        #expect(throws: PipelineStage.StageError.noLandingBuffer) {
+            try PipelineStage.install(on: fake, input: FileHandle.nullDevice, output: nil,
+                                      rowWidth: 8, rows: 1, exitLayer: 10)
+        }
+    }
+}
