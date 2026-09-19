@@ -13853,3 +13853,40 @@ between is exactly what a fourth print would settle.**
 **the forward edge producing a correct first token through the pipeline** (`D389`); **the reverse edge verified by
 value, token for token** (`D390`); and one sequence of four tokens whose first is right. **Three of this design's
 four legs are now confirmed by their own output; the fourth is one print away.**
+
+
+## D391 — The state pairing is correct, so the divergence is downstream of the handoffs - and the KV cache is what is left
+
+**The fourth instrument, and it answers D390's question:**
+
+    [wire] recv pos=0  values=10240        the prefill's five-row handoff
+    [seed] decode pos=5 fromSeed=true      step one uses the seed its prefill claimed
+    [seed] decode pos=6 fromSeed=false
+    [wire] recv pos=6  got token=5         A's state for position 6
+    [seed] decode pos=7 fromSeed=false
+    [wire] recv pos=7  got token=6         A's state for position 7
+
+**Every decode step consumes the state for its own position**, the seed is used exactly where `D388` intended, and
+the frames arrive in order. **So the state pairing is right, and the remaining divergence is not in the handoffs at
+all** - which is what `D390` suspected and this round confirms by measurement rather than by argument.
+
+**Which leaves the one thing in a pipeline stage that is *not* a handoff: its KV cache.** A stage that owns layers
+`0..<20` writes a KV row for every token it processes, and **the row it writes is the one for the token it was given**
+- which for a first stage is the token the ring chose, arriving one step late over the reverse edge. **If any row is
+written from a token the stage chose itself rather than the one it was told, the cache diverges from a single node's
+and every later state is computed against a corrupted history** - and the symptom would be exactly what is measured:
+**a correct first token, because the prompt's rows are written during prefill and are right, and divergence from the
+second, because that is the first row written from a decode step.**
+
+**And that is a hypothesis with a specific test rather than a mechanism fitted to a sample.** The prompt's five rows
+are written by the prefill from tokens the stage was *given*; the first decode row is written after the stage has
+consumed the reverse edge once. **If the cache is the fault, a run with `--max-new 1` should be correct** - one token
+is produced entirely from the prompt's rows and nothing after them - **while `--max-new 4` diverges from the second.**
+`D377` already has that data for a *different* question and it says the first token was right; **what has not been
+done is to check whether a one-token ring is *entirely* correct, which is the cheapest possible test of this.**
+
+**Where the objective stands.** A1-A5 built and gated, 1652 tests with 0 failures, the exactness gate at 0 of 2048;
+the forward edge producing a correct first token (`D389`); the reverse edge verified token-for-token (`D390`); **the
+state pairing verified per position** (`D391`); and one sequence whose first token is right. **All four of this
+design's interfaces are now measured correct, and what remains is the state the interfaces carry rather than how they
+carry it.**
