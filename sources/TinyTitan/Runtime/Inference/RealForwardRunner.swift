@@ -257,6 +257,14 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     /// `0..<10` embeds and stops after layer 9, and the hidden state left in the residual buffer is what a
     /// pipeline stage would send (`docs/design-a-plan.md` A1).
     public var layerRange: Range<Int>?
+
+    /// THE PIPELINE'S TWO ENDS. `hiddenIn` is the hidden state a previous stage sent, copied into the residual
+    /// before this stage's first layer; `hiddenOut` receives the residual after this stage's last layer, which is
+    /// what this stage sends. Both are `[D]` fp16 - 4 KB, one `PipelineFrame` payload (`docs/design-a-plan.md` A3).
+    ///
+    /// With both nil nothing changes, which keeps the single-node path and A1's gate intact.
+    public var hiddenIn: MTLBuffer?
+    public var hiddenOut: MTLBuffer?
     let outWeights: MTLBuffer    // [topK] FP16
     /// Trace-only next-layer router result. It is never read by inference.
     let prefetchPredictionIndices: MTLBuffer

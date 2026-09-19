@@ -189,6 +189,14 @@ extension RealForwardRunner {
             }
         }
 
+        // A3: a stage that is handed a hidden state does not embed. The copy overwrites the embed's result, which
+        // is wasted work on a middle stage and harmless - correctness first, and the embed's cost is measured and
+        // small against ten layers.
+        if let incoming = hiddenIn {
+            let bytes = residualWidth * MemoryLayout<Float16>.stride
+            memcpy(hidden.contents(), incoming.contents(), bytes)
+        }
+
         for L in layerRange ?? 0..<cfg.numLayers {
             // Dumping drains the previous layer's routed command first. The
             // residual is only settled once that has landed, and a dump taken
@@ -557,6 +565,14 @@ extension RealForwardRunner {
                              x: self.normed, y: logits, m: UInt32(self.cfg.vocabSize), n: D)
         }
         let gFusionHead: (MTLCommandBuffer) throws -> Void = { cb in
+        // A3: publish this stage's hidden state before anything consumes the residual for logits. The `self.`s are
+        // required because this point is inside a closure; `hidden` is the residual buffer the embed filled and
+        // every layer updated, so after the last owned layer it holds what the next stage needs.
+        if let out = self.hiddenOut {
+            let bytes = self.residualWidth * MemoryLayout<Float16>.stride
+            memcpy(out.contents(), self.hidden.contents(), bytes)
+        }
+
             try self.fusionHead.encodeGreedyDecode(
                 commandBuffer: cb,
                 hidden: self.hidden,
