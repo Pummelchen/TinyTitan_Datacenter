@@ -10914,3 +10914,38 @@ structure of the surrounding code, rather than the change itself, was what faile
 still projects to vocabulary, which is wasted work and is deliberately deferred - correctness first, and the head's
 cost is measured. **And nothing about the pipeline is demonstrated yet**: the two ends exist on the runner, the
 frame exists, and no node has ever sent one to another. That is A4 and A5.
+
+## D309 — A1, A2 and A3 are in and gated; the per-token handoff is reverted and its test design is recorded
+
+Four rounds of Design A have put three pieces in the tree, each gated by the same discipline. **D309 records where
+that leaves the build and what the next step is, because this round's attempt did not land.**
+
+**What is in, and how it was verified:**
+
+| | what it is | gate |
+| --- | --- | --- |
+| **A1** | `layerRange` the decode loop honours | **bit-identical** tokens with the range unset - `D305` |
+| **A1.5** | `--layer-range start:end` | the stage arithmetic, **measured**: 40 layers 128.5 ms/token, 20 layers 66.3, 10 layers 46.5 - a linear fit of 2.73 ms per layer plus 19 ms fixed - `D306` |
+| **A2** | `PipelineFrame` - 16-byte header plus fp16 payload, 4 KB at D=2048 | three tests: exact round trip, size, and refusals on a truncated header and payload - `D307` |
+| **A3** | `hiddenIn` / `hiddenOut` on the runner | **bit-identical** tokens with both unset - `D308` |
+
+**Every safety gate has been re-run after every change**, and the single-node output has not moved once. That is the
+property that makes the rest usable: **108 records of exactness discipline, and the layer pipeline has not broken
+one of them.**
+
+**What this round attempted and did not land.** The per-token handoff - `onHidden` and `nextHidden` hooks, so that a
+file of `PipelineFrame`s can stand in for a socket and **the pipeline's exactness can be tested on one node before
+any transport exists**. It failed to compile with `cannot find 'nextHidden' in scope` and was **reverted rather than
+half-applied**, so the tree is clean at `8ea4566` with all three gates still passing.
+
+**And the test it was for is now fully specified, which is the useful residue of the failure.** The pipeline's
+exactness question is: **does `--layer-range 0:20` handing its hidden state to `--layer-range 20:40` reproduce
+`--layer-range 0:40`, token for token?** With the hooks that is two runs on one node and a file between them - no
+network, no second machine, no transport - and it is the gate that must pass before a socket is worth writing.
+**A4 and A5 are therefore: the hooks, then this test, then the transport.**
+
+**The honest state of the objective.** Design A's partition (A1), its message (A2) and its stage boundaries (A3)
+exist and are gated; **no node has ever sent a frame to another**, the head still runs on every stage, and **no
+pipeline throughput has been measured.** The one throughput number this build has produced is the single-stage
+figure from `D306` - **ten layers at 21.482 tok/s**, which is the objective's target and is the arithmetic Design A
+rests on, not the design itself.
