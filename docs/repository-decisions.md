@@ -11930,3 +11930,38 @@ the number of rows in the payload**, which is what lets a receiver size its buff
 **And the decode path is untouched, which is the point.** `D336` found that decode already seeds from `hiddenIn`
 correctly for one row; **that is the steady state of a pipeline and it already works.** Only the prompt's entry into
 each middle stage needs the wider form, and it needs it once.
+
+## D338 — The pipeline wire is written and its socket test resets the connection, so neither is committed
+
+The transport was started: a `PipelineLink` carrying `PipelineFrame`s over the `DecodeTCPSocket` pair the shard
+engine already proved, and deliberately **not** reusing `ShardPeerChannel`, because that channel carries routing
+tables, ownership and a reduce and a layer-pipeline stage needs none of them.
+
+**The design point worth keeping is that the framing needs no length prefix.** `PipelineFrame.headerBytes` is 16,
+the fourth `u32` is `count`, and a reader that takes the header first therefore knows the payload is `count` fp16
+values - so a stream of frames is self-delimiting, and `count` is exactly the field `D337` needed for a `t`-row
+prefill handoff. **The header I wrote in A2 turns out to already carry the field the transport needs**, which is
+the second time this session that a piece built for one reason answered a later question.
+
+**And it is not committed, because its test does not pass.** A listener and a client over loopback, three frames
+of 1, 8 and 64 rows echoed back: the test fails in **6 milliseconds** with `ECONNRESET`. Two attempts were made -
+the first was a genuine defect of mine (`server.value` is `async` and the test function was not), the second added
+a bounded connect retry mirroring the shard path's `connectRetrySeconds`, on the theory that macOS answers a
+connect to an unbound port with `ECONNRESET` rather than `ECONNREFUSED`. **The retry did not help and the failure
+got faster, so the connect is succeeding and the reset is on the read** - which points at the socket pair rather
+than at the race. The likeliest candidate is that `DecodeTCPSocket.handles(for:)` wraps **one** file descriptor in
+**two** `FileHandle`s - which is correct for a connected socket and is what `ShardPeerChannel` relies on - so a
+`FileHandle` deallocated on one side closes the descriptor the other side is still reading. **That is a hypothesis
+and it is written down as one.**
+
+**Why it is reverted rather than committed with a caveat.** This repository's rule is that a change is finished
+when it is tested, documented and the tracker says so - and **transport code that has never carried a byte is
+exactly the kind of thing that looks finished and is not.** The wire is 60 lines and the next session can rewrite
+it from this record in minutes; committing it untested would put a green-looking file in the tree whose only
+evidence is a failing test.
+
+**What is true about the transport position.** The socket exists and is proven (`ShardPeerChannel` runs the
+four-node expert exchange over it), the frame exists and has three tests, and `D288` measured the link at
+**117.8 MB/s**. **What has never happened is a `PipelineFrame` crossing a socket - and that remains true after
+this round.** The next step is to establish whether the same-descriptor hypothesis holds, with a two-process test
+rather than two tasks in one process, which removes the deallocation question entirely.
