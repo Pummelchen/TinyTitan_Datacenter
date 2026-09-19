@@ -14144,3 +14144,49 @@ no code change.
 the transport, pairing, seed, counts and frame shape all verified; a two-token ring whose first token is right and
 whose second is not; and **a 10x throughput gap whose shape is known and whose cause now has three candidates where
 the last round claimed one.**
+
+
+## D399 - Candidate one is refuted by reading: the token edge reuses its handle, so it does not reconnect per token
+
+**The code, twelve lines of it:**
+
+    public static func sendToken(_ token: Int, layer: Int = 0, to output: FileHandle) throws {
+        try PipelineLink.send(PipelineFrame(token: token, layer: layer, hidden: []), to: output)
+    }
+    public static func receiveToken(from input: FileHandle) throws -> Int {
+        let frame = try PipelineLink.receive(from: input)
+        guard frame.hidden.isEmpty else { throw StageError.notATokenFrame(values: frame.hidden.count) }
+        return frame.token
+    }
+
+**Both take an already-open `FileHandle`.** There is no connect, no bind, no handshake and no Local Network Privacy
+decision inside either - **so the reverse edge cannot be paying a per-token connection cost, and the first of `D398`'s
+three candidates is dead.**
+
+**And that is the third time in four rounds that reading the code answered what a hypothesis was about to be built
+on** (`D395` on `publishedRows`, `D398`'s own correction, and this). **The pattern is now clear enough to be a working
+rule rather than a lesson: when a value is suspected, read the twelve lines that produce it before designing an
+experiment to catch it.** Three of the last four rounds would have been shorter and one of them would not have
+happened.
+
+**Which leaves two candidates for the 316 ms, and the second of them is testable without touching the engine.**
+
+  * **The instrumentation.** `[tok] told`, `[tok] chose`, `[seed] decode` and `[wire]` are all
+    `FileHandle.standardError.write` - **synchronous writes to a file that a second process is not reading**, and
+    every one of them was present in the `D397` measurement **and absent from the law's 41.9 ms/token, which was
+    measured before any of this instrumentation existed.** A ring run with the prints silenced is one edit and
+    settles it;
+  * **or the end stage does more than 64.4 ms.** A owns `0..<20` **and embeds the token and runs the head** - and the
+    law's 64.4 ms was measured on a *full* run, which also includes both. **So this candidate predicts the opposite of
+    what was assumed**: a stage's twenty layers are *less* than 64.4 ms, and the 316 ms is therefore larger than
+    `D398` computed, not smaller.
+
+**And the honest position on the whole performance question.** Four rounds have produced one refuted candidate, one
+withdrawn attribution and one arithmetic correction. **The gap is real and 10x; its cause is not yet known; and the
+cleanest next experiment is to silence the diagnostics and re-measure, because the law's own baseline was taken
+without them.**
+
+**Where the objective stands.** A1-A5 built and gated, **1652 tests with 0 failures**, the exactness gate at **0 of
+2048**; the transport, pairing, seed, counts and frame shape all verified - **and now the token edge's connection
+behaviour verified too**; a two-token ring whose first token is right and whose second is not; and **a 10x throughput
+gap with two candidates remaining, one of which costs one edit to test.**
