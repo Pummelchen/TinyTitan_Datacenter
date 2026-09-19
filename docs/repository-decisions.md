@@ -13022,3 +13022,41 @@ edge have produced: a bind ordered after a connect, a role assumption the enviro
 dead when it was waiting, and now a port proven reachable. **Each was settled by one command, and none by a
 hypothesis held for longer than a round.** The remaining question is the smallest of them and it is inside the
 process.
+
+## D369 — The same reverse connect succeeds alone and fails with one extra environment variable set
+
+**Instrumented, and the result is a clean bisection:**
+
+    isolated A:  [back] connecting to 192.168.18.27:47702 as source
+                 [back] connected
+                 [pipeline] reverse edge installed
+
+    full A:      [back] connecting to 192.168.18.27:47702 as source
+                 [back] first connect failed: No route to host (65)
+                 [back] gave up after 450 attempts: No route to host (65)
+
+**Same address, same port, same role, same binary, same node - and the only thing that differs between the two
+invocations is that the full run also sets `TINYTITAN_STAGE_CONNECT`.** The isolated run had no forward edge at all.
+
+**So `D367`'s attribution was wrong too, and the instrument is what showed it.** That record concluded A failed in
+its back connect - which is true of the full run - **but the isolated run proves the back connect itself is sound**,
+so the fault is an interaction rather than a path. **Two rounds, two wrong attributions, and both were corrected by
+running the thing rather than by reading it.**
+
+**And the shape of this is now specific enough to bisect in one command.** A single environment variable separates a
+working connect from a failing one, and it is the variable that makes `installIfConfigured` run - **so the next test
+is A with `BACK_CONNECT` set and `CONNECT` pointed at a port nothing binds**, which tells whether the forward
+installs's *presence* is enough or whether its *connect attempt* is what matters. **That is one run and it either
+reproduces or it does not.**
+
+**A candidate worth naming, and it is a hypothesis rather than a finding.** `installIfConfigured` connects with
+`DecodeTCPSocket.connect`, and `DecodeTCPSocket.connect` calls `makeAddress`, which uses `inet_pton`. **If two
+connects in one process on the same address interact through anything shared**, the second could be affected by the
+first - but the order in `Run.swift` is `installReverseEdge` **first**, so the reverse connect happens before the
+forward one and cannot be damaged by it. **That the ordering says it cannot happen is exactly why this needs a run
+rather than a theory.**
+
+**Where the objective stands, restated honestly.** Four legs, all written and called and tested; the forward edge
+proven across machines with a correct token (`D358`); the reverse edge proven to connect in isolation (`D369`); and
+**no run in which both are live has completed.** The remaining fault is now reproducible, isolated to one variable,
+and one command away from being bisected.
