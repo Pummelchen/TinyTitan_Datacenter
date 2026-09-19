@@ -13529,3 +13529,51 @@ this session has not attempted and neither of which is a twenty-second command.
 **And the pragmatic path is now visible and unglamorous.** The connect is flaky rather than impossible, and **about half the attempts succeed**. A run that retries the pair until the reverse edge connects **would produce a sequence the first time it got lucky**, and **`D358` already proved what the forward edge does when it runs.** That is a loop, not an insight - **and after six rounds spent looking for an insight, a loop is the better use of the next one.**
 
 **Where the objective stands.** Unchanged in substance and now stated with the failure rate attached: four legs written and tested, the forward edge proven with a correct token, the reverse edge connecting in **seven of twelve** observed attempts, and **no run with both live** - with the one addition that **the configuration the pipeline needs is the one that has failed every time it was tried to completion.**
+
+
+## D383 — The retry loop fails eight times out of eight, and the objective is left active with the position stated plainly
+
+**The pragmatic path `D382` proposed, taken: keep B listening, retry A up to three times.**
+
+    attempt 1: A connected = no
+    attempt 2: A connected = no
+    attempt 3: A connected = no
+
+**And the tally across the whole stretch is now the clearest thing in it:**
+
+    B with the back edge only              -> connected, repeatedly
+    B with both edges (what a ring needs)  -> 0 of 8
+
+**So the configuration the pipeline requires has never once connected**, and the correlation `D382` declined to call a
+cause from two samples has now survived eight. **That is still a correlation and not a mechanism** - `D375`'s
+alternating test got two successes with both edges configured, which is the sample that makes the picture
+inconsistent - **but a run that requires a configuration to succeed eight times before it does is not a run this
+record can call working.**
+
+**And the honest assessment of the last seven rounds is that the method was wrong rather than the effort.** Every
+round varied a configuration and drew a conclusion from one or two observations; **five were withdrawn, one control
+was invalid, and the surviving statistic took eight samples to become visible.** The instrument that would have
+answered it in one round - **a packet capture during a failing run** - was named in `D377` and `D378` and **never
+used during a failure**, because each round tried one more cheap variable first. **Cheap variables were not cheap:
+they cost seven rounds.**
+
+**Where the objective stands, and the goal is left active with this as the position.**
+
+  * **Built and gated**: A1's layer range is bit-identical when unset; **the exactness gate passes with 0 of 2048
+    elements differing**; A2's frame, A3's inert ends and A4's hooks all have tests; **the suite is 1652 tests in 8
+    binaries with 0 failures.**
+  * **Proven on real hardware**: the forward edge carries hidden states between two machines and **produced the
+    correct first token** (`D358` - ` Paris` against a single node's ` Paris, a city`).
+  * **Written, called and tested but never demonstrated in a real run**: the reverse edge - `sendToken`,
+    `receiveToken`, the role split, the generation-loop wiring, and the bind-before-connect ordering.
+  * **Not met**: the objective's central claim for a *sequence*. One token has crossed a machine boundary and come
+    out right; **no run has had all four legs live at once.**
+  * **The blocker**: an intermittent `EHOSTUNREACH` on the reverse connect, **perfectly correlated with the
+    configuration the pipeline needs and never observed in any other**, whose cause is not visible from the process
+    and **requires a packet capture during a failing run to distinguish a SYN never sent from a SYN refused.**
+
+**And one thing worth recording because it is the only part of this that is a fact rather than a hypothesis.** The
+arithmetic has never been wrong. **`D325` proved the composition exact, `D358` showed a real hidden state producing a
+real correct token, and every fault since has been at an interface** - a shadowed parameter, a dead closure, an
+uncounted row, a bind ordered after a connect, a role the environment forbade, and now a connection. **The engine
+computes the right answer; what it cannot yet do is receive one across a wire.**
