@@ -13,8 +13,9 @@
 Apple-silicon Macs, streaming routed experts from SSD on the
 [TinyTitan](https://github.com/Pummelchen/TinyTitan) runtime.
 
-What is new in each release lives in the
-[Changelog](https://github.com/Pummelchen/TinyTitan/wiki/Changelog).
+What is new in each release lives in this repository's
+[releases](https://github.com/Pummelchen/TinyTitan_Datacenter/releases) and in the wiki's
+[News](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/News) page.
 
 <br>
 
