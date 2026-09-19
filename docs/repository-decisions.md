@@ -13394,3 +13394,39 @@ back-connect is replaced by an `ssh` to node1 on that port would separate "this 
 the reverse connect **proven to work, six times, in probes**; and **four real runs that have never got past it.**
 **The blocker is now precisely stated: the connect works in every configuration this record can construct except the
 one that matters.**
+
+
+## D379 — The swap reproduces in both directions, so the fault is the full run and not either node
+
+**The test `D378` named, taken:**
+
+    A on node1 -> B on node3:   [back] first connect failed: No route to host (65), 450 attempts
+
+**Identical to the mirrored arrangement.** node3 could not connect back to node1, and node1 cannot connect back to
+node3 - **the same `EHOSTUNREACH`, the same retry count, the same place in the startup**. So:
+
+  * **not node-specific** - both nodes refuse;
+  * **not directional** - both directions fail;
+  * **not the address or the routing** - `D363` and `D364` eliminated those by direct test;
+  * **not the peer's configuration** - `D375` showed that varying it changes nothing;
+  * **not the workload** - `D377` showed all four prompt/length combinations connect.
+
+**And what every failing run has in common is that it is the real one.** The reverse connect **succeeds in every probe
+run** - six of six, on node3 - and **fails in every full run** - now five of five, on both nodes, in both directions.
+
+**The one difference nobody has varied is A's lifetime.** Every probe ran A under `timeout 20`; every full run let A
+live. **A's own connect retries 450 times at 200 ms - ninety seconds - so a probe that is killed at twenty seconds has
+only ever been observed during the first fifth of the attempt window.** That means **the probes may not have connected
+because they were configured differently; they may have connected because they were watched for a shorter time.** A
+success printed at second three and a success printed at second eighty are the same line in a log, **and no run in
+this stretch has distinguished them.**
+
+**Which is testable in one command and has not been tried: the full pair with `timeout 20` on A.** If it connects, the
+discriminator is A's lifetime and the "probe versus full run" correlation was an artefact of how long each was
+observed - **which would make five rounds of bisection a study of the observation window rather than of the fault.**
+If it fails, the lifetime is eliminated too, and what remains is that the connect succeeds when a stage has one edge
+configured and fails when it has two.
+
+**Where the objective stands.** Four legs written and tested; the forward edge proven with a correct token (`D358`);
+the reverse connect **never once observed in a real run on either node in either direction.** **The blocker is stated
+as precisely as the measurements allow, and the next command costs twenty seconds.**
