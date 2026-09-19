@@ -12176,3 +12176,33 @@ passing.
 **And the verification loop is finally fast.** `swift test` spends its time building the test **target**, not running
 tests: once the target exists, a filtered run is **0.4 seconds**. That is the thing that had been forcing three
 consecutive commits to land with an unverified boundary, and it was never the tests.
+
+## D344 — The send-direction peer is stopped at two attempts, and the engine's verified half is the one that mattered
+
+`D343` verified `PipelineLink.receive` against `nc` and recorded that the send direction needed "a peer that closes
+on a deadline". That peer was attempted this round: **`nc -l PORT | head -c N`**, so that `head` exits once the frame
+has arrived, `nc` takes SIGPIPE on the closed pipe, and the shell returns - which is the shape the problem asks for.
+**It hung.** The cause is not established: `head` receives the exact byte count, so the deadline should fire, and the
+test timed out at 124 rather than failing at a named assertion.
+
+**Two attempts at this harness have now been spent and the second is stopped deliberately.** The reason is not that
+the send direction is unimportant - it is that **the direction already verified is the one that carried the defect**:
+`receive` sizes its payload from the `count` word, and reading the wrong word there produced an empty payload, a dead
+sender task, and an `ECONNRESET` that read like a network fault (`D340`). `send` is two lines - `output.write(frame.encode())`
+- with no branch, no offset and no size arithmetic, and **the bytes it writes are `encode()`'s output, which is what
+the `countOffset` test checks.** The asymmetry in test coverage matches an asymmetry in risk.
+
+**And the thing worth carrying is the shape of the two failures.** The in-process test deadlocked because a listener
+blocking in `accept` inside a task the test awaits leaves the other side waiting forever (`D342`). The two-process
+test with `nc -l` hung because `nc` waits for EOF and `waitUntilExit()` has no timeout (`D343`). The two-process test
+with a deadline-closing peer hung anyway, for a reason not yet known (`D344`). **Three failed harnesses and one
+successful one, and the successful one is the one where the peer was a program that could not be confused with the
+test** - `nc` writing a frame that `receive` had to decode. **The lesson is not "write better tests"; it is that a
+harness whose failure mode is a hang consumes the round, where a harness whose failure mode is an assertion does
+not.** Every attempt that could hang, did.
+
+**The standing position.** `PipelineLink` builds with 0 warnings; its `count` offset is verified against a real
+`encode`; `receive` is verified against a frame written by `nc`; **`send` is unverified and its coverage gap is in
+the file rather than in a claim.** The send direction should be closed by a peer written in Swift that closes its
+socket after a fixed byte count and exits - a small job with no shell pipeline in it - rather than by a third shell
+variant.
