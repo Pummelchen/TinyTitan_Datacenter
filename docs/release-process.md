@@ -27,6 +27,12 @@ yours, stop and ask the human — §5 is the long version.
 
 ## 1. Prepare the version
 
+> **The version standard is `X.Y` — two components.** There is no patch
+> component in this repository: `1.1` is a version and `1.1.1` is a defect, so
+> there is nothing to decide about a third number at release time. Everything
+> below is written that way on purpose — the notes file, the changelog heading,
+> the tag and the archive name are all `X.Y`.
+
 Three places, and only the first is a literal:
 
 1. **`tools/install_tinytitan.sh`** — `CFBundleVersion` and
