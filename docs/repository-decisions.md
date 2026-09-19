@@ -15059,3 +15059,45 @@ all verified; **a two-stage ring measured to convergence at 17.1 and 19.1 tok/s*
 first built with a middle stage - running end to end, returning a token through that middle stage, and producing the
 correct first token.** The objective asks for four stages across four Mac minis; **three stages across two now work,
 and the fourth stage is the same wiring one more time.**
+
+## D424 - Three stages are 2.3x slower per token than two, with the stages perfectly balanced - so the cost is per stage, not per layer
+
+**The three-stage chain at a length where the rate is real:**
+
+    node3  0:13  source    128 tokens   decode=17.57s   7.284 tok/s
+    node1  13:26 both      128 tokens   decode=17.15s   7.464 tok/s
+    node1  26:40 sink      128 tokens   decode=16.54s   7.738 tok/s
+
+    and the two-stage chain at the same length, from D415:
+    A (0:20) 17.116 tok/s      B (20:40) 19.057 tok/s
+
+**Three stages of thirteen layers each run at a third of the rate of two stages of twenty.** And the stages are
+**balanced to within 5%** - 7.284, 7.464, 7.738 - **which is the pipeline working exactly as designed**: no stage is
+waiting for another, and the chain's rate is the per-stage rate. **So the fault is not distribution and not imbalance.
+It is that a stage now costs 137 ms where it cost 58, and that stage has FEWER layers.**
+
+**And the law says it should be the other way.** Thirteen layers at 2.25 ms plus the fixed 19.3 is **48.6 ms**, and the
+measured 137 is **2.8x** that - where the twenty-layer stage measured **58 ms against the law's 64.3**, i.e. *below*
+it. **So the small stage is worse than the large one by a factor the layer count cannot explain**, and the candidates
+are the ones that scale with *stage count* rather than layers:
+
+  * **the reverse edge's hop count.** In a two-stage ring the token goes head-to-first in one hop. **In a three-stage
+    chain it goes head-to-middle-to-first, so the token's round trip is two hops and the lookahead has to hide both** -
+    and `D411`'s lookahead was written and measured against one;
+  * **or the middle stage's double duty.** A `both` stage consumes and publishes on every step, **so it is on both
+    sides of the exchange at once**, and the one-position lookahead that sufficed for a two-stage ring may be one
+    position short for it;
+  * **or the per-layer cache is smaller and colder.** Thirteen layers hold fewer experts resident, and `D414`
+    established that this engine's cost is dominated by cache warmth - **but that predicts three stages should WARM
+    FASTER, not slower**, so this is the weakest of the three.
+
+**And the honest position is that this is a new measurement and not a new conclusion.** The chain works, it is
+correct, its stages are balanced, and **it is slower than a chain with fewer, larger stages** - which is the opposite
+of what the objective assumed and exactly the kind of result the objective asks to be measured rather than assumed.
+
+**Where the objective stands.** A1-A5 built and gated; the fork's suite green with the quiet switch, the lookahead and
+the `both` role; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and token edge
+all verified; **a two-stage ring at 17.1 and 19.1 tok/s**; **a three-stage chain running end to end and producing the
+correct first token**; and **the three-stage rate measured at 7.28 tok/s with its stages balanced, which locates the
+regression in the per-stage cost rather than in the distribution - and the objective's four-stage, 21 tok/s target
+therefore not reachable by adding stages until that per-stage cost is understood.**
