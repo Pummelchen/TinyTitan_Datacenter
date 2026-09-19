@@ -1,207 +1,156 @@
-<p align="center">
-  <img width="1254" height="1254" alt="TinyTitan Datacenter" src="TinyTitanDatacenter.png" />
-</p>
+<img width="1254" height="1254" alt="TinyTitanDatacenter" src="TinyTitanDatacenter.png" />
+
+
 
 # TinyTitan Datacenter
-
-**TinyTitan Datacenter — short name `ttd` — is a dedicated repository.** It stands on its own: it
-builds and runs without any other repository, and it neither links to nor depends on one. It is
-built from scratch and is licensed under MIT — see [`LICENSE`](LICENSE).
 
 [![Stars](https://img.shields.io/github/stars/Pummelchen/TinyTitan_Datacenter?style=flat-square&logo=github&label=Stars&color=e3b341)](https://github.com/Pummelchen/TinyTitan_Datacenter/stargazers)
 [![Views (14d)](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Pummelchen/TinyTitan_Datacenter/main/.github/traffic.json)](https://github.com/Pummelchen/TinyTitan_Datacenter)
 [![Last Commit](https://img.shields.io/github/last-commit/Pummelchen/TinyTitan_Datacenter?style=flat-square&logo=git&label=Last%20Commit&color=2ea44f)](https://github.com/Pummelchen/TinyTitan_Datacenter/commits/main)
 [![Contact](https://img.shields.io/badge/Contact-0xa0b1%40gmail.com-blue?style=flat-square&logo=gmail&logoColor=white)](mailto:0xa0b1@gmail.com)
 
-**TinyTitan Datacenter** runs large Mixture-of-Experts language models across a cluster of
-Apple-silicon Macs, streaming routed experts from SSD on the
-TinyTitan runtime.
 
-What is new in each release lives in this repository's
-[releases](https://github.com/Pummelchen/TinyTitan_Datacenter/releases) and in the wiki's
-[News](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/News) page.
+A distributed inference engine for large MoE language models on clusters of Mac minis and Mac Studios over LAN/SFP/QSFP and Thunderbolt.
 
-<br>
+**Status: M0, M1 and M2 are complete and their gates have passed.** On the required
+toolchain — **Xcode 27 with Swift 6.4, and nothing else** — `swift build` is clean and
+`swift test --no-parallel` runs **266 tests, 0 skipped, 0 failures** (the Metal kernels skip
+only on a host with no GPU, which is why CI runners report skips), with **427** standard-library Python
+tests run in CI.
+M0 matched the reference on `Qwen/Qwen3.5-2B`: 40,683,520 bytes of trace data identical
+to the contract, every discrete decision matching. **M1's gate passes in both of its forms on all five
+frozen prompts** — the engine against a contract reading the same **checkpoint** (`b8c976c5e7ba8816…`) and
+against one reading the same **install** (`b0d382dbabf36df0…`) — every comparison 83 tensors, 0 differing
+elements and 40 discrete decisions, generating at **0.108 tok/s** cached with **348.6 MB** peak memory. **M2 shards that same 35 B model across two machines** and
+produces **the same digest as the single-node baseline** (`b0d382dbabf36df0…`): 83 tensors,
+0 differing elements, 40 discrete decisions, checked by `trace_diff` on both nodes. All four machines also
+run one forward together in a full mesh and produce that same single trace, and **generation** shards
+too: a two-machine cached decode produced the single-node tokens and the same trace digest. What remains open is the
+cluster's tok/s measurement, which belongs to a quiet farm; `D12` was settled from a measurement (`D31`: the
+expert slot bank is sized from a budget, because the measured hit rate is **0** at every size). The install now
+has its own reader and checker in Python, which verifies its structure, tiling, policy and every payload digest. **v1.0.0 is the first release** — Apple-silicon `arm64` binaries for macOS 26+, with `--version` on every tool and `VERSION` as the single source of that number; the [changelog](CHANGELOG.md) is its announcement.
 
+News, measurements and the live work list are in the **[wiki](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki)** —
+start with [News](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/News) for what
+has closed and what it cost, and the
+[Project Tracker](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Project-Tracker)
+for what is still open.
 
-## Benchmarks
+## Performance
 
-Peak decode on a base 8-core M3 MacBook Pro with 24 GB. 
-`NA` means the CPU engine
-does not serve that model: the MoE families stream their experts on the GPU + ANE path,
-and only the dense Qwen 3.5 models run on either engine.
+Measured on the release build with greedy decoding on int4 installs. The MoE figures are the four M2 nodes
+(8 GB each, loads 1.6–5.5); the dense 4 B was measured on one node at load 5.05.
 
-| Model | Quantization | GPU | CPU |
-| --- | --- | ---: | ---: |
-| Qwen 3.5 2B (dense) | 4-bit | **53.73 tok/s** | **15.42 tok/s** |
-| Qwen 3.5 2B (dense) | 8-bit | **32.77 tok/s** | **15.83 tok/s** |
-| Qwen 3.5 4B (dense) | 4-bit | **26.18 tok/s** | **7.71 tok/s** |
-| Qwen-AgentWorld 35B-A3B | 4-bit | **21.74 tok/s** | NA |
-| Ornith 1.5 35B-A3B | 4-bit | **21.65 tok/s** | NA |
-| Qwen 3.6 35B-A3B | 4-bit | **21.41 tok/s** | NA |
-| KAT-Coder-V2.5-Dev 35B-A3B | 4-bit | **17.86 tok/s** | NA |
-| Qwen 3.5 4B (dense) | 8-bit | **16.14 tok/s** | **7.04 tok/s** |
-| Qwen 3.5 9B (dense) | 4-bit | **14.93 tok/s** | **4.07 tok/s** |
-| Qwen 3.6 35B-A3B | 8-bit | **12.37 tok/s** | NA |
-| Qwen-AgentWorld 35B-A3B | 8-bit | **12.28 tok/s** | NA |
-| Ornith 1.5 35B-A3B | 8-bit | **11.93 tok/s** | NA |
-| Qwen 3.5 9B (dense) | 8-bit | **8.90 tok/s** | **4.51 tok/s** |
-| KAT-Coder-V2.5-Dev 35B-A3B | 8-bit | **6.91 tok/s** | NA |
-| Qwen3.8-Flash-Next 125B-A6B | 4-bit | **5.46 tok/s** | NA |
-| Qwen3.8-Flash-Next 125B-A6B | 8-bit | **2.10 tok/s** | NA |
+| Release | Model | Nodes | Prefill tok/s | Decode tok/s | Speed-up |
+| --- | --- | --- | --- | --- | --- |
+| 1.0.0 | Qwen3.6-35B-A3B (MoE, ~3 B active) | 1× Mac mini M2 (8 GB) | 0.23 | 0.23 | 1.0x |
+| 1.0.0 | Qwen3.6-35B-A3B (MoE, ~3 B active) | 4× Mac mini M2 (8 GB) | 0.23 | 0.41 | **1.7x** |
+| 1.0.0 | Qwen3.5-4B (dense) | 1× Mac mini M2 (8 GB) | — | 0.17 | — |
 
+**Dense models are outside this design**, and it was measured rather than assumed. The shard plan divides
+*experts*, so a dense model cannot be distributed at all, and its whole payload is re-read for every token: a
+dense 4 B measured **0.17 tok/s**, slower than the 35 B MoE on the same node, because the MoE activates only
+~3 B of its 35 B. A dense 9 B needs more memory than an 8 GB node has. Prefill is not distributed in this
+release either, and the cluster figures are lower bounds from a shared farm; later releases will improve on
+all of these.
 
+## What it does
 
-### Supported LLMs
+Runs models far larger than your total RAM across a cluster of Macs, streaming expert
+weights from SSD, optimized for a single user rather than for serving throughput.
 
-Every model installs at **4-bit and 8-bit**:
+Development target is 4x Mac mini M2 (8 GB each) over Thunderbolt. The engine is
+scaled to allow an unlimited count of Mac nodes (same model type).
 
-- **Qwen3.8-Flash-Next 125B-A6B**
-- **KAT-Coder-V2.5-Dev 35B-A3B**
-- **Qwen-AgentWorld 35B-A3B**
-- **Ornith 1.5 35B-A3B**
-- **Qwen 3.6 35B-A3B**
-- **Qwen 3.5 9B**
-- **Qwen 3.5 4B**
-- **Qwen 3.5 2B**
+## Why
 
+Single-node SSD streaming already works in the sister project
+[TinyTitan](https://github.com/Pummelchen/TinyTitan) and gets ~4-6 tok/s on a
+180B-class MoE. The obvious next step — splitting layers across machines — doesn't
+help: with one sequence in flight only one node is ever busy, so bytes-read-per-token
+is unchanged.
 
+TinyTitan Datacenter uses **expert parallelism** instead. Every node holds the dense backbone
+replicated and a disjoint 1/N slice of the routed experts. All nodes work on the same
+token simultaneously and all-reduce the MoE output.
 
-### Usage
+| | Pipeline parallel | Expert parallel |
+|---|---|---|
+| Nodes busy per token | 1 of N | N of N |
+| Aggregate SSD bandwidth | 1x | N x |
+| Aggregate expert cache | 1x | N x |
+| Sync per token | N-1 hops | 1 all-reduce per MoE layer (~4 KB) |
 
-- **Easiest install:** one command checks the Mac, builds TinyTitan, optionally
-  downloads a model, and installs a double-clickable Mac app in
-  `~/Applications`. Safe to re-run; it updates instead of cloning twice.
-  ```bash
-  curl -fsSL https://raw.githubusercontent.com/Pummelchen/TinyTitan_Datacenter/main/tools/install_tinytitan.sh | bash
-  ```
-  From a clone, `tools/install_tinytitan.sh` does the same. See
-  [docs/site](docs/site/) for the plain-language article series, or
-  `tools/install_tinytitan.sh --help` for its flags.
-- **OpenAI-compatible server:** A loopback Chat Completions and Responses API
-  for starting TinyTitan and connecting supported coding clients.
-- **One server, one port, one launcher:** `tools/server_launcher.sh` starts the
-  API on its own, or starts it and opens one of the supported clients — Codex,
-  Claude Code, Qwen Code, OpenCode or the Zed editor — wiring that client's
-  provider config to the model the server advertises. It asks what to launch
-  from one list of every installed model and quantization (GPU and CPU), the
-  thinking level that model supports, and an optional RAM limit for the expert
-  cache (1/2/4/8/16/32 GB; anything over 40% of the Mac's physical memory is
-  warned about in red and used anyway, and the default is the install's own
-  measured profile, which the runtime holds to half of physical memory).
-  It serves on `127.0.0.1:8080` (`TINYTITAN_PORT` overrides it), and every other
-  installed model stays available by name through the API; the server switches
-  on demand, keeping one model resident at a time.
+That's the thesis: speedup from topology and I/O layout, not from more compute. It is a
+**read fraction**, not a constant — the dense backbone, the router and the all-reduce are
+replicated work on every node, so the gain approaches N only while expert reads dominate.
 
-```bash
-tools/server_launcher.sh                                    # interactive
-tools/server_launcher.sh --client codex --model ornith 4     # server + Codex
-tools/server_launcher.sh --client zed --model qwen38 4 --ram 8
-```
+## Approach
 
-- **Persistent agent memory (optional):** With `TINYTITAN_MEMORY=1` the model gets
-  memory that outlives a conversation, scoped per repository, with six memory
-  tools the engine answers itself. It runs inside the server process, so there
-  is no database to install and nothing to start. Off by default; see
-  [docs/agent-memory.md](docs/agent-memory.md).
-- **Three client protocols on one server:** OpenAI Chat Completions, the
-  OpenAI Responses API (stored responses, `previous_response_id`, the full
-  event grammar) and the Anthropic Messages API (`/v1/messages`,
-  `count_tokens`, streaming), so Codex, Claude Code and the OpenAI and
-  Anthropic SDKs all talk to the same model; see
-  [docs/server-api.md](docs/server-api.md).
-- **Enforced structured output:** a request may ask for JSON — `response_format`
-  on Chat Completions, `text.format` on the Responses API,
-  `output_config.format` on Messages — and the server compiles the schema into a
-  byte-level grammar that masks the sampler on both engines, so the model can
-  only emit a document the schema allows rather than being asked nicely for one.
-  The supported schema subset is small and explicit, and everything outside it
-  is refused by name; see [docs/structured-output.md](docs/structured-output.md).
-- **Tested coding CLIs:** The launch workflow supports Codex, Claude Code, Qwen
-  Code, OpenCode and the Zed editor against the local server; the coder benchmark
-  scores the four that can be prompted (Claude Code through a loopback Anthropic
-  shim) and checks every client's wiring without a model
-  (`--round clients`); DeepSeek Harness reaches the server through its own
-  `llm-pi-ai` provider route, which `tools/dsh_route.sh` generates from the
-  installed models (and `plugins/dsh-tinytitan` keeps current inside the harness,
-  adding a compaction backend that does not think) — see
-  Connect a client.
-- **Mac app and tools:** TinyTitan also provides a native Mac app, direct CLI
-  generation, streaming responses, and client-authorized function-tool calls.
+- **Faithful ports only.** No architectural changes — no fewer layers, no weight sharing,
+  no substituted attention. All speed comes from sharding, expert repacking and
+  quantization. A reference implementation to diff against is what makes this debuggable.
+- **One IR, thin importers.** A declarative model IR dispatches on tensor *role*, not
+  tensor name; importers are pure name-to-role mapping (144–235 lines per family here).
+  Transform passes — fusing, repacking, reordering, quantizing, sharding — are written once,
+  architecture-agnostic. Quantization and shard policy are data files shared across models.
+- **Transcode, don't requantize.** DeepSeek ships FP4 experts / FP8 dense natively and Qwen
+  ships an FP8 variant; direct transcoding avoids stacking our error on theirs. (Not yet
+  applicable: M1's checkpoint is bf16, so no vendor error is being added on top of today.)
+- **Bit-reproducibility is a hard invariant.** N-node output must be bit-identical to 1-node
+  output — fp32 accumulation, fixed reduction order. Without that you can't tell a conversion
+  bug from a scheduling artifact, and on these models you will need to.
+- **Discrete decisions are checked separately from numerics.** Router top-k index sets must
+  match the reference *exactly*. Small numeric drift flips them, after which output diverges
+  completely while every per-tensor MSE check still looks green.
 
+## Target models
 
-### Core Benefits
+In order: **Qwen3.6-35B-A3B** (the validation model), **DeepSeek-V4-Flash** and
+**Qwen3.8-Flash-Next**. M0 used the dense Qwen3.5-2B. The verified configuration of each —
+with the checkpoint revision every figure came from — is on the wiki's
+[Target models](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Target-Models) page.
 
-- TinyTitan streams LLM's faster than any other similar project.
-- Run large MOE AI models on low RAM Apple Silicon Macs by keeping the AI model on SSD/NVMe. 
-- A 125B model on 8 GB of RAM. TinyTitan streams experts straight from SSD, so model size is bounded by your disk space, not your memory.
-- You set the RAM budget. TinyTitan stays inside it. Give it 4 GB or 8 GB — it holds the line, so your Mac stays responsive while the model runs.
-- Apple Neural Engine acceleration for prompt processing - 2.3× faster than the GPU cores.
-- Our own Metal kernels, our own engine. Purpose-built for Apple silicon and engineered to use your Mac at the physical limit.
-- No MLX. No GGUF. TinyTitan ships its own high-speed model format and a converter that builds it straight from the original weights.
-  
+## Milestones
 
-### Special Features
+- **M0** — single node, small dense model, bf16. Gate: bit-matches reference golden traces.
+  **Done**; ships the trace-capture and diff harness.
+- **M1** — Qwen3.6-35B-A3B, single node, 4-bit, SSD-streamed. Gate: correct output and a
+  recorded tok/s baseline. **Gate open** — the figures on record are historical.
+- **M2** — 2 nodes, expert-parallel. **Gate: bit-identical to M1.** The project's real gate.
+- **M3** — 4 nodes. Gate: ≥3x the M1 tok/s.
+- **M4** — DeepSeek-V4.1-Flash. Gate: matches the reference at 128K context.
+- **M5** — Qwen3.8-Flash-Next. Gate: same.
 
-- **Bounded expert RAM:** The resident expert cache is sized per family from
-  the model's own expert stride and clamped to half of physical memory, so a
-  smaller Mac is not handed a budget tuned on a larger one. It is wired, so it
-  cannot be paged out and everything else the Mac is running has to fit beside
-  it: the launcher recommends **40% of physical memory** and warns in red above
-  it — swapping, a less stable system and slower tokens — but a larger `--ram`
-  is your call and is passed on, and the server's own `--ram-budget` takes
-  exactly what it is given. Model state, KV cache, and runtime scratch use
-  additional memory.
-- **Long context:** Native RoPE supports up to 262K tokens, while optional YaRN
-  extends the context to 512K or 1M tokens.
-- **Compressed KV cache:** Live attention state can use 16-bit, 8-bit, or 4-bit
-  storage independently of the installed model quantization.
-- **Thinking mode:** Ornith and Qwen support truthful Off/On reasoning control;
-  their chat templates do not define Low, Medium, or High effort levels.
-- **MTP off by default:** Native speculative decoding remains experimental and
-  disabled because measured Ornith runs showed no speed benefit and it
-  currently requires greedy decoding, native RoPE, and prompt-cache reuse off.
+## Non-goals
 
-### Performance Improvements
+Training or fine-tuning. Multi-user serving and continuous batching. Architectural
+modification of imported models. Being a universal model translator — each new
+attention family costs real kernel work, and that's expected.
 
-- **Tiled Top-K sampling:** Production sampling (Top-K 1–64) runs a
-  three-stage tiled GPU reduction, cutting per-token sampling cost from
-  15.5 ms to 1.4 ms with a token-for-token identical stream — the main
-  source of the v4.6 decode gain.
-- **ANE prefill:** `TINYTITAN_PREFILL_ANE=on` runs
-  full-attention prefill blocks on the Neural Engine from a one-time
-  exported Core ML sidecar, roughly halving long-prompt time to first
-  token; short prompts and decode are untouched.
-- **Follow-up cache:** Exact live and multi-prefix prompt-state reuse avoids
-  repeating compatible prefill work across conversation turns.
-- **Concise mode:** An optional terse system prompt reduces generated text for
-  workloads that benefit from it; standard responses are the default because
-  they generalized more reliably in the coding/tooling qualification.
-- **Fast alias:** The chat-only `-fast` model alias strips coding-agent
-  boilerplate before prefill for quicker direct answers, while the base alias
-  preserves tools and agent loops.
+## Stack
 
+Swift + Metal. Raw sockets over the Thunderbolt bridge for the all-reduce. macOS only.
+`swift-tools-version:6.4`, Swift 6 language mode, Python 3.14.
 
-## Core Links
+## Documentation
 
-- Getting started
-- Features
-- Local server and launchers
-- Runtime controls
-- Benchmarks
-- Changelog
-- [Repository layout](docs/repository-layout.md) — where everything lives, and
-  the naming and file-size conventions
+| Page | What it holds |
+|---|---|
+| [News](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/News) | Everything that has closed, dated, with the measurement it closed on |
+| [Roadmap](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Roadmap) | The phases M0–M5 with the gate each one has to pass |
+| [Project Tracker](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Project-Tracker) | Only what is still open: tasks, risks, open questions |
+| [Architecture](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Architecture) | Expert parallelism, the invariants, the IR and the transport |
+| [Target models](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Target-Models) | The verified configuration of the three models |
+| [Testbed](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Testbed) | The hardware and toolchain the work assumes |
+| [Glossary](https://github.com/Pummelchen/TinyTitan_Datacenter/wiki/Glossary) | The terms used on those pages |
 
-## Credits
-
-Concise mode is derived from the
-[Nail-Qwen3.6-35B-A3B](https://huggingface.co/peculiar-ragdoll/Nail-Qwen3.6-35B-A3B-MLX)
-chat template by [peculiar-ragdoll](https://huggingface.co/peculiar-ragdoll).
+`docs/` in this repository holds the contracts and the decision records; every milestone
+gate is documented there with the command that reproduces it.
 
 ## License
 
-MIT License — see [LICENSE](LICENSE). Copyright (c) 2026 André Borchert.
+MIT — see [LICENSE](LICENSE). Copyright (c) 2026 André Borchert.
 
 ## Contact
 

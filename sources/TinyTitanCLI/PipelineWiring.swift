@@ -126,7 +126,7 @@ public enum PipelineWiring {
                     usleep(200_000)
                 }
             }
-            guard let ready = opened else {
+            guard opened != nil else {
                 FileHandle.standardError.write(Data(
                     "[back] gave up after \(connectRetries) attempts: \(last)\n".utf8))
                 throw last
