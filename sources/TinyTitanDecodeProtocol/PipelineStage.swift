@@ -101,8 +101,7 @@ extension PipelineStage {
                                exitLayer: Int) throws {
         if let output {
             stage.onHidden = { position, buffer in
-                FileHandle.standardError.write(Data(
-                    "[send] rows=\(stage.publishedRows) buffer.len=\(buffer.length) rowWidth=\(rowWidth)\n".utf8))
+                PipelineStage.note("[send] rows=\(stage.publishedRows) buffer.len=\(buffer.length) rowWidth=\(rowWidth)\n")
                 // FROM THE PUBLISH, not from `install`'s parameter (D356). The parameter is the per-token
                 // default; a publisher that seeded a whole chunk must send the whole chunk, and the count is the
                 // one it set on itself. This line read `rows` until round 59 - the plumbing that sets
@@ -115,8 +114,7 @@ extension PipelineStage {
                 // how is to print what each side thinks it is doing: every position this stage publishes, and every
                 // position the peer says it is receiving for. A pair of lists answers the question that three
                 // hypotheses did not.
-                FileHandle.standardError.write(Data(
-                    "[wire] send pos=\(position) layer=\(exitLayer) values=\(outgoing.hidden.count)\n".utf8))
+                PipelineStage.note("[wire] send pos=\(position) layer=\(exitLayer) values=\(outgoing.hidden.count)\n")
                 try? PipelineLink.send(outgoing, to: output)
             }
         }
@@ -126,8 +124,7 @@ extension PipelineStage {
             }
             stage.nextHidden = { position in
                 guard let received = try? PipelineLink.receive(from: input) else {
-                    FileHandle.standardError.write(Data(
-                        "[wire] recv FAILED for pos=\(position) - the peer sent nothing usable\n".utf8))
+                    PipelineStage.note("[wire] recv FAILED for pos=\(position) - the peer sent nothing usable\n")
                     // POISON THE LANDING BUFFER RATHER THAN LEAVING IT AS IT WAS. `nextHidden` returns a
                     // non-optional buffer, so it cannot signal this failure by returning nothing - and the first
                     // version returned the buffer unchanged, which meant a stage that never received anything
@@ -141,8 +138,7 @@ extension PipelineStage {
                     return landing
                 }
                 _ = try? store(received, into: landing)
-                FileHandle.standardError.write(Data(
-                    "[wire] recv pos=\(position) got token=\(received.token) layer=\(received.layer) values=\(received.hidden.count)\n".utf8))
+                PipelineStage.note("[wire] recv pos=\(position) got token=\(received.token) layer=\(received.layer) values=\(received.hidden.count)\n")
                 return landing
             }
         }
@@ -162,11 +158,20 @@ extension PipelineStage {
     /// frame with an empty payload, which the existing reader already handles and `maxRows` already permits. Four
     /// bytes of header carry a whole token's worth of information, which is what makes this leg almost free beside
     /// the forward one.
-    /// THE HELPER ALONE, no call site changed - the bisect D405 left (D406).
+    /// WHETHER THE PIPELINE'S DIAGNOSTICS ARE SILENCED (D401).
+    ///
+    /// The engine's timing line - `prefill=...s new=...tok decode=...s` - is written to stderr, the same stream as
+    /// every `[tok]`, `[seed]`, `[wire]` and `[back]` print. So the diagnostics cannot be separated from the
+    /// measurement by shell redirection: discarding one discards the other, which is what D401 established by trying
+    /// it. It has to be done here instead, and it has to be done for a reason that is not cosmetic - the throughput
+    /// law's own baseline was measured before any of these prints existed, so a like-for-like comparison of the ring
+    /// against that law requires them off.
     public static var quiet: Bool {
         ProcessInfo.processInfo.environment["TINYTITAN_QUIET"] != nil
     }
 
+    /// Emit one diagnostic unless TINYTITAN_QUIET is set. Every print added by the pipeline work goes through this,
+    /// so silencing them is one environment variable rather than a rebuild.
     public static func note(_ message: String) {
         guard !quiet else { return }
         FileHandle.standardError.write(Data(message.utf8))
