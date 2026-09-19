@@ -12386,3 +12386,37 @@ the way the decode path already does**, sized from the chunk.
 consuming-probe mistake `D348` recorded in the Swift test, made again an hour later in a shell script**, which is
 why the second attempt used `lsof` instead: `lsof` reads the socket table and does not connect. **A readiness check
 that consumes the thing it is checking is not a readiness check.**
+
+## D350 — The prefill seed works, and the fault moved from prefill to a decode desync
+
+`D349` measured stage B's prefill running unseeded, producing NaN from a poisoned landing buffer. The seed is now
+fixed and the measurement says so: **B's prefill no longer produces NaN.**
+
+**Three changes, all in the same block of `Prefill.swift`.**
+
+**Ungate the seed.** It sat inside `if runPrologue`, and **a middle stage has `runPrologue` false by construction** -
+it owns layers `20..<40` and does not embed - so it never seeded at all. The condition is now
+`runPrologue || preparedHidden != nil || hiddenIn != nil`.
+
+**Pull the handoff when the chunk begins, not at install time.** The predecessor publishes its residual after **its**
+prefill, which happens after this process has started and after it has accepted the connection. Filling `hiddenIn` at
+install time would read a buffer the predecessor has not written yet. The seed now asks `nextHidden`, **which blocks
+until the frame arrives** - the synchronisation a pipeline needs rather than a race it hopes to win.
+
+**Bound the copy by the source.** The blit took `t * D * stride` unconditionally, which over-reads whenever the
+predecessor sent fewer rows than this chunk holds - **the class of fault `D320` took three rounds to find**, applied
+here before it cost anything.
+
+**And the fault moved, which is what a fix should do.** The NaN now arrives **later**, at B's sampler **during
+decode** - so the prefill is seeded and the decode handoff is not. Most likely a desync between A's publishes and
+B's receives across the boundary between prefill and decode.
+
+**One thing that looks wrong and is not.** A's own output is gibberish (`!eilighterer`). **A runs a 20-layer partial
+forward, so its tokens are meaningless by design** - it has no head for the second half of the model. Only its
+published residual matters, and a reader who took A's tokens as a symptom would spend a round on a non-fault. **This
+is worth writing down because it is the opposite of the usual trap**: the failure was not masked, it was *expected*,
+and the expected-looking thing was the correct one.
+
+**The state of the ring.** Frames cross between two machines; both stages install; the transport is verified; the
+prefill is seeded. **What is not yet true is an end-to-end token** - the decode handoff desynchronises, and the next
+step is to count A's publishes against B's receives per token rather than to guess.
