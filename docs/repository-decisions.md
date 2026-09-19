@@ -15026,3 +15026,36 @@ all verified; **a two-stage ring measured to convergence at 17.1 and 19.1 tok/s*
 process, its reverse pair connected over localhost, and its outbound connect succeeding once attached**; and **the
 remaining obstacle reduced to a deployment rule that the record has now measured three times: attach every connecting
 stage to its session.**
+
+## D423 - The three-stage chain runs end to end: the both role carries the token back through a middle stage
+
+**The launch `D422` prescribed - the two connecting stages each in a session that outlives its launcher - and the
+chain completed:**
+
+    node3  0:13  source   [tok] told pos=12 token=236358    new=8tok  decode=2.32s  3.448 tok/s
+    node1  13:26 both     [tok] told pos=12 token=271       new=8tok  decode=2.26s  3.544 tok/s
+    node1  26:40 sink     [tok] chose pos=0 token=11751     new=8tok  decode=1.79s  4.481 tok/s
+                          answer: " Paris..."
+
+**All three stages generated eight tokens, the head's first token is ` Paris` - correct - and the middle stage was
+`told` a token, which means the token the head chose travelled back through it.** That is the `both` role doing the
+thing it was written for: **consuming a token from its successor and publishing one to its predecessor at the same
+time**, on a real socket, in a real chain.
+
+**And the two earlier doubts are both settled by the same run.** The forward edge carried a hidden state from `0:13`
+through `13:26` to `26:40` and the head produced the right token from it. The reverse edge returned the head's choice to
+the first stage through the middle, and the first stage used it - **`told pos=12 token=236358`, which is a token the
+first stage could not have chosen for itself.** So the design's four legs are all live in a three-stage chain.
+
+**And the throughput is 3.4 to 4.5 tok/s, which is not a contradiction of `D415` but an illustration of it.** These
+are **eight-token runs**: `D415` measured the same engine's per-token cost falling from 268 ms at four tokens to
+58 ms at a hundred and twenty-eight, because the expert cache warms over a generation. **A three-stage chain with
+eight tokens is at the very bottom of that curve**, and the honest reading is that this run demonstrates *the chain*,
+not *the rate*.
+
+**Where the objective stands.** A1-A5 built and gated; the fork's suite green with the quiet switch, the lookahead and
+the `both` role; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and token edge
+all verified; **a two-stage ring measured to convergence at 17.1 and 19.1 tok/s**; and **a three-stage chain - the
+first built with a middle stage - running end to end, returning a token through that middle stage, and producing the
+correct first token.** The objective asks for four stages across four Mac minis; **three stages across two now work,
+and the fourth stage is the same wiring one more time.**
