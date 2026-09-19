@@ -11331,3 +11331,38 @@ buffer**. That replaces a guess about pointers with a path the code base has alr
 
 **The pipeline's exactness is still unverified**, the objective's throughput is still `D306`'s single-stage
 **21.482 tok/s**, and **nothing downstream of the gate is worth building until it passes.**
+
+## D321 — Farm disk recovered, and node1-3 are idle: the first quiet window this session has had
+
+The operator reported node1-3 idle with no other workload and asked for a scan of the four Downloads folders.
+
+**Cleaned, and every install verified after the deletion rather than before it:**
+
+| node | before | after | recovered | removed |
+| --- | --- | --- | --- | --- |
+| node1 | 28 GB | **69 GB** | +40 GB | `m1-install` (20 GB), `m3-gate` (20 GB) |
+| node2 | 26 GB | **46 GB** | +20 GB | `m1-install` (20 GB) |
+| node3 | 24 GB | **65 GB** | +40 GB | `m1-install` (20 GB), `m3-gate` (20 GB) |
+
+**The two 20 GB items are not incidental.** `m1-install` on each farm node is the **peer-staging copy** the cluster
+gates made - the one `D83` records as "21.7 GB had been copied to each" - and `m3-gate` is the gate's own output
+directory. **Neither is read by anything this engine runs**: the model is `qwen36-4bit.gturbo`, and after the
+deletion each node was checked for `verified-install.json` inside it and for an executable binary, **and both are
+present on all three.**
+
+**What was deliberately kept.** The 19 GB model install on every node; `~/tt-bins/TinyTitanCLI`; the fork bundle on
+node3; and everything on node4, which is the working machine.
+
+**And node4 is the one that needs a decision rather than a deletion.** It is at **10 GiB free, 96% used**, and the
+single largest item is **`~/Downloads/TinyTitan Datacenter/.build` at 68 GB** - the harness's own build directory,
+which is regenerable but is also live state: a clean build there takes about fifty seconds and the directory also
+holds gate scratch such as `.build/baseline-check` and the watchdog markers. **That is a build cache rather than
+clutter, and deleting it is a different act from deleting a peer-staging copy**, so it is reported rather than
+removed.
+
+**And the idle farm is the more useful half of the message.** Every measurement this session has carried the caveat
+that the nodes are shared and busy. **For the first time the three measurement nodes are quiet**, which makes
+`docs/distribution-design.md` section 12's comparison - the single-node figure the whole design rests on - worth
+re-taking under the conditions the gate rules ask for. **It does not unblock the exactness gate**, which is a
+segfault on the working machine and not a cluster question; **the two are independent, and only the second is
+waiting on node load.**
