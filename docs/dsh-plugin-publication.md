@@ -99,7 +99,7 @@ bundle, and `create-dshx` scaffolds a plugin project.
 | `dsh-plugin` **GitHub topic on the repo** | **yes** — set 2026-09-14 (it was the only topic the repository had) |
 | Submitted to the catalogue | **yes** — [PR #5094](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/5094), one file, +6/−0, mergeable |
 | Description, accurate, no superlatives | not written yet — §4 has a draft |
-| Licence | **MIT, deliberately** — see the plugin README; the repository is Apache-2.0 and this package is an independent work that talks to the server over its HTTP API |
+| Licence | **MIT, deliberately** — see the plugin README; the repository is MIT and this package is an independent work that talks to the server over its HTTP API |
 | npm name `dsh-tinytitan` | **unclaimed** (registry returns 404) |
 | `screenshots.json` | absent (optional) |
 

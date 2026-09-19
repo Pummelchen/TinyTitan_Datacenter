@@ -1,8 +1,8 @@
 # TinyTitan Datacenter
 
 **TinyTitan Datacenter — short name `ttd` — is a dedicated repository.** It stands on its own: it
-builds and runs without any other repository, and it neither links to nor depends on one. The
-streaming runtime it ships is its own source, carried under the attribution in [`NOTICE`](NOTICE).
+builds and runs without any other repository, and it neither links to nor depends on one. It is
+built from scratch and is licensed under MIT — see [`LICENSE`](LICENSE).
 
 <!-- agent-harnesses:begin -->
 > **One instruction file.** This is it. Codex, DeepSeek Harness, OpenCode,

@@ -5,8 +5,8 @@
 # TinyTitan Datacenter
 
 **TinyTitan Datacenter — short name `ttd` — is a dedicated repository.** It stands on its own: it
-builds and runs without any other repository, and it neither links to nor depends on one. The
-streaming runtime it ships is its own source, carried under the attribution in [`NOTICE`](NOTICE).
+builds and runs without any other repository, and it neither links to nor depends on one. It is
+built from scratch and is licensed under MIT — see [`LICENSE`](LICENSE).
 
 [![Stars](https://img.shields.io/github/stars/Pummelchen/TinyTitan_Datacenter?style=flat-square&logo=github&label=Stars&color=e3b341)](https://github.com/Pummelchen/TinyTitan_Datacenter/stargazers)
 [![Views (14d)](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Pummelchen/TinyTitan_Datacenter/main/.github/traffic.json)](https://github.com/Pummelchen/TinyTitan_Datacenter)
@@ -207,7 +207,7 @@ chat template by [peculiar-ragdoll](https://huggingface.co/peculiar-ragdoll).
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). Copyright (c) 2026 André Borchert.
+MIT License — see [LICENSE](LICENSE). Copyright (c) 2026 André Borchert.
 
 ## Contact
 

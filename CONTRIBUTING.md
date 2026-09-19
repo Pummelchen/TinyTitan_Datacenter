@@ -75,7 +75,7 @@ process details.
 
 Keep each pull request narrow. Explain the behavior change, tests run, and any
 remaining limitation. By contributing, you agree that your work is licensed
-under the repository's [Apache License 2.0](LICENSE).
+under the repository's [MIT License](LICENSE).
 
 ## Releasing (maintainers)
 

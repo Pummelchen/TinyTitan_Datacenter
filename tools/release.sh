@@ -252,7 +252,7 @@ done
 # .bundle resources carry the Metal shader library; without them beside the
 # executables the runtime cannot load its kernels.
 find "$BIN" -maxdepth 1 -name '*.bundle' -exec cp -R {} "$STAGE/" \;
-# LICENSE and NOTICE are what Apache-2.0 requires to travel with a binary
+# LICENSE is MIT; NOTICE and THIRD_PARTY_NOTICES.md travel with a binary for its dependencies
 # distribution; THIRD_PARTY_NOTICES.md carries the upstream attributions.
 cp "$ROOT/LICENSE" "$ROOT/NOTICE" "$ROOT/THIRD_PARTY_NOTICES.md" "$STAGE/"
 
@@ -272,7 +272,7 @@ Contents
   *.bundle             Metal shader library and other runtime resources — keep
                        these next to the executables or the runtime cannot
                        load its kernels
-  LICENSE              Apache License 2.0
+  LICENSE              MIT License
   NOTICE               copyright and upstream attribution
   THIRD_PARTY_NOTICES.md
 

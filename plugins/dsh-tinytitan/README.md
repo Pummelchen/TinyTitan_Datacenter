@@ -122,8 +122,8 @@ from the profile's own `node_modules` once installed.
 
 ## Licence
 
-**MIT, deliberately.** The repository it lives in is Apache-2.0, and this package
-says MIT on purpose: it is an independent work that talks to the server over its
+**MIT, deliberately.** The repository it lives in is MIT as well, and this package
+states it on purpose: it is an independent work that talks to the server over its
 public HTTP API and copies no code from the project's lineage, so it stays under
 the licence its own author chose. Do not "align" it with the repository's
 `LICENSE` — that would be a claim about provenance this package does not make.
