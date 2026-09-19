@@ -15962,3 +15962,46 @@ session has tried.
 **against a target of 47.6 ms/token.** So the arithmetic that `D440` used to declare 21 tok/s unreachable was using
 the *wrong* 47%: the distributable fraction is not the expert read but the **GPU phase**, and the four-node cluster can
 divide it. **The route to the target is tensor-parallel, and it is the only route that was ever real.**
+
+## D451 - Tensor parallelism is bounded by the wire, not by the algorithm: 21 tok/s needs 10GbE, and on 1GbE the ceiling is ~16
+
+**`D450` ended by naming tensor parallelism as the only remaining route, because the critical path is GPU compute (68
+ms/token of 132.8) and GPU work is divisible. That was a design proposal with an unmeasured premise - that the cluster
+can afford the synchronisation a tensor-parallel token requires - and `D449` taught that such a premise is worth
+measuring before it is believed. So the wire was measured:**
+
+    4 KB round trip, 2000 iterations between two nodes:
+      p50 = 765 us    p90 = 806 us    min = 586 us
+
+**And a tensor-parallel token needs one all-reduce per layer: 40 per token.**
+
+    GPU phase, measured            68.0 ms/token
+    tensor-split four ways         17.0 ms/token
+    encode                          4.0 ms/token
+    communication, 2 RTT per sync  61.2 ms/token     (40 x 2 x 0.765 ms)
+    ------------------------------------------------
+    step                           82.2 ms/token  ->  12.2 tok/s
+    if comms were PERFECTLY hidden max(21, 61.2)   ->  16.3 tok/s
+    target                         47.6 ms/token
+
+**Even with communication hidden perfectly - not overlapped, *hidden*, so it costs only its own latency and never adds
+to the step - the 61.2 ms of synchronisation is larger than the entire target step.** A ring all-reduce (3 RTT) is
+worse: 91.8 ms, 8.9 tok/s. So:
+
+  * **21 tok/s is not reachable on four M2 Mac minis connected by 1 GbE, by any decomposition** - not a layer pipe
+    (`D437`), not expert sharding (`D440` measured 47% and `D450` withdrew that measurement as concurrent), not pooled
+    residency (`D449`), and not tensor parallelism (`D451`);
+  * **but tensor parallelism is still worth roughly 1.6-2.1x**: 12.2 tok/s if communication adds to the step, 16.3 if
+    it is fully hidden, against 7.524 on one node today and 6.016 through the four-stage chain. **It is the only
+    decomposition this session found that makes the cluster faster rather than slower;**
+  * **and the thing that would reach the target is the interconnect, not the engine.** At 10GbE or Thunderbolt an RTT
+    of ~70 us makes the 40 syncs cost ~5.6 ms/token, the step becomes ~26.6 ms and the target is met with room to
+    spare. The farm's measured 118 MB/s and 765 us are 1 GbE figures (`D449`, `D451`), and the repository's own README
+    describes the hardware as having "LAN/SFP/QSFP and Thunderbolt" - **so the question of whether the target is
+    reachable is a question about which link the four machines are actually plugged into, and that is an operator
+    question rather than an engineering one.**
+
+**So the objective's honest close.** Four nodes run one model correctly (6.016 tok/s, every stage within 9%); a single
+node runs it at 7.524; every single-node tuning axis is at its optimum; every distribution axis has been measured; and
+**the one path that makes the cluster beat a single node is tensor parallelism over a wire the farm does not currently
+have.**
