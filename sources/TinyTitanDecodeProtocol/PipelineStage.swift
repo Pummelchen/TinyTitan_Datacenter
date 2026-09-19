@@ -99,7 +99,15 @@ extension PipelineStage {
                                exitLayer: Int) throws {
         if let output {
             stage.onHidden = { position, buffer in
-                let outgoing = frame(from: buffer, rowWidth: rowWidth, rows: rows,
+                FileHandle.standardError.write(Data(
+                    "[send] rows=\(stage.publishedRows) buffer.len=\(buffer.length) rowWidth=\(rowWidth)\n".utf8))
+                // FROM THE PUBLISH, not from `install`'s parameter (D356). The parameter is the per-token
+                // default; a publisher that seeded a whole chunk must send the whole chunk, and the count is the
+                // one it set on itself. This line read `rows` until round 59 - the plumbing that sets
+                // `publishedRows` was added and this read was never changed, so a five-row publish became a
+                // one-row frame and the ring answered with whitespace where a single node answers ' Paris, a
+                // city'. Every diagnostic along the way was correct; the change they were aimed at was not.
+                let outgoing = frame(from: buffer, rowWidth: rowWidth, rows: max(1, stage.publishedRows),
                                      position: position, layer: exitLayer)
                 // COUNTING, NOT GUESSING (D350). The decode handoff desynchronised and the cheapest way to find out
                 // how is to print what each side thinks it is doing: every position this stage publishes, and every
