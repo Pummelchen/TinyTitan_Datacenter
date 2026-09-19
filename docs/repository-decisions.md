@@ -12827,3 +12827,34 @@ instruments that found them were a socket table read and a timeout, not an asser
 run has yet used the reverse edge** - the deadlock was the first attempt and it did not reach the loop. **The next
 run is the one that says whether the objective's central claim holds for a sequence**, and every leg it needs is now
 committed.
+
+## D363 — The ordering fix works, and the back-connect reaches the network layer and fails there
+
+**The bind-before-connect change is confirmed by measurement:**
+
+    A back-listen up after 5s
+    B: error: No route to host (65)
+
+**A's back-listen port is bound five seconds after start**, where in `D362`'s run it never bound at all and the whole
+thing deadlocked for nine minutes. **The ordering fault is fixed and this is the evidence.**
+
+**And the sequence run still does not happen, now for a different reason.** B fails with **`No route to host` (65)**
+while connecting its back edge to A's bound port. That is not `ECONNREFUSED` - which would mean "nothing is
+listening" and which the forward edge produced correctly in earlier rounds when it was genuinely too early. **`EHOSTUNREACH` for an address on the same subnet means the address is wrong or unreachable**, so the fault is in what B
+was told to connect to rather than in whether A is listening.
+
+**What is not established, and is written down as open rather than guessed.** The address B used came from an
+`ipconfig getifaddr` capture earlier in the same shell command, and that value was **not echoed this time** - the
+previous runs echoed it and this one did not, which is a small omission with a large consequence: **an empty capture
+would produce `:47702`, and `inet_pton` on an empty host fails before any packet is sent**, so the shape of the error
+is consistent with either an empty substitution or a genuinely unreachable address. **The next run echoes the address
+and fails loudly if it is empty**, which is one line and settles it.
+
+**And the pattern this design keeps producing is worth naming once more, because it is now five for five.** Every
+fault so far has been at an *interface* rather than in an algorithm: a shadowed parameter (`D329`), a closure with no
+call site (`D352`), a count that never travelled (`D357`), a bind ordered after a connect (`D362`), and now an address
+that may not have been substituted. **The arithmetic was proved exact in `D325` and has not been wrong once since.**
+
+**Where the objective stands.** All four legs are written, called and tested; the bind order is fixed and measured;
+**no sequence has yet been produced** because the reverse edge has never successfully connected. **The remaining work
+is one address, and the instrument to check it is an `echo`.**
