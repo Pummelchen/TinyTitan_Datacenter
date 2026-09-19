@@ -106,7 +106,19 @@ extension PipelineStage {
                 throw StageError.noLandingBuffer
             }
             stage.nextHidden = { _ in
-                guard let received = try? PipelineLink.receive(from: input) else { return landing }
+                guard let received = try? PipelineLink.receive(from: input) else {
+                    // POISON THE LANDING BUFFER RATHER THAN LEAVING IT AS IT WAS. `nextHidden` returns a
+                    // non-optional buffer, so it cannot signal this failure by returning nothing - and the first
+                    // version returned the buffer unchanged, which meant a stage that never received anything
+                    // computed four tokens from whatever the buffer held and REPORTED SUCCESS. That is exactly the
+                    // failure D335 cost three rounds to identify: an unseeded residual produces garbage while
+                    // looking like it worked. NaN is unmistakable where plausible noise is not, so a broken
+                    // handoff now produces NaN logits rather than believable ones.
+                    let words = landing.length / MemoryLayout<Float16>.stride
+                    let out = landing.contents().bindMemory(to: Float16.self, capacity: words)
+                    for i in 0..<words { out[i] = .nan }
+                    return landing
+                }
                 _ = try? store(received, into: landing)
                 return landing
             }

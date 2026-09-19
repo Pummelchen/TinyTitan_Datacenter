@@ -57,7 +57,11 @@ public enum PipelineWiring {
             guard let port = UInt16(listen) else { throw WiringError.badPort(listen) }
             // Bind before this stage is asked to compute, so a predecessor connecting early waits in the backlog
             // rather than being refused.
-            input = try DecodeTCPSocket.listenAndAccept(host: "127.0.0.1", port: port).input
+            // BIND ON EVERY INTERFACE, not loopback. The first cross-machine run used 127.0.0.1 here, which is
+            // correct for a one-machine test and unreachable from a peer: the producer on node3 was refused while
+            // this stage sat happily listening on an address only it could see. `DecodeTCPSocket` takes a literal
+            // address rather than a name by design (`D18`), and `0.0.0.0` is the literal that means "any".
+            input = try DecodeTCPSocket.listenAndAccept(host: "0.0.0.0", port: port).input
         }
 
         var output: FileHandle?
