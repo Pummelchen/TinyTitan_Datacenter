@@ -11205,3 +11205,37 @@ before the comparison is read - which is what cost this round.
 prefill, prefill already has three of Design A's five pieces, the failure is at the call rather than in the buffer,
 the probe or the writer - and **the pipeline's exactness is still unverified, with nothing downstream worth building
 until it is.**
+
+## D317 — Three prints, one build: the hook is on the right runner and the closure still does not run
+
+`D316` said the fix was to stop reverting diagnostics and read the three lines together. They are read together:
+
+    [diag] run installs hook on runner ObjectIdentifier(0x0000007608c19400)
+    [diag] probe hit L=20 runner=ObjectIdentifier(0x0000007608c19400) buffer=true hook=true
+    (no "CLOSURE RAN")
+    /tmp/a.bin exists: NO
+
+**Three of `D314`'s candidates are now eliminated outright.** The hook is installed in `run`; the probe fires in the
+prefill loop **on the same runner object**; the buffer is present; **the hook is non-nil at the call site.**
+`D316`'s remaining candidate - "set on a different runner instance than prefill uses" - **is dead, because both
+identities are printed and they match.**
+
+**And the state that is left is one Swift cannot be in**: a non-nil closure, on the same object, reached by
+`sink(startPosition, probe)` - and its body does not execute. **When a conclusion is impossible, the instrument is
+wrong, not the system**, and this session has learned that five times already: the 19 GB/s wire that was a broken
+pipe, the 14 GB/s that was a stale receiver, the "free arithmetic" that was a folded model, the marginal statistic
+offered as a joint one, and the connectivity claim repeated without re-testing.
+
+**So the next instrument goes on either side of the call rather than around it** - a print immediately before
+`sink(startPosition, probe)` and one immediately after - which distinguishes "the call is not reached" from "the
+call is reached and the closure body is not entered". Both are impossible-sounding and only one of them is true,
+and **the two prints are three lines of code.**
+
+**And the diagnostics are committed this time rather than reverted**, in a commit that says they are temporary.
+`D316` established why: the round before it could not read its own result because the print it needed had been
+reverted. **A diagnostic that is removed before its comparison is read is a round spent twice.**
+
+**The accounting, unchanged and worth repeating.** Five rounds on one gate. Every round produced a real finding -
+the gate is in prefill; prefill already holds three of Design A's five pieces; the failure is at the call rather
+than in the probe, the buffer or the writer; the hook is on the right runner - **and the pipeline's exactness is
+still unverified, with nothing downstream worth building until it is.**
