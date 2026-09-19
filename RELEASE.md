@@ -199,17 +199,12 @@ Leave previous releases' notes and performance tables alone.
 *The reference implementation of this standard.* Runbook:
 `docs/release-process.md`. Mechanism: `tools/release.sh`.
 
-### Fork status — not upstreamed, deliberately not detached
+### Standing — standalone, with no upstream
 
-This repository is a GitHub **fork** of `drumih/turbo-fieldfare`, and it is
-**deliberately left as a fork** — do not detach it from the fork network. Leaving
-is permanent, and the standalone repository would not retain its wiki, issues, pull
-requests, stars, watchers or child forks; the wiki alone holds 15 pages across 223
-commits, alongside 21 releases.
-
-The fork relationship is inert. Nothing here is upstreamed: **no pull requests,
-cherry-picks or patches go to the parent**, and every change stays inside this
-repository.
+This repository is standalone. It has no upstream and no fork relationship, and it is not
+based on another project: nothing here is upstreamed and nothing is taken from one. Every
+`gh` call still pins `--repo`, because a `gh` call that does not name a repository can act
+on the wrong one.
 
 - **Identity** `X.Y` — two components, no patch. **This repository is TinyTitan
   Datacenter; `v1.0.0` is released and the next release is `1.1`.** The only version

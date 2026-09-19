@@ -195,13 +195,7 @@ tools/server_launcher.sh --client zed --model qwen38 4 --ram 8
 
 ## Credits
 
-TinyTitan is a focused fork of
-[drumih/turbo-fieldfare](https://github.com/drumih/turbo-fieldfare), which
-provides the bounded-memory runtime, installer, CLI, Mac app, and local server.
-The Qwen 3.6 integration was created by
-[NeelM0906](https://github.com/NeelM0906) in
-[upstream PR #29](https://github.com/drumih/turbo-fieldfare/pull/29). Concise
-mode is derived from the
+Concise mode is derived from the
 [Nail-Qwen3.6-35B-A3B](https://huggingface.co/peculiar-ragdoll/Nail-Qwen3.6-35B-A3B-MLX)
 chat template by [peculiar-ragdoll](https://huggingface.co/peculiar-ragdoll).
 

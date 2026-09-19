@@ -12,10 +12,9 @@
 #
 # Two mistakes this script exists to prevent:
 #
-#   1. `gh` in a fork defaults to the PARENT repo. `gh release list` here shows
-#      drumih/turbo-fieldfare, not this repo, and `gh release create` refuses
-#      with a confusing message about an unpushed tag. Every gh call below pins
-#      --repo.
+#   1. `gh` without `--repo` can act on a different repository, and
+#      `gh release create` then refuses with a confusing message about an
+#      unpushed tag. Every gh call below pins --repo.
 #   2. An incremental `swift build` compiles nothing when the tree is unchanged,
 #      so a warning gate over its output passes vacuously. The release build
 #      always goes to a fresh scratch path.

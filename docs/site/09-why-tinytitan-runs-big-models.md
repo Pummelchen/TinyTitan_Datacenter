@@ -184,11 +184,6 @@ Fair question, since MLX and llama.cpp exist and are excellent.
   documented so nobody re-derives them. That is rarer and more useful than a
   feature list.
 
-TinyTitan is a focused fork of
-[turbo-fieldfare](https://github.com/drumih/turbo-fieldfare) — an honest
-lineage for a project that would rather credit its parent than pretend to
-have invented everything.
-
 ## What this design is not good at
 
 - **It will not be as fast as a model that fits in memory.** Streaming from

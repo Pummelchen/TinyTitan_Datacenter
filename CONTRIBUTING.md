@@ -111,10 +111,9 @@ What the script enforces, and why each check is there:
 - **A clean scratch build.** An incremental `swift build` compiles nothing when
   the tree is unchanged, so scanning its output for warnings passes vacuously.
   The shipped binaries are always built fresh from the tagged commit.
-- **`--repo` on every `gh` call.** In a fork, `gh` defaults to the *parent*
-  repository: `gh release list` here lists drumih/turbo-fieldfare's releases,
-  and `gh release create` fails with a misleading "tag has not been pushed"
-  error. 3.6 was nearly published against the wrong repo because of this.
+- **`--repo` on every `gh` call.** A `gh` call that does not name a repository can
+  act on the wrong one, and `gh release create` then fails with a misleading "tag
+  has not been pushed" error. Every `gh` call names this repository explicitly.
 
 The archive ships the six executables plus the `.bundle` resources carrying the
 Metal shader library — the runtime cannot load its kernels without them beside

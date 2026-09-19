@@ -111,7 +111,7 @@ import TinyTitanValidationSupport
         fileBytes.replaceSubrange(headerSize..<(headerSize + blob.count), with: blob)
 
         let tmp = FileManager.default.temporaryDirectory
-            .appendingPathComponent("turbo-fieldfare-smoke-\(UUID().uuidString).bin")
+            .appendingPathComponent("ttd-smoke-\(UUID().uuidString).bin")
         try Data(fileBytes).write(to: tmp)
         defer { try? FileManager.default.removeItem(at: tmp) }
 
