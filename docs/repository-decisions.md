@@ -12239,3 +12239,38 @@ capturing an optional across a queue hop; that is recorded as a suspicion rather
 **What this leaves for the transport.** The frame crosses a socket. What has not happened is **a stage sending to a
 real peer with a real model behind it** - the ring, the head on the last stage, and four machines. **The wire is no
 longer the unknown; the composition is.**
+
+## D346 — The fork's suite is 1644 tests in eight binaries, and D342's 283 was a `tail` artefact
+
+Full `swift test --no-parallel` on the fork, exit status captured without a pipe:
+
+    exit=0, 0 failures
+    684 / 117 suites     343 / 42     194 / 28     131 / 17
+     99 /  17             89 /  9      79 / 20      25 /  4
+    total 1644 tests in 8 test binaries
+
+**`D342` recorded 283 and called it the suite.** It came from `grep "Test run with" | tail -2`, which showed the last
+two binaries and reported them as the whole. **That is the same defect `D342` itself was written about** - a number
+carried over from a neighbouring reading - **committed one round after the record that says so, and by the same
+mechanism the repository documents four times: a pipe that narrows output until the summary looks complete.**
+`tail -2` is not obviously a lie the way `| tail` is, which is exactly why it got through.
+
+**The corrected standing figures: 1644 tests, 8 binaries, 0 failures, exit 0.** Every count taken through a pipe
+this session is suspect for the same reason; the ones that matter are re-read here and the rest are superseded.
+
+**And the ring's interfaces are pinned, because the next step is otherwise a guess.** From `RealForwardRunner`:
+
+    public var hiddenIn:  MTLBuffer?
+    public var hiddenOut: MTLBuffer?
+    public var onHidden:  ((Int, MTLBuffer) -> Void)?
+    public var nextHidden: ((Int) -> MTLBuffer)?      <- NON-OPTIONAL return
+
+**The `nextHidden` signature is the one that costs time if forgotten**: Swift parses an optional closure returning an
+optional buffer as *an optional closure returning a buffer*, and then rejects the binding - so `(Int) -> MTLBuffer?`
+does not compile as a declaration even though it describes the semantics.
+
+**What a ring stage therefore is, in four lines.** `onHidden` becomes `PipelineLink.send` of a `PipelineFrame` built
+from the buffer and this stage's last layer; `nextHidden` becomes `PipelineLink.receive` copied into a buffer the
+runner already owns; `hiddenIn` seeds the first layer and `hiddenOut` carries the last. **Both halves are now
+verified - the hooks by the A5 gate, the wire by `D345` - and what remains is the composition, which is a small
+amount of code over two things that work.**
