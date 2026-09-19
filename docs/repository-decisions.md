@@ -11301,3 +11301,33 @@ find a crash, and it is being recorded as such rather than presented as progress
 remains unverified; **nothing downstream of it is worth building until it is**; and the two candidate next steps are
 both one print: the buffer lengths immediately before the copy, or a `memcpy` of one element to see whether the call
 survives at all.
+
+## D320 — The copy is not a size problem: both buffers are large enough and it still segfaults
+
+`D319` eliminated the private-storage explanation and left "print the two lengths" as the next step. Printed:
+
+    [diag] copy: dst.len=4096  src.len=16777216  want=4096  residualWidth=2048
+    exit=139
+
+**Every number is correct.** The destination is 4,096 bytes, the source is sixteen megabytes, the copy wants 4,096 -
+and the process still dies with SIGSEGV, on a copy clamped to the smaller of all three. **So the crash is not the
+length, and two rounds of explanation have now been eliminated rather than confirmed.**
+
+**What that leaves is one of the two pointers**, and it is worth saying plainly what that means: `probe.contents()`
+or `scratch.hidden.contents()` is not a valid address despite both buffers reporting a sane `length`. A buffer's
+`length` is metadata and says nothing about whether `.contents()` is legal for it - **which is exactly the
+distinction `D318` raised and `D319` thought it had dismissed.**
+
+**And the honest recommendation, which is the point of this record.** Seven rounds have gone into a gate that has
+never run. Every one produced a real finding and six of them eliminated a candidate - **and the remaining question
+is a memory-level one that prints have not answered after four attempts.** The instrument that would answer it is
+not another print: it is a **debugger or a memory checker** - `lldb` on the crashing process, or a build with
+bounds checking - and **that is a different kind of tool from the one this session has been reaching for.**
+
+**So the recommendation is to stop adding prints and either attach a debugger or build the copy a different way.**
+The second is cheap and does not need to know the cause: **write the probe with a blit through a command buffer**,
+as the activation dumps in this file already do through `dumpActivation`, **which is known to work on this exact
+buffer**. That replaces a guess about pointers with a path the code base has already proved.
+
+**The pipeline's exactness is still unverified**, the objective's throughput is still `D306`'s single-stage
+**21.482 tok/s**, and **nothing downstream of the gate is worth building until it passes.**
