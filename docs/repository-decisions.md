@@ -14675,3 +14675,42 @@ in; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, f
 verified; **a two-token ring whose first token is right and whose second is not**; and **the throughput gap now
 measured at a length long enough to be a rate - 8.16 tok/s against 21, with A's asymptote at 74 ms/token and a 0.77 s
 fixed decode cost identified as the reason every shorter figure was pessimistic.**
+
+
+## D414 - The startup decays, so it is cache warming rather than a fixed cost - and the ring is 11.29 tok/s, not 8.16
+
+**The same ring at three lengths, quiet, same prompt:**
+
+    max-new=4:    A decode=1.07s   268 ms/token   3.745 tok/s      B  0.36s   90 ms/token
+    max-new=16:   A decode=1.96s   123 ms/token   8.162 tok/s      B  1.18s   74 ms/token
+    max-new=32:   A decode=2.84s    89 ms/token  11.286 tok/s      B  2.03s   63 ms/token
+
+**And the two-point fits disagree, which is the finding.** `D413` fitted four and sixteen tokens and got `r = 74.2
+ms/token, f = 0.773 s`; **sixteen and thirty-two give `r = 55 ms/token, f = 1.08 s`.** A fixed cost and a constant
+rate cannot produce two different `r` - **so there is no fixed cost, and what `D413` called one is a cost that decays
+as the run proceeds.**
+
+**And the shape of the decay names the mechanism.** A's per-token cost is **268, 123, 89** - falling toward something
+rather than settling - and the thing that warms over a generation in this engine is **the expert cache**: every stage
+streams its own 256 experts per layer off its own SSD, **and the first time each expert is chosen it is a read from
+disk, while later mentions are a hit.** A generation of four tokens touches a small fraction of the expert set and
+pays full price for all of it; thirty-two tokens touch more of it and pay for less. **That is a one-time cost per
+generation rather than per token, and the correct figure for a real run is the asymptote - which is below 89, not
+above it.**
+
+**And the objective's number moves again, in the right direction and for the third time in three rounds.** The ring
+at thirty-two tokens is **11.286 tok/s on the first stage and 15.781 on the second** - so the honest present number is
+**11.3 tok/s against the 21 tok/s target**, and the gap is **1.86x**, not the 6x this record was reporting four rounds
+ago and not the 2.6x it reported last round.
+
+**And that closes a sequence worth stating plainly, because it is the same mistake three times.** `D410` measured a
+per-token cost at four tokens; `D412` did it at eight; `D413` at sixteen and called the residue a fixed cost; **and
+every one of them reported a rate that the next length falsified.** The engine's cost structure is **a decaying
+per-token cost over a warming cache**, and a rate cannot be read from any single run length - **the instrument for it
+is two lengths, and three is what it took to notice.**
+
+**Where the objective stands.** A1-A5 built and gated; the fork's suite green with the quiet switch and the lookahead
+in; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and token edge all
+verified; **a two-token ring whose first token is right and whose second is not**; and **the throughput gap now 11.3
+tok/s against 21 - above the 7 tok/s single-node reference this project began from, with the remaining difference
+identified as a warming cache whose cost falls as the run lengthens.**
