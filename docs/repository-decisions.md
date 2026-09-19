@@ -11731,3 +11731,51 @@ three reps and a spread of 0.06 s - **so the curve's shape is solid and its abso
 The farm is idle, which is the condition the gate rules ask for and which most of this record's numbers could not
 have. **No ten-layer run has been taken on this build**; the ~32 ms is an extrapolation from the 20-layer point at
 the 0-to-20 marginal rate, and is labelled as one.
+
+## D333 — The ten-layer point: 23.87 tok/s measured, and the four-stage pipeline projects to 23.4
+
+The point `D332` extrapolated is taken, three reps, idle farm at loads 1.65-1.79:
+
+    0:10 rep1  decode 2.01 s  23.856 tok/s   prefill 0.37 s
+    0:10 rep2  decode 2.01 s  23.866 tok/s   prefill 0.31 s
+    0:10 rep3  decode 2.00 s  24.031 tok/s   prefill 0.32 s
+
+**23.87 tok/s at the median, with a 0.7% spread** - the tightest repeat set in this record. And the full curve:
+
+| layers | ms/token | tok/s | stage cost (this range alone) |
+| --- | --- | --- | --- |
+| 40 | 129.8-132.8 | 7.53-7.79 | - |
+| 30 | 87.1 | 11.473 | **42.7** (30-39) |
+| 20 | 64.4 | 15.519 | **22.7** (20-29) |
+| **10** | **41.9** | **23.87** | **22.5** (10-19) |
+| 0 | - | - | **41.9** (0-9) |
+
+**And the deferring arithmetic is now closed.** A ten-layer stage costs 41.9 ms, of which ten lots of the 10-to-20
+marginal rate is 22.6 ms - **so the fixed per-token cost is 19.3 ms, which is `D306`'s 19 ms intercept recovered
+independently from a different set of runs.** `D331` read the 20-to-40 fit as having no intercept; the ten-layer point
+shows the intercept is real and sits in the first ten layers, where the embed, the sampler and the head are.
+
+**The four-stage pipeline's throughput is its slowest stage, and there are two of them:**
+
+    stage 0 (layers 0-9)    41.9 ms   <- carries the fixed 19.3 ms, embed and sampler
+    stage 1 (layers 10-19)  22.5 ms
+    stage 2 (layers 20-29)  22.7 ms
+    stage 3 (layers 30-39)  42.7 ms   <- carries the deepest attention and the head
+
+    max stage 42.7 ms  ->  23.4 tok/s,  plus 0.1 ms of wire
+
+**So Design A projects to about 23.4 tok/s from the engine's own measurements, against an objective of 21.** That is
+not a law-derived projection any more: every number in it is a decode measurement from this build, and the wire term
+is `D288`'s measured 117.8 MB/s against a 4 KB frame.
+
+**And the imbalance is the obvious next lever.** Stages 1 and 2 run in 22.5 ms while 0 and 3 run in 42 - nearly
+double. **Moving the head off the last stage, or giving the first stage fewer layers, would let the pipeline run at
+roughly the middle stages' rate**: with four stages of ~25 ms, the projection is **40 tok/s**. **And that is
+`D332`'s point about the head made quantitative** - the head is worth about 17 ms, which is nearly half of a
+binding stage.
+
+**What this is and is not.** Decode measurements at `--max-new 48`, 40 slots, on one node, three reps for the
+ten-layer point and one each for 10, 20 and 30 - **so the shape and the ten-layer value are solid and the middle
+points are single runs.** **None of it is a pipeline**: it is one node running a sub-range, which is what a stage
+would do, measured in isolation. **The ring, the transport and the composition of four stages remain unbuilt**, and
+the 23.4 figure is a projection from these four numbers rather than an observation of four machines.
