@@ -11639,3 +11639,36 @@ projection is quoted again.
 arithmetic; A2's frame has three tests; A3's two ends are inert when unset; A4's hooks are in; A5's probe writes and
 **the exactness gate passes bit-identically**. **What remains is the ring and the transport** - and the next thing
 that can fail is the network, not the arithmetic.
+
+## D330 — The shadowing fix works, and it exposed the next requirement: a middle stage must commit its own KV
+
+The re-take produced no numbers for `--layer-range`, and the reason is not a regression - it is the fix working:
+
+    error: produce rejected because a previous chunked prefill wrote KV rows for in-flight chunk [0, 5)
+           but did not commit; call reset() before reusing the runner
+
+**Prefill now honours the layer range.** A `0:20` stage runs twenty layers instead of forty, and **that is what broke
+the decode**: the KV rows for the prompt were written but never **committed**, because the commit lives on the
+`runEpilogue` path - the same flag that decides whether the head runs. **So `runEpilogue` is doing two jobs**: it
+means "this stage owns through the last layer" *and* it gates the KV commit. **For a pipeline those are different
+questions**, and this is the first structural requirement the fixed range has surfaced rather than hidden.
+
+**And it explains why the gate passed anyway.** The gate's publishing run used `--max-new 1`, whose single token
+comes from the prefill's own logits - **so no decode ever ran and the uncommitted KV was never noticed.** The gate
+tested exactly the property it was built for and this failure sits outside it. **That is worth stating plainly: a
+passing gate is not a working pipeline**, and the very next thing tried - a normal 48-token generation at a
+sub-range - found a real requirement the gate could not see.
+
+**The full-measurement re-take did produce one number, and it is the prefill figure this design needs.** A
+**1,321-token** prompt at all forty layers: **prefill=1321tok/28.95s**, or **21.9 ms per prompt token**. That is the
+compute-bound, batched case `D293` argued the ANE belongs to and that `docs/distribution-design.md` section 8b is
+about, and it is the first prefill measurement in this record taken at a length where the phase is not dominated by
+model load.
+
+**The decode re-take did not run**, so **`D306`'s 21.482 tok/s remains the only stage-arithmetic number and remains
+decode-only.** `D327` flagged that it is not evidence about the prefill path, and this round confirms the flag was
+right without replacing the number.
+
+**The next change is narrow and named**: separate the KV commit from `runEpilogue`, so that a stage which does not own
+the last layer still commits what it wrote - and then the decode re-take and the ring both become reachable. **It is
+one flag's meaning, not a new mechanism.**
