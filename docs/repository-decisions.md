@@ -14636,3 +14636,42 @@ with the quiet switch in and the lookahead in; the exactness gate at **0 of 2048
 counts, frame shape and token edge all verified; **a two-token ring whose first token is right and whose second is
 not**; and **the throughput gap now 5.59 tok/s against the 21 tok/s target, down from 3.4, with the residue measured
 as the peer's whole step rather than as an unexplained 207 ms.**
+
+
+## D413 - The ring is 8.16 tok/s at sixteen tokens, not 3.4 - every short-run figure this session was dominated by a startup
+
+**The same ring, the same prompt, quiet, two run lengths:**
+
+    max-new=4:    A decode=1.07s  268 ms/token  tok/s=3.745      B decode=0.36s   90 ms/token
+    max-new=16:   A decode=1.96s  123 ms/token  tok/s=8.162      B decode=1.18s   74 ms/token
+
+**A's per-token cost falls by 2.2x between a four-token and a sixteen-token run**, and B's falls by 18%. That is the
+signature of a **fixed cost inside the measured interval**, not of a slow steady state - and it means **every
+throughput figure this session has quoted was taken at a length where that cost dominates.**
+
+**And the cost is large enough to compute.** A's decode is `fixed + rate x tokens`:
+
+    1.07 = f + 4r        and        1.96 = f + 16r
+    =>  12r = 0.89  =>  r = 74.2 ms/token,  f = 0.773 s
+
+**So A's steady-state decode is 74 ms/token and its fixed decode cost is 0.77 s** - about ten tokens' worth. **Four
+tokens measured 268 ms/token; sixteen measured 123; the asymptote is 74.** And 74 ms is close to the **87.5 ms** A
+costs standalone, **which is the first time the ring's steady state has looked like the stage's own work rather than
+a multiple of it.**
+
+**And that reframes three rounds of diagnosis, which is worth stating precisely.** `D410` measured 207 ms of
+"waiting" on A; `D412` measured 91.5 ms of residue after the lookahead; **both were computed against a per-token
+figure that included a 0.77 s startup divided by four.** The lookahead's 1.64x improvement is real and was measured
+before-and-after at the same length, **but the absolute numbers - 3.4, then 5.59 - are artifacts of running four and
+eight tokens**, and the honest steady-state figure is the one this round took at sixteen.
+
+**And the objective's number is therefore better than the record has been saying, and still not met.** At sixteen
+tokens the ring is **8.16 tok/s**; A's asymptote is 74 ms/token, which is **13.5 tok/s** for the first stage; and the
+target is 21. **So the gap is a factor of 2.6 rather than 6, and the remaining work is the startup - which is a
+one-time cost a real generation amortises over hundreds of tokens - and the two stages' balance.**
+
+**Where the objective stands.** A1-A5 built and gated; the fork's suite green with the quiet switch and the lookahead
+in; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and token edge all
+verified; **a two-token ring whose first token is right and whose second is not**; and **the throughput gap now
+measured at a length long enough to be a rate - 8.16 tok/s against 21, with A's asymptote at 74 ms/token and a 0.77 s
+fixed decode cost identified as the reason every shorter figure was pessimistic.**
