@@ -363,7 +363,9 @@ public func runRawCompletion(producer: any LogitProducer,
             // one that chooses, so its own sample is the token the chain needs and there is nothing to wait for. A
             // stage with a source has nothing of its own to publish - it forwards what it is given, below, the
             // moment it is given it.
+            FileHandle.standardError.write(Data("[ring] publishing token=\(tokenID)\n".utf8))
             if ring.nextTokenSource == nil { ring.nextTokenSink?(tokenID, 0) }
+            FileHandle.standardError.write(Data("[ring] published\n".utf8))
             // The token to produce with arrived during the PREVIOUS iteration's work (below), not now.
             if let carried = pendingIncoming {
                 stepToken = carried; pendingIncoming = nil
