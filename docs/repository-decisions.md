@@ -14062,3 +14062,43 @@ is measurable, which the `D387` figure of `decode=0.60s` already hinted at witho
 verified on the wire**; **a two-token ring that completes with the first token right and the second wrong**; and
 **two named pieces of work rather than a hypothesis**: wire the probe across two nodes so the boundary can be
 compared, and measure whether the ring can be overlapped instead of serialised.
+
+
+## D397 - The ring runs at a tenth of the law's prediction, and the gap is the lock-step the last round measured
+
+**The two numbers beside the law from the record, which have never been put together.**
+
+    the throughput law (docs/distribution-design.md 3):  cost = fixed + per-layer x layers
+    measured on one node: 10 layers 41.9 ms/token, 20 layers 64.4 ms/token, fixed ~19.3 ms
+
+    so a two-stage ring of ten layers each should be:  19.3 + 41.9 = 61.2 ms/token  ~ 16 tok/s
+    and a four-stage ring of ten layers each:          19.3 + 41.9 = 61.2 ms/token  (the fixed cost is paid once)
+
+    measured in the ring, --max-new 2:                 A decode 0.89 s for one step
+
+**A tenth.** The ring's first decode step took **890 ms** where the law says the whole two-stage token should take
+**61 ms**, and the difference is not in the layers - **the ten-layer measurement at 41.9 ms/token stands and is not
+challenged by this.** It is in the *shape*: the last round measured A at 0.89 s against B's 0.14 s, **six times
+apart with A the stage that blocks**, which is a lock-step ring rather than a pipeline.
+
+**And the reason it cannot be reordered is worth recording as a property of the design rather than a bug.** A must
+publish its state before B can sample - that is the forward edge and it is one token's worth of latency. B must send
+its token before A can produce - that is the reverse edge and it is another. **So one round trip is inside one token
+step and no arrangement of the statements removes it.** What removes it is *overlap*: A producing step N+1's
+attention while B samples step N, which is what a pipeline is for and what this implementation does not do - **every
+step is joined before the next begins, on both stages.**
+
+**And that is a smaller and more tractable fault than the correctness one, and it is on the objective's own path.**
+The objective asks for **21 tok/s across four nodes**; the law says four ten-layer stages pay the fixed cost once and
+add three handoffs, **so the number is reachable if the handoffs overlap and unreachable if they do not** - and
+"do not" is what 890 ms against 61 ms means.
+
+**Two pieces of work, both named, neither a hypothesis.** **Overlap the ring**: the generation loop currently
+branches on a hook that blocks, and the fix is to let a stage run ahead by one position so the exchange happens
+beside compute rather than between compute. **And wire the boundary probe across two nodes**, so that when the
+correctness fault is fixed the overlap can be measured against the law rather than against a feeling.
+
+**Where the objective stands.** A1-A5 built and gated, **1652 tests with 0 failures**, the exactness gate at **0 of
+2048**; the forward edge, the reverse edge, the pairing, the seed, the counts and the frame shape each verified;
+**a two-token ring whose first token is right and whose second is not**; and **a measured 10x gap to the throughput
+law whose cause is the lock-step, not the layers.**
