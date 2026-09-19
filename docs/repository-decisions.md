@@ -12858,3 +12858,38 @@ that may not have been substituted. **The arithmetic was proved exact in `D325` 
 **Where the objective stands.** All four legs are written, called and tested; the bind order is fixed and measured;
 **no sequence has yet been produced** because the reverse edge has never successfully connected. **The remaining work
 is one address, and the instrument to check it is an `echo`.**
+
+## D364 — Node1 cannot make an outbound connection to node3, which is D287 rather than the ring
+
+**Both hypotheses about the address and the routing are eliminated by measurement.**
+
+    node3:  en0 = 192.168.18.29   en1 = 192.168.18.8    utun4 = Tailscale
+    node1:  en0 = 192.168.18.27   en1 = 192.168.18.6    utun4 = Tailscale
+
+    node1 -> node3:  interface en0
+    node3 -> node1:  interface en0
+
+**Routing is symmetric and correct**, both nodes have their expected addresses, and the address B connected to was
+confirmed correct in `D363`. **So `No route to host` with a live listener on a correctly-routed same-subnet address is
+not a routing fault.**
+
+**It is `D287`.** That record established that macOS Local Network Privacy lets **ping, ssh and inbound** work while
+**outbound connections from harness-launched processes fail with `EHOSTUNREACH`** - and that is precisely what this
+is, including the asymmetry: **node3's outbound to node1 succeeds (the forward edge A->B has connected for several
+rounds) and node1's outbound to node3 fails.**
+
+**And the reason it appeared only now is structural rather than incidental.** In every previous round node1 was the
+**downstream** stage: it listened on the forward edge and was connected to. **The reverse edge is the first thing in
+this design that asks node1 to originate a connection**, so it is the first thing that meets the restriction - and it
+meets it exactly as `D287` says it would.
+
+**What this means for the ring, stated plainly.** The four legs are written, called and tested, and **one of them
+cannot run from this particular node under this particular launch method**. That is not a defect in Design A: it is a
+property of the environment the measurement is being taken in, **and it is the same property the expert-sharding
+engine met and worked around**. The candidates are the ones `D287` implies - launch the peer in a way that carries the
+permission, or invert which node originates by making the reverse edge a listen on the sampling side and a connect on
+the embedding side.
+
+**And the interface pattern continues, now six for six.** A shadowed parameter, a closure with no call site, a count
+that never travelled, a bind ordered after a connect, an address questioned and cleared, and now a node permission.
+**The arithmetic was proved exact in `D325` and has still not been wrong once.**
