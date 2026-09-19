@@ -575,15 +575,6 @@ extension RealForwardRunner {
                              x: self.normed, y: logits, m: UInt32(self.cfg.vocabSize), n: D)
         }
         let gFusionHead: (MTLCommandBuffer) throws -> Void = { cb in
-        // A3: publish this stage's hidden state before anything consumes the residual for logits. The `self.`s are
-        // required because this point is inside a closure; `hidden` is the residual buffer the embed filled and
-        // every layer updated, so after the last owned layer it holds what the next stage needs.
-        if let out = self.hiddenOut {
-            let bytes = self.residualWidth * MemoryLayout<Float16>.stride
-            memcpy(out.contents(), self.hidden.contents(), bytes)
-        }
-        if let out = self.hiddenOut, let sink = self.onHidden { sink(position, out) }
-
             try self.fusionHead.encodeGreedyDecode(
                 commandBuffer: cb,
                 hidden: self.hidden,
@@ -614,6 +605,38 @@ extension RealForwardRunner {
             } else {
                 guard let headCB = try runSync({ cb in
                     try gFinalNorm(cb)
+                    // A3: publish this stage's hidden state BEFORE the head consumes the residual. `hidden` is
+                    // the buffer the embed filled and every layer updated, so after the last owned layer it holds
+                    // what the next stage needs.
+                    //
+                    // THIS BLOCK WAS FIRST WRITTEN INSIDE `gFusionHead`, WHICH IS NEVER CALLED. It is defined and
+                    // no site invokes it, so a publishing stage published nothing at all and its peer blocked on a
+                    // frame that could not come - and the wiring looked correct, because it was: `hiddenOut` and
+                    // `onHidden` were both set. D351's instrument found it in one run by counting sends against
+                    // receives, after three hypotheses about the wiring had cost two rounds.
+                    //
+                    // AND IT IS A BLIT, not a memcpy. `hidden` is storageModePrivate, so `contents()` on it is not
+                    // a valid pointer - the fault D324 took six rounds to find. `dumpActivationPrivate` is the
+                    // mechanism this runner already uses for exactly this, and a blit needs `contents()` on neither
+                    // side. The copy is bounded by the destination, because a short source would otherwise over-read.
+                    if let out = self.hiddenOut {
+                        let bytes = min(self.residualWidth * MemoryLayout<Float16>.stride, out.length)
+                        if let blitCB = self.ctx.queue.makeCommandBuffer(),
+                           let blit = blitCB.makeBlitCommandEncoder() {
+                            blit.copy(from: self.hidden, sourceOffset: 0,
+                                      to: out, destinationOffset: 0, size: bytes)
+                            blit.endEncoding()
+                            blitCB.commit()
+                            // THE BLOCKING FORM HERE, and the async one in the prefill, for a reason that is worth
+                            // stating: this point is inside `runSync`, whose closure is synchronous, and `await`
+                            // inside it makes the closure async and fails to compile against the synchronous
+                            // parameter type. The prefill loop is genuinely async and takes `await completed()`.
+                            // The same operation has two spellings in this file and the context decides which.
+                            blitCB.waitUntilCompleted()
+                        }
+                    }
+                    if let out = self.hiddenOut, let sink = self.onHidden { sink(position, out) }
+
                     try gLmHead(cb)
                 }) else {
                     throw ModelError.residentBufferWrapFailed
