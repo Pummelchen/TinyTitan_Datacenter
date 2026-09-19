@@ -11863,3 +11863,35 @@ ms/token - **is the only sound stage-arithmetic evidence in the record**, and `D
 still the best available estimate of stage cost, unconfirmed rather than refuted.
 
 **Three rounds, one anomaly, and the answer was in a comment in the file being measured.**
+
+## D336 — The seed gap is real and narrower than D335 implied: decode has it, prefill does not, and the shapes differ
+
+`D335` concluded that a pipeline stage "depends on `hiddenIn` seeding the residual on the prologue-skipped path".
+Read against the code, that is half right and the half that is wrong matters.
+
+**Decode already seeds from it** (`RealForwardRunner+Decode.swift:195`):
+
+    if let source = nextHidden {          memcpy(hidden.contents(), source(position).contents(), bytes) }
+    else if let incoming = hiddenIn {     memcpy(hidden.contents(), incoming.contents(), bytes) }
+
+**Prefill does not.** `hiddenIn` appears nowhere in `Prefill.swift`; the prologue seeds only from `preparedHidden`,
+which is a **parameter** the MTP paths pass and not the pipeline's input. **So a middle stage's per-token decode is
+already correct and its prefill is not** - which is the opposite emphasis from `D335`, and it is the better news of
+the two, because the pipeline's per-token flow is the decode path and that one works.
+
+**And the reason the fix is not a one-line copy is a shape difference.** `hiddenIn` holds **one token's** state -
+`D` floats where `D` is 2048, one row - while `executePrefillChunk` works on `t` tokens at once. The decode seed is
+valid because both sides are one row. **A prefill seed from a peer would need the previous stage to hand over
+`t` rows, not one**, and `hiddenIn` as declared cannot carry that. **So the prefill case needs either a wider
+incoming buffer or a per-token prefill on middle stages** - and that is a design decision, not a wiring fix.
+
+**Which is a real and specific requirement for Design A, stated properly this time.** A prompt entering a pipeline
+passes through stage 0's prefill and then each later stage's prefill. **Either every stage prefills `t` tokens and
+the handoff is `t x D`, or each stage prefills one token at a time and the handoff stays `D`.** `D306`'s arithmetic
+assumed the first implicitly - twelve kilobytes per token over the wire - and the twelve-kilobyte figure is right
+for either, but **the buffer that carries it is only sized for one token today**.
+
+**What to do about it is not yet decided, and this record does not decide it.** Both are defensible; per-token
+prefill is simpler and slower, `t`-row handoff is faster and needs a buffer whose size depends on the chunk. **The
+thing worth writing down is that the choice exists and was not visible until the seed path was read**, and that the
+resource is `t x D x 2` bytes of shared memory per stage rather than the `D x 2` the property provides.
