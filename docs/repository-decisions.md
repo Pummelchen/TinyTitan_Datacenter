@@ -12116,3 +12116,31 @@ for **`ExchangeLedger`'s `bytesSent`/`bytesReceived` per node as standing ground
 derivation - which is the same discipline `D340` argued for and the brief itself specified (`"measure, don't
 project"`). **That measurement has not been taken and is the next thing worth running**, because every figure in
 both directions of this exchange - 1.92 MB or 7.5 MB - is currently arithmetic rather than observation.
+
+## D342 — The fork's suite is green at 283 tests, and its count had never been recorded
+
+`swift test --no-parallel` on the fork, exit status captured **without a pipe**:
+
+    swift test exit=0
+    Test run with 194 tests in 28 suites passed after 2.261 seconds.
+    Test run with  89 tests in  9 suites passed after 0.903 seconds.
+    0 failures
+
+**283 tests across two test binaries, no failures.** This had never been written down, and the omission had a
+visible cost: **every test count in this session's records and commits has been the main repository's 266**, quoted
+by habit, while the fork - which is a different implementation with a different suite - was never counted at all.
+**A number carried over from the neighbouring repository is the same defect as a number carried over from a
+neighbouring run**, and this record has a trap about the second and not the first.
+
+**And the previous round's run is the third instance of the pipe trap, committed by me while quoting the rule.**
+That run was `swift test --no-parallel | tail -25`, so the exit status read was `tail`'s and always 0 - and the
+marker line acknowledging it was written in the same command that made the mistake. **The summary line was
+authoritative and green, so the result was never in doubt; what was absent was evidence**, which is the distinction
+that matters. This run writes to a file and reads `$?`.
+
+**The codec test is verified.** `swift test --filter PipelineLink` passed, one test in one suite, and the assertion
+that `countOffset` is 8 is now checked against a real `encode` rather than trusted - which closes the "committed,
+unrun" boundary that `10b4e86` carried. **And the reason the earlier attempts timed out is now known and is not the
+tests**: `swift test` spends its time building the test *target*, so a background build followed by filtered runs
+makes every later verification effectively instant. **That, not the tests, is what had been forcing commits to land
+with an unverified boundary.**
