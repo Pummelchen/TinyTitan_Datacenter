@@ -11239,3 +11239,38 @@ reverted. **A diagnostic that is removed before its comparison is read is a roun
 the gate is in prefill; prefill already holds three of Design A's five pieces; the failure is at the call rather
 than in the probe, the buffer or the writer; the hook is on the right runner - **and the pipeline's exactness is
 still unverified, with nothing downstream worth building until it is.**
+
+## D318 — The probe segfaults: exit 139, and the crash is the copy
+
+Six rounds after the gate was specified, the failure is named. The diagnostic prints went on either side of the call
+and the run ended with
+
+    exit=139
+    [diag] run installs hook on runner ObjectIdentifier(0x0000007839f1e800)
+    [diag] probe hit L=20 runner=ObjectIdentifier(0x0000007839f1e800) buffer=true hook=true
+    (nothing further - the process is gone)
+
+**139 is 128 + 11: SIGSEGV.** So the sequence is: the hook is installed, the probe fires on the same runner, the
+buffer and the hook are both non-nil - **and the process dies before the next print, which is three lines later.**
+The only work between them is the `memcpy`.
+
+**And the copy width was wrong.** It used `D * MemoryLayout<Float16>.stride` while the destination had been allocated
+from `residualWidthFor(cfg) * MemoryLayout<Float16>.stride` - **two different sources for the same number, which is
+exactly the class of defect that has now cost this build three times**: the eight-slot width in the expert path, the
+fp16 `routing_w` and `y`, and this. Matching them is correct regardless of whether it is the whole cause.
+
+**It is not the whole cause**, because the crash survived the fix. **The remaining candidate is the source**:
+`scratch.hidden` may not be `storageModeShared`, and `contents()` on a private `MTLBuffer` is not a valid pointer -
+which produces a segfault rather than a wrong value, and would explain why every check around the call succeeded and
+the call itself killed the process. **The fix for that is a blit through a command buffer rather than `memcpy`** -
+which is what this file's own activation dumps do, and which is why they work.
+
+**What six rounds established, none of it wasted and none of it a measurement.** The gate lives in the prefill loop,
+not decode (`D313`). **Prefill already honours `layerRange` and already separates the prologue from the epilogue -
+three of Design A's five pieces pre-existed on that path** (`D314`). The hook installs on the right runner and the
+probe fires on it (`D317`). And the failure is a **SIGSEGV in the copy**, not a silent no-op, which is why no file
+and no error ever appeared (`D318`). **The pipeline's exactness remains unverified.**
+
+**And the process lesson, which cost two rounds.** `D315` reverted its diagnostics before its comparison was read,
+so `D316` could not read its own result; the diagnostics are committed from `D317` onward. **A diagnostic removed
+before the comparison is read is a round spent twice.**
