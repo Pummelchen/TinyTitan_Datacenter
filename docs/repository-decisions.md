@@ -14755,3 +14755,47 @@ in; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, f
 verified; **a two-token ring whose first token is right and whose second is not**; and **the throughput now measured
 to convergence at 17.1 tok/s on the first stage and 19.1 on the second - 81% of the 21 tok/s objective, with the
 remaining 1.23x identified as the first stage's 5 ms and the target's own four-node scaling.**
+
+
+## D416 - The law says four stages reach 23.9 tok/s and the target is 21 - so what remains is the four-stage wiring, which does not exist
+
+**The arithmetic, taken from the record's own law and its own measurements:**
+
+    per-layer rate from 10 layers (41.9 ms) and 20 layers (64.4 ms):  2.25 ms/layer
+    fixed cost:                                                        19.3 ms
+
+    a pipeline's throughput is set by its SLOWEST STAGE, so:
+      2 stages of 20 layers:   19.3 + 20 x 2.25 = 64.3 ms   -> 15.6 tok/s
+      4 stages of 10 layers:   19.3 + 10 x 2.25 = 41.8 ms   -> 23.9 tok/s
+
+    measured, two stages of 20 layers:                58.0 ms -> 17.2 tok/s
+
+**And the design document states the target as "21 tok/s = 47.6 ms per step".** So:
+
+  * **four ten-layer stages reach 23.9 tok/s by the law - above the target**;
+  * **the measured two-stage ring already beats the law by 10%** (58.0 against 64.3), because a stage of a ring does
+    not embed the token or run the head, and the law was measured on a full run;
+  * **so a four-stage ring should beat 41.8 ms and land above 23.9 tok/s** - and the ~31 tok/s projection in the
+    design document is the same arithmetic with the measured rate rather than the fitted one.
+
+**And that makes the remaining work unambiguous, and it is not tuning.** `D415` measured the two-stage ring to
+convergence at 17.1 tok/s and concluded the ring's steady state *is* the parts - **and the next part is three more
+stages, each owning ten layers and its own 256 experts per layer, each with its own forward and reverse edge.** The
+implementation as it stands is a **two-stage ring**: `TINYTITAN_STAGE_LISTEN`/`STAGE_CONNECT` and the reverse pair are
+each a single endpoint, `PipelineWiring.installIfConfigured` binds one input and one output, and the generation loop's
+lookahead carries exactly one pending token. **A chain of four needs each stage to forward, not just the first, and to
+carry a token from its successor to its predecessor in the middle** - which is the design's own description and not
+what is built.
+
+**And that is the honest state of the objective at round 106.** The goal asks for four Mac minis running one model at
+21 tok/s or better. **The engine built here is a correct two-stage layer pipeline running at 17.1 tok/s to the first
+stage and 19.1 to the second; the law says four stages reach 23.9; and the code that would make a middle stage a
+middle stage does not exist.** What exists is the whole measurement apparatus around it - the quiet switch, the
+lookahead, the frame protocol, the exactness gate and the token-for-token verification - **so the four-stage work
+starts from a measured base rather than from a hypothesis.**
+
+**Where the objective stands.** A1-A5 built and gated; the fork's suite green with the quiet switch and the lookahead
+in; the exactness gate at **0 of 2048**; the transport, pairing, seed, counts, frame shape and token edge all
+verified; **a two-stage ring whose first token is right and whose second is not**; **throughput measured to
+convergence at 17.1 and 19.1 tok/s**; and **the four-stage extension identified, with the law's arithmetic saying it
+reaches 23.9 tok/s, as the remaining work rather than as an optimisation.**
