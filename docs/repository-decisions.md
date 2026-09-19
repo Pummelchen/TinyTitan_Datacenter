@@ -12455,3 +12455,43 @@ keeping it.
 the prefill handoff is verified end-to-end with a measured payload; **a sequence of tokens is not yet possible**
 because the per-token handoff does not fire on the publisher. **One line of the pipeline is now the whole of the
 remaining work**, and the instrument to find it is already in place.
+
+## D352 — The ring produced tokens: the decode publish was inside a closure with no call site
+
+**The two-stage ring ran to completion across two machines.** Stage A owned layers `0..<20`, stage B owned `20..<40`,
+and B finished with `new=4tok decode=0.37s tok/s=10.889` and no error - **after `D351` recorded that its first
+decode receive found nothing.**
+
+**Two faults in three lines, both mine, both left by A3 and each sufficient on its own.**
+
+**`gFusionHead` has no call site.** The publish was written inside that closure - it is defined, and **nothing in the
+file invokes it** - so a publishing stage published **nothing at all** and its peer blocked on a frame that could not
+come. **The wiring was correct and looked correct**: `hiddenOut` was allocated, `onHidden` was set, and every
+hypothesis about them was wrong. **The instrument settled it in one run** by printing sends against receives, which
+is the argument for having built it rather than reasoning further. The publish now sits immediately before
+`gLmHead(cb)`, where the residual is final and the head is about to consume it.
+
+**And it was a `memcpy` from a private buffer.** `self.hidden` is `storageModePrivate`, so `contents()` on it is not a
+valid pointer - **the exact fault `D324` took six rounds to find, written again in a new place.** It would have
+segfaulted the moment the closure was ever called, **which is presumably why nobody noticed: the code was
+unreachable as well as wrong.** Two faults that masked each other, in three lines, introduced in the same edit.
+
+**The wait has two spellings and the context decides.** `blitCB.waitUntilCompleted()` here, because this point is
+inside `runSync` whose closure is synchronous and `await` makes it async and fails to compile against the synchronous
+parameter type; `await blitCB.completed()` in the prefill, which is genuinely async. **It is the one place in this
+file where being wrong is not silent**, and the compiler caught the first attempt.
+
+**Measured, and the positions match exactly:**
+
+    A: send pos=0, 5, 6, 7  layer=20  values=2048     total=4
+    B: recv pos=0 got token=0
+       recv pos=5 got token=5                        recv_ok=2, recv_fail=0
+
+**Five values of 2048 half-precision each, aligned one-to-one by position.** A ran ahead of B - it published four
+while B consumed two before finishing - which is the pacing a pipeline should have and not a fault.
+
+**What is NOT yet claimed: that B's four tokens are the RIGHT four.** The A5 gate proved the composition is
+arithmetically exact - 0 of 2048 elements - and that was fp16 to fp16, so the frame's dtype is not a rounding site.
+**But an end-to-end token comparison against a single-node run has not been taken**, and until it is, the honest
+statement is that the ring runs and its handoffs align, not that it answers correctly. **That comparison is the next
+step and it is one command.**
