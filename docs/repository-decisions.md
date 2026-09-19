@@ -14033,3 +14033,32 @@ probe extension, not a hypothesis about which of the two candidates is right.**
 2048**; the forward edge, the reverse edge, the pairing and the published counts each measured or read correct; **a
 two-token ring that completes with the first token right and the second wrong**; and **the fault localised to a
 state value whose delivery is now proven sound.**
+
+
+## D396 - The frame is verifiably one row, and the probe that would compare the boundary is gated out of the run that needs it
+
+**The decode-probe comparison D395 proposed, attempted. Two results, one of them negative about the instrument.**
+
+**The frame is one row, measured rather than read.** A's decode publish prints `rows=1 buffer.len=16777216
+rowWidth=2048` and sends `values=2048` - **4096 bytes, which is D fp16 values, one row of the handoff.** So `D394`'s
+worry is dead a second time and this time from the wire: **what A sends after its first decode step is one row,
+correctly sized, correctly labelled.** The buffer is the whole 16 MiB allocation, which is `D354`'s territory and is
+not what is sent.
+
+**And `TINYTITAN_PROBE_LAYER` does not fire in a layer-range run.** `Run.swift:284` sets `runner.hiddenProbeLayer`,
+and `:291` guards it - **so the one instrument that compares a stage's boundary against a single node's is available
+in a full run and unavailable in exactly the run where a stage boundary is the question.** That is not a defect in
+the probe; it is a probe wired for `D311`'s test, which compares a full run's layer 20 against a `0:20` stage's
+output **on one node**. Extending it across two is a change to the wiring, not to the probe.
+
+**And one number that had not been looked at.** A's decode step took **0.89 s** against B's **0.14 s** - **six times
+longer** - and A is the stage that blocks on the reverse edge. **So the sequence is serialised rather than
+pipelined**: A waits for B's token before it produces, and B waits for A's state before it samples. That is
+correct-but-slow, and it is the difference between the pipeline this design describes and the one built - **and it
+is measurable, which the `D387` figure of `decode=0.60s` already hinted at without being read that way.**
+
+**Where the objective stands.** A1-A5 built and gated with **1652 tests and 0 failures**; the exactness gate at
+**0 of 2048**; the forward edge, the reverse edge and the pairing each measured correct; **the handoff's shape
+verified on the wire**; **a two-token ring that completes with the first token right and the second wrong**; and
+**two named pieces of work rather than a hypothesis**: wire the probe across two nodes so the boundary can be
+compared, and measure whether the ring can be overlapped instead of serialised.
