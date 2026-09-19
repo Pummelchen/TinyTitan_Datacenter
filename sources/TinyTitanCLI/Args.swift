@@ -33,6 +33,10 @@ public struct Args: Equatable, Sendable {
     /// same work single-node, and named contention between a node's own forward pass and the requests it answers.
     /// A node cannot test that today: it always generates, and a Task does not keep the process alive once main
     /// returns, so the server dies with the generation. With this the node serves on the main path instead (D279).
+    /// The layers this node owns, as `start:end` - the whole of Design A's partition. `nil` means all of them,
+    /// which is the single-node configuration and the one A1 proved bit-identical.
+    public var layerRange: String?
+
     public var shardServeOnly: Bool
     public var stops: [String]
     public var quiet: Bool
@@ -67,6 +71,7 @@ public struct Args: Equatable, Sendable {
                 shardPeersSpec: String? = nil,
                 shardServePort: Int? = nil,
                 shardServeOnly: Bool = false,
+                layerRange: String? = nil,
                 stops: [String] = [],
                 quiet: Bool = false,
                 concise: Bool = false,
@@ -100,6 +105,7 @@ public struct Args: Equatable, Sendable {
         self.shardPeersSpec = shardPeersSpec
         self.shardServePort = shardServePort
         self.shardServeOnly = shardServeOnly
+        self.layerRange = layerRange
         self.stops = stops
         self.quiet = quiet
         self.concise = concise
@@ -223,6 +229,7 @@ extension Args {
         var shardPeersSpec: String?
         var shardServePort: Int?
         var shardServeOnly = false
+        var layerRange: String?
         var stops: [String] = []
         var quiet = false
         var concise = false
@@ -276,6 +283,8 @@ extension Args {
                 shardServePort = parsed
             case "--shard-serve-only":
                 shardServeOnly = true
+            case "--layer-range":
+                layerRange = try takeValue(argv, &index, flag: flag)
             case "--model":
                 model = try takeValue(argv, &index, flag: flag)
             case "--prompt":
@@ -423,6 +432,7 @@ extension Args {
                     shardPeersSpec: shardPeersSpec,
                     shardServePort: shardServePort,
                     shardServeOnly: shardServeOnly,
+                    layerRange: layerRange,
                     stops: stops,
                     quiet: quiet,
                     concise: concise,

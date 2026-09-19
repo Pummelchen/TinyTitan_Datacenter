@@ -277,6 +277,16 @@ public func run(args: Args,
         // reached" from "it was reached silently". Removed once the question is settled.
         FileHandle.standardError.write(Data("[shard] probe: reached the serve block, port \(String(describing: args.shardServePort)), only=\(args.shardServeOnly)\n".utf8))
 
+        // WHICH LAYERS THIS NODE OWNS. Unset means all of them, and that is the configuration A1 gated as
+        // bit-identical, so a sub-range is the only thing this can change (`docs/design-a-plan.md`).
+        if let spec = args.layerRange {
+            let parts = spec.split(separator: ":")
+            guard parts.count == 2, let lo = Int(parts[0]), let hi = Int(parts[1]), lo >= 0, lo < hi else {
+                throw ArgsError.invalidValue(flag: "--layer-range", value: spec)
+            }
+            runner.layerRange = lo..<hi
+        }
+
         if let servePort = args.shardServePort {
             // THE 1.5 ms PER REQUEST, MEASURED RATHER THAN GUESSED. D277 showed the serving penalty is not the
             // slot width, the dispatch count, the expert read or the cache - four candidates eliminated - and put
