@@ -11274,3 +11274,30 @@ and no error ever appeared (`D318`). **The pipeline's exactness remains unverifi
 **And the process lesson, which cost two rounds.** `D315` reverted its diagnostics before its comparison was read,
 so `D316` could not read its own result; the diagnostics are committed from `D317` onward. **A diagnostic removed
 before the comparison is read is a round spent twice.**
+
+## D319 — The private-storage diagnosis does not hold, and the crash cause is not yet determined
+
+`D318` named the failure as a SIGSEGV in the copy and offered one remaining candidate: that `scratch.hidden` is not
+`storageModeShared`, so `contents()` on it is not a valid pointer. **Checking that before writing the blit weakens
+it, which is the point of checking.**
+
+    RealForwardRunner+Prefill.swift:1414    let idPtr = scratch.routeIDs.contents()
+
+**This engine already reads a scratch buffer through `contents()` on the prefill path**, so the scratch buffers are
+shared-storage and `scratch.hidden.contents()` is very likely valid too. **The candidate `D318` was left with does
+not survive its own test**, and no blit has been written for it - **which is the right order: the diagnosis was
+tested before the fix built on it, and it failed.**
+
+**What is still established, and it is only the shape of the failure.** `exit=139`; the process dies after the
+probe-hit print and before the next one; the only work between them is the `memcpy`; and the copy width came from a
+different source than the allocation. **Where exactly it dies inside that call is not known**, and the candidates
+are now narrower and more specific than before: the probe buffer's allocation being smaller than the copy, the
+source read, or something in the call's own arguments - all of which one more print **inside** the copy's argument
+list would separate, since `probe.length` and the copy length are both printable before the call.
+
+**And the honest position on the stretch.** Six rounds have gone into a gate that has never run, and the last two
+produced one fact each - a SIGSEGV, and then the elimination of its first explanation. **That is a slow way to
+find a crash, and it is being recorded as such rather than presented as progress.** The pipeline's exactness
+remains unverified; **nothing downstream of it is worth building until it is**; and the two candidate next steps are
+both one print: the buffer lengths immediately before the copy, or a `memcpy` of one element to see whether the call
+survives at all.
