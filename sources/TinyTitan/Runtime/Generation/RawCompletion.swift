@@ -350,7 +350,16 @@ public func runRawCompletion(producer: any LogitProducer,
             // anything can overwrite `tokenID`, because it carries what this stage SAMPLED - and at this point
             // `tokenID` is still the token the sampler chose at the end of the previous iteration, so publishing it
             // here is both correct and as early as the peer could possibly want it.
-            ring.nextTokenSink?(tokenID, 0)
+            // RELAY THE HEAD'S CHOICE, DO NOT RE-SAMPLE IT (D426). A stage's own sample is meaningless to a chain -
+            // only the head's token decides anything, and every other stage's job on the reverse edge is to pass it
+            // along. Publishing `tokenID` here made a middle stage emit a token it had chosen itself, so the first
+            // stage received something that had been through a sampler it did not need: the extra hop then cost a
+            // whole stage step (48.7 ms) instead of a wire crossing (2.4 ms for 12 KB), which is the 88 ms D425
+            // measured. When this stage was TOLD a token, that token is the one to forward.
+            //
+            // The head still publishes its own sample, because it is the stage that chooses and `pendingIncoming` is
+            // nil there. The first stage never publishes at all, having no sink.
+            ring.nextTokenSink?(pendingIncoming ?? tokenID, 0)
             // The token to produce with arrived during the PREVIOUS iteration's work (below), not now.
             if let carried = pendingIncoming { stepToken = carried; pendingIncoming = nil }
         }
