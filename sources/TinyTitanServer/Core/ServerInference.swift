@@ -678,8 +678,7 @@ public actor ServerModelSession: ServerInferenceBackend, PromptTokenCounting {
         guard let tokenizerFolder else {
             throw GFTokenizerError.missingToolTemplate
         }
-        let templateURL = tokenizerFolder.appendingPathComponent("chat_template.jinja")
-        guard FileManager.default.fileExists(atPath: templateURL.path) else {
+        guard GFTokenizer.hasChatTemplate(in: tokenizerFolder) else {
             throw GFTokenizerError.missingToolTemplate
         }
         // Reasoning effort is defined per family; reject it before the
@@ -849,7 +848,7 @@ public actor ServerModelSession: ServerInferenceBackend, PromptTokenCounting {
             try RawCompletionScratch(context: context, vocab: model.config.vocabSize,
                                      logitSoftcap: Float(model.config.finalLogitSoftcap))
         }
-        let templateDigest = SHA256.hash(data: try Data(contentsOf: templateURL))
+        let templateDigest = SHA256.hash(data: try GFTokenizer.chatTemplateData(in: tokenizerFolder))
             .map { String(format: "%02x", $0) }
             .joined()
         let runtimeIdentity = [

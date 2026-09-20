@@ -220,6 +220,36 @@ public struct GFTokenizer: @unchecked Sendable {
                                reasoningEffort: reasoningEffort)
     }
 
+
+    /// The bytes of the chat template in force for this tokenizer folder.
+    ///
+    /// A template ships either as the sidecar `chat_template.jinja` or as the `chat_template` field
+    /// inside `tokenizer_config.json`, and the two are alternatives rather than requirements: an
+    /// install that keeps it in the config is complete, and demanding the sidecar as well rejects a
+    /// model that `load(from:)` reads perfectly well. Callers that need an identity for the template
+    /// - the prompt cache hashes it - must hash whichever one is actually in force, or an install
+    /// using the config form has no identity at all.
+    public static func chatTemplateData(in folder: URL,
+                                        fileManager: FileManager = .default) throws -> Data {
+        let sidecar = folder.appendingPathComponent("chat_template.jinja")
+        if let data = fileManager.contents(atPath: sidecar.path) {
+            return data
+        }
+        let config = folder.appendingPathComponent("tokenizer_config.json")
+        guard let data = fileManager.contents(atPath: config.path),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let template = object["chat_template"] as? String,
+              !template.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw GFTokenizerError.missingToolTemplate
+        }
+        return Data(template.utf8)
+    }
+
+    /// Whether a chat template is reachable in this folder, from either source.
+    public static func hasChatTemplate(in folder: URL, fileManager: FileManager = .default) -> Bool {
+        (try? chatTemplateData(in: folder, fileManager: fileManager)) != nil
+    }
+
     private static func hasTokenizerJSON(in folder: URL, fileManager: FileManager) -> Bool {
         fileManager.fileExists(atPath: folder.appendingPathComponent("tokenizer.json").path)
     }
