@@ -34,8 +34,14 @@ dresses up.
 `21 tok/s` is not reachable on this hardware as configured, and the reason is measured rather
 than asserted:
 
-- the step is **141.6 ms/token**: **47% expert I/O** and **50% GPU wait**, and the expert I/O is
-  already **fully overlapped** - `exposed_io` reads **0.0 ms** on every node;
+- the step is **141.6 ms/token**: **47% expert I/O** and **50% GPU wait**. **Those two phases are
+  serial, not overlapped** - the profiler's buckets sum to the step (66.5 + 71.3 + 3.8 = 141.6), and
+  taking **42.5 ms/token** of expert-I/O await out of a run takes **42.8 ms** of step with it, a
+  ratio of **1.007**, measured across a cache sweep on one node. **Correction:** an earlier draft of
+  these notes read "the expert I/O is already fully overlapped" on the strength of `exposed_io`
+  reporting **0.0 ms** on every node. That counter does not answer whether the I/O adds to the step,
+  and the arithmetic above says it does, so the claim is withdrawn. It was found after v1.1 shipped,
+  which is why it is corrected here rather than in the release it belongs to;
 - a layer pipeline divides **memory, not time**: the head's period of **166.2 ms/token** sits at
   the serial prediction (the sum of the stage times, 194.8 ms) and nowhere near the pipelined
   one (48.7 ms);
