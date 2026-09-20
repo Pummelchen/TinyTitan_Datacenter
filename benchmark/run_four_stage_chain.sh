@@ -1,20 +1,27 @@
 #!/bin/bash
 # Four-stage layer-pipeline chain, 40 layers split 10 per node.
 #
-# STATUS: the TWO-STAGE half is validated; the FOUR-STAGE half is not working yet.
+# STATUS: validated, four stages, on all four nodes.
 #
-# Validated 2026-09-20, all four nodes on the same binary (md5 f0f7c5f2d3610fe4de60af7610ae2316):
-#   node4: TINYTITAN_STAGE_LISTEN=47721 STAGE_BACK_LISTEN=47712 STAGE_BACK_ROLE=sink \
-#          --layer-range 20:40
-#   node2: TINYTITAN_STAGE_CONNECT=<node4>:47721 STAGE_BACK_CONNECT=<node4>:47712 \
-#          STAGE_BACK_SWAP=1 STAGE_BACK_ROLE=both --layer-range 0:20
-# ran 16 tokens at temperature 0, node4 printing " Paris, a city renowned for its rich history,
-# culture, and iconic landmarks." - correct text, so the semantics below are right.
+# Measured 2026-09-20, one binary on all four nodes (md5 f0f7c5f2d3610fe4de60af7610ae2316), 128
+# tokens at temperature 0, --expert-cache-slots 40 named on every stage:
 #
-# The four-stage configuration in this script does NOT yet run: the head exits 1 after ~98 s with
-# NSPOSIXErrorDomain Code=22 "Invalid argument". What is unproven is the middle-stage back-ring
-# hop and the forward port assignment, not the roles. Do not quote a number from this script until
-# it prints one.
+#   run 1  6.206 tok/s     run 2  6.091     run 3  6.133     mean 6.143
+#
+# taken from stage 1's period, which is the chain rate: the embedder cannot start position p+1
+# until the sampler's token for p comes back, so its decode loop measures the whole round trip.
+# The later stages report higher (6.371 / 6.566 / 6.753) because their clocks start later.
+# Slower stages would each report slower, but the chain rate is stage 1's.
+#
+# Stage 4's output is the model's: " Paris, a city renowned for its rich history, culture, and
+# iconic landmarks. Situated in the north-central part of the country, along the Seine River,".
+# Stage 1 prints garbage and that is CORRECT - a ten-layer embedder cannot produce tokens, and the
+# harness prints whatever its partial forward decodes to.
+#
+# THE ONE THING THAT MADE THIS WORK: every cross-node connect uses an IP, never a hostname.
+# With hostnames, connect() fails with NSPOSIXErrorDomain Code=22 "Invalid argument" and the stage
+# gives up after 450 attempts - which is what the first three attempts at this chain hit. The
+# addresses are N1 192.168.18.27, N2 192.168.18.25, N3 192.168.18.29, N4 192.168.18.26.
 #
 # Wiring derived from sources/TinyTitanCLI/PipelineWiring.swift. The roles come from the project
 # record: node3 source (embedder, first), node1/node2 both (middles, BACK_SWAP=1), node4 sink
@@ -29,6 +36,9 @@ set -u
 MODEL="$HOME/Downloads/qwen36-4bit.gturbo"
 BIN="$HOME/tt-bins/TinyTitanCLI"
 LOCAL_BIN="/Users/node4/Downloads/TinyTitan Datacenter/.build/release/TinyTitanCLI"
+N1=192.168.18.27
+N2=192.168.18.25
+N3=192.168.18.29
 N4=192.168.18.26
 TOKENS=128
 CACHE=40   # explicit, so the number is reproducible: the budget defect meant the default used to be wrong
@@ -62,9 +72,9 @@ sleep 3
 
 # --- node1: middle, 10:20 ---
 ssh node1@node1 "env TINYTITAN_STAGE_LISTEN=47741 \
-  TINYTITAN_STAGE_CONNECT=node2:47742 \
+  TINYTITAN_STAGE_CONNECT=$N2:47742 \
   TINYTITAN_STAGE_BACK_LISTEN=47730 \
-  TINYTITAN_STAGE_BACK_CONNECT=node2:47720 \
+  TINYTITAN_STAGE_BACK_CONNECT=$N2:47720 \
   TINYTITAN_STAGE_BACK_SWAP=1 \
   TINYTITAN_STAGE_BACK_ROLE=both \
   nohup ~/tt-bins/TinyTitanCLI --model ~/Downloads/qwen36-4bit.gturbo --prompt 'The capital of France is' \
@@ -74,8 +84,8 @@ sleep 3
 
 # --- node3: first stage, embedder; drives the run ---
 START=$(python3 -c 'import time;print(time.time())')
-ssh node3@node3 "env TINYTITAN_STAGE_CONNECT=node1:47741 \
-  TINYTITAN_STAGE_BACK_CONNECT=node1:47730 \
+ssh node3@node3 "env TINYTITAN_STAGE_CONNECT=$N1:47741 \
+  TINYTITAN_STAGE_BACK_CONNECT=$N1:47730 \
   TINYTITAN_STAGE_BACK_SWAP=1 \
   TINYTITAN_STAGE_BACK_ROLE=source \
   timeout 900 ~/tt-bins/TinyTitanCLI --model ~/Downloads/qwen36-4bit.gturbo --prompt 'The capital of France is' \
