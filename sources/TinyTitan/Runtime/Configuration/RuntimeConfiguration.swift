@@ -167,11 +167,16 @@ public struct RuntimeConfiguration: Sendable, Equatable {
     /// A smaller budget does not trade throughput gently for memory -- it falls off
     /// by 2.2x while saving RAM that the OS would otherwise have to hold anyway.
     ///
-    /// This inverts under the page-cache policy, where the OS holds the working set
-    /// and slot memory is redundant pressure: 4-bit measured 13.61 tok/s at 16
-    /// slots against 8.78 at 128. So this constant is only correct while expert
-    /// reads bypass the cache. Re-tune it if that ever changes, and re-tune it at
-    /// the shipped `--max-context`, never a reduced one.
+    /// A note here used to claim this inverts under the page-cache policy - the OS
+    /// holding the working set and slot memory being redundant pressure, with 4-bit
+    /// measuring "13.61 tok/s at 16 slots against 8.78 at 128". **That no longer
+    /// reproduces and the note was removed rather than left to guide tuning**: swept
+    /// against the page-cache reader on an 8 GB mini, 8 / 16 / 24 / 32 / 40 slots
+    /// give 6.319 / 6.769 / 7.395 / 8.138 / 8.552 tok/s with the await falling
+    /// 5564 -> 3358 ms. Monotonic, the opposite sign, and 16 slots costs 21%
+    /// against 40 - so more slots is right under either reader, which is what the
+    /// budget above selects. Re-tune at the shipped `--max-context`, never a
+    /// reduced one.
     public static let defaultExpertCacheBudgetBytes = 8 << 30
 
     /// Decode defaults that are not one number across the catalogue.
