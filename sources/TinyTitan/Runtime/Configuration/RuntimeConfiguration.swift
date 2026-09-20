@@ -229,16 +229,27 @@ public struct RuntimeConfiguration: Sendable, Equatable {
 
     /// A tuned budget the machine can actually hold.
     ///
-    /// `decodeTuning` returns what measured fastest on a 24 GiB machine. Half
+    /// `decodeTuning` returns what measured fastest on a 24 GiB machine. A third
     /// of physical memory is the ceiling because the slot cache is not the only
     /// resident claim -- dense weights, the KV cache and the prompt cache all
     /// have to fit beside it. Without this, a 12 GiB default aimed at
     /// qwen38flash would be handed unchanged to a 16 GiB Mac.
+    ///
+    /// A third rather than a half, and `defaultExpertCacheBudgetBytes` is the
+    /// evidence: 8 GiB is a third of the 24 GiB machine those budgets were tuned
+    /// on, so a third reproduces the tuned value exactly where it was tuned and
+    /// scales down where a constant could not. At a half, an 8 GB mini is handed
+    /// 64 slots -- 4.22 GiB of cache against a 70.8 MB slot -- and pages:
+    /// measured swap 855 -> 1610 MB and 5.576 tok/s, against a flat swap and
+    /// 7.289 tok/s at the 40 slots a third selects. The failure is the one
+    /// `expertCacheSlots` already documents for 8-bit, where an over-budget
+    /// cache cost 4.8x throughput with the hit rate *falling*, so it is a paging
+    /// problem rather than a cache one.
     public static func affordableExpertCacheBudget(
         _ wanted: Int,
         physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory) -> Int {
         guard physicalMemory > 0 else { return wanted }
-        return min(wanted, Int(physicalMemory / 2))
+        return min(wanted, Int(physicalMemory / 3))
     }
 
     /// Parses a RAM budget such as `2G`, `512M`, `8GiB` or a plain byte count.

@@ -170,20 +170,35 @@ import Testing
         }
     }
 
-    @Test func budgetIsClampedToWhatTheMachineCanHold() {
+    /// The ceiling is a third of physical memory, not a half.
+    ///
+    /// A half handed an 8 GB Mac mini 64 slots - 4.22 GiB of cache at a 70.8 MB
+    /// slot - and it paged: swap grew 855 -> 1610 MB and throughput fell to
+    /// 5.576 tok/s, against a flat swap and 7.289 tok/s at the 40 slots a third
+    /// picks. The third is the tuned value in disguise: the budgets above were
+    /// measured on a 24 GiB machine, and a third of 24 GiB is exactly the 8 GiB
+    /// `defaultExpertCacheBudgetBytes`.
+    @Test func budgetIsClampedToAFractionOfWhatTheMachineCanHold() {
         let wanted = 12 << 30
-        // 24 GiB and up: the tuned budget survives intact.
+        // 32 GiB: a third is 10 GiB, so the 12 GiB aimed at qwen38flash is cut
+        // by one rung. The 35B families are unaffected - their 8 GiB budget is
+        // under a third of even a 24 GiB machine.
         #expect(RuntimeConfiguration.affordableExpertCacheBudget(
-            wanted, physicalMemory: 32 << 30) == wanted)
-        // 16 GiB: half is 8 GiB, so the 12 GiB aimed at qwen38flash is cut
-        // rather than handed to a machine with no room for it.
+            wanted, physicalMemory: 32 << 30) == (32 << 30) / 3)
         #expect(RuntimeConfiguration.affordableExpertCacheBudget(
-            wanted, physicalMemory: 16 << 30) == 8 << 30)
-        // And the clamp has to change the slot count, not just the number.
+            wanted, physicalMemory: 16 << 30) == (16 << 30) / 3)
+        // The case that was broken: an 8 GB mini, on this model's real geometry.
+        // 70.8 MB a slot, so a third is 2.67 GiB and must land on 40 slots - the
+        // measured optimum - where a half landed on 64 and paged.
+        let mini = RuntimeConfiguration.affordableExpertCacheBudget(
+            wanted, physicalMemory: 8 << 30)
+        #expect(mini == (8 << 30) / 3)
         #expect(RuntimeConfiguration.expertCacheSlots(
-            expertStrideBytes: Self.qwen38Stride, layers: Self.qwen38Layers,
-            budgetBytes: RuntimeConfiguration.affordableExpertCacheBudget(
-                wanted, physicalMemory: 16 << 30)) == 64)
+            expertStrideBytes: 1_769_472, layers: 40, budgetBytes: mini) == 40)
+        #expect(RuntimeConfiguration.expertCacheSlots(
+            expertStrideBytes: 1_769_472, layers: 40,
+            budgetBytes: min(wanted, (8 << 30) / 2)) == 64,
+                "the half this replaces picked 64 slots and paged")
     }
 
     @Test func clampNeverGrowsABudget() {
