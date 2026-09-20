@@ -166,7 +166,13 @@ enum ExpertIOPriority: Sendable {
 /// over queued speculative batches.
 /// unchecked-invariant: both queues are read and mutated only under `condition`.
 final class ExpertIOScheduler: @unchecked Sendable {
-    static let shared = ExpertIOScheduler(workerCount: 4)
+    /// The number of expert reads that can be in flight at once. Four is the historical value and
+    /// stays the default; the knob exists because the decode step's await is latency-bound rather
+    /// than bandwidth-bound (one read's full latency is paid per miss, whatever the miss count), so
+    /// whether the device can actually serve several at once is the question that decides the step.
+    static let shared = ExpertIOScheduler(
+        workerCount: ProcessInfo.processInfo.environment["TINYTITAN_EXPERT_IO_WORKERS"]
+            .flatMap(Int.init).map { max(1, $0) } ?? 4)
 
     private let condition = NSCondition()
     private var demandQueue: [@Sendable () -> Void] = []

@@ -478,7 +478,15 @@ public func run(args: Args,
             // decides whether an overlapping layer loop would pay, so it has to be visible before that work is
             // commissioned rather than after.
             if let ring = runner.prefetchRingSummary {
-                FileHandle.standardError.write(Data("\n[prefetch] \(ring)\n".utf8))
+                // issued against adopted is the number that decides whether the ring is doing anything:
+                // a prefetch that is issued and never adopted is a read the demand path pays for again,
+                // which would put it straight on the critical path. Only TinyTitanServer read this.
+                let issued = runner.totalPrefetchIssued
+                let adopted = runner.totalPrefetchAdopted
+                let n = Double(max(1, stats.newTokens))
+                FileHandle.standardError.write(Data(String(format:
+                    "\n[prefetch] \(ring)\n[prefetch] issued=%llu adopted=%llu over %d tokens = %.2f issued/token, %.2f adopted/token\n",
+                    issued, adopted, stats.newTokens, Double(issued) / n, Double(adopted) / n).utf8))
             }
             // totalExposedIoNanos is the engine's own measure of expert I/O that was NOT hidden behind other work
             // (D450). Only TinyTitanServer ever read it, so every CLI run in this session reported expert I/O
