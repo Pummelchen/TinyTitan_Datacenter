@@ -1,6 +1,12 @@
 # TinyTitan Datacenter
 
-TinyTitan Datacenter (`ttd`) is between architectures. The previous implementation was retired on 2026-11-28 and is preserved only as a reference under `legacy/pre-redesign/`. A replacement architecture has not yet been approved or implemented.
+TinyTitan Datacenter (**TTDD**) is between architectures. The previous implementation was retired on 2026-11-28 and is preserved only as a reference under `legacy/pre-redesign/`. A replacement architecture has not yet been approved or implemented.
+
+## Naming
+
+- **TT** means TinyTitan, the single-Mac sister project.
+- **TTDD** means TinyTitan Datacenter, this repository.
+- Use these exact abbreviations in new code, documentation, tasks, and discussions. Historical `ttd` references inside the archive are preserved, not current naming.
 
 ## Repository state
 
@@ -17,7 +23,7 @@ TinyTitan Datacenter (`ttd`) is between architectures. The previous implementati
 
 ## Related project
 
-The single-Mac TinyTitan repository is a separate sister project. It may be studied for design lessons, but Datacenter remains standalone unless a future approved design explicitly decides otherwise.
+The single-Mac TinyTitan repository (**TT**) is a separate sister project. It may be studied for design lessons, but TTDD remains standalone unless a future approved design explicitly decides otherwise.
 
 ## Completion and publication
 
